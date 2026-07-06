@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { resolveSafe } from '../../src/core/security/path-fence';
 import { checkCommand } from '../../src/core/security/command-blacklist';
 import { PermissionManager, type Decision } from '../../src/core/security/permission';
-import { redact } from '../../src/core/security/audit';
+import { redact, AuditLogger } from '../../src/core/security/audit';
 import { EventBus } from '../../src/core/events/bus';
 import { createToolRegistry, ToolRegistry } from '../../src/core/tools/registry';
 
@@ -128,6 +128,29 @@ describe('审计脱敏 redact', () => {
 
   it('普通文本不受影响', () => {
     expect(redact('读取了 src/main.ts 共 120 行')).toBe('读取了 src/main.ts 共 120 行');
+  });
+});
+
+describe('审计日志 JSONL 结构', () => {
+  it('call 行含 args，result 行不含 args（避免冗余）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'easycli-audit-'));
+    const path = join(dir, 'audit.jsonl');
+    const bus = new EventBus();
+    new AuditLogger(path).attach(bus);
+    bus.emit({ type: 'tool:call', call: { name: 'read_file', arguments: { path: 'a.txt' } } });
+    bus.emit({
+      type: 'tool:result',
+      call: { name: 'read_file', arguments: { path: 'a.txt' } },
+      result: { ok: true, output: 'hi' },
+    });
+    const lines = (await readFile(path, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines[0]!.kind).toBe('call');
+    expect(lines[0]!.args).toContain('a.txt');
+    expect(lines[1]!.kind).toBe('result');
+    expect(lines[1]!).not.toHaveProperty('args');
+    expect(lines[1]!.ok).toBe(true);
+    expect(lines[1]!.output).toBe('hi');
+    await rm(dir, { recursive: true, force: true });
   });
 });
 

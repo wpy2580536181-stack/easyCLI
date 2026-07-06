@@ -29,14 +29,29 @@ export class AuditLogger {
       mkdirSync(dirname(this.path), { recursive: true });
       const call = e as { call?: { name?: string; arguments?: unknown } };
       const result = e as { result?: { ok?: boolean; output?: string } };
-      const entry = {
-        ts: new Date().toISOString(),
-        kind,
-        tool: call.call?.name,
-        args: redact(JSON.stringify(call.call?.arguments ?? {})),
-        ok: result.result?.ok,
-        output: result.result ? redact(String(result.result.output ?? '')) : undefined,
-      };
+      // 入参 args 只在 call 行记录一次；result/error 行只记结论，避免冗余与体积膨胀
+      const entry =
+        kind === 'result'
+          ? {
+              ts: new Date().toISOString(),
+              kind,
+              tool: call.call?.name,
+              ok: result.result?.ok,
+              output: result.result ? redact(String(result.result.output ?? '')) : undefined,
+            }
+          : kind === 'error'
+            ? {
+                ts: new Date().toISOString(),
+                kind,
+                tool: call.call?.name,
+                output: result.result ? redact(String(result.result.output ?? '')) : undefined,
+              }
+            : {
+                ts: new Date().toISOString(),
+                kind,
+                tool: call.call?.name,
+                args: redact(JSON.stringify(call.call?.arguments ?? {})),
+              };
       appendFileSync(this.path, JSON.stringify(entry) + '\n');
     } catch {
       // 审计写入失败不应影响主流程
