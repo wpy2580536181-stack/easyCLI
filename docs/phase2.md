@@ -11,7 +11,7 @@
 |---|---|---|
 | 1 | 脚手架 + REPL + 流式对话 + ChatModel/OpenAI 适配器 | ✅ 已完成 |
 | **2** | **ReAct 循环 + Tool Calling + 最小内置工具（read_file/bash）** | ✅ 已完成 |
-| 3 | 内置工具扩展 + 安全围栏（isReadOnly/isDestructive；读并行/写串行；三级权限+围栏+黑名单+HITL+审计） | 待做 |
+| **3** | **内置工具扩展 + 安全围栏（isReadOnly/isDestructive；读并行/写串行；三级权限+围栏+黑名单+HITL+审计）** | ✅ 已完成 |
 | 4 | 上下文压缩（裁剪/去重/折叠/摘要）+ 长期记忆（SQLite） | 待做 |
 | 5 | MCP 客户端（stdio，JSON-RPC 连接状态机） | 待做 |
 | 6 | RAG | 待做 |
