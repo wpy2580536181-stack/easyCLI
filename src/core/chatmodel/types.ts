@@ -1,0 +1,77 @@
+// 全局共享类型：Provider 无关的归一化契约。
+// 后续各期（AnthropicAdapter / OllamaAdapter、ReAct、MCP）都基于这套类型，不要随意改字段。
+
+export type Role = 'system' | 'user' | 'assistant' | 'tool';
+
+/** 单条内容块——目前只需文本与工具调用两种 */
+export interface TextBlock {
+  type: 'text';
+  text: string;
+}
+export interface ToolCallBlock {
+  type: 'tool_call';
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+export type ContentBlock = TextBlock | ToolCallBlock;
+
+/**
+ * 一条对话消息。
+ * - content 可以是纯字符串（最常见），也可以是内容块数组（assistant 同时有文本与 tool_call 时）。
+ * - role='tool' 时，用 tool_call_id 关联被调用的工具，name 为工具名。
+ */
+export interface ChatMessage {
+  role: Role;
+  content: string | ContentBlock[];
+  tool_call_id?: string;
+  name?: string;
+}
+
+/** 模型返回的工具调用（已解析） */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+/**
+ * 工具定义。Phase 1 仅用于把 schema 透传给 OpenAI；Phase 3 会补 execute()。
+ * inputSchema 采用 JSON Schema 对象（与 OpenAI function calling 对齐）。
+ */
+export interface ToolDef {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  ok: boolean;
+  output: string;
+}
+
+export interface CompleteOptions {
+  messages: ChatMessage[];
+  tools?: ToolDef[];
+  signal?: AbortSignal;
+  /** 流式文本增量回调（含 reasoning/thinking 内容） */
+  onText?: (chunk: string) => void;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+export interface CompleteResult {
+  /** 拼接后的完整文本 */
+  content: string;
+  /** 模型要求调用的工具（若有） */
+  toolCalls: ToolCall[];
+  /** 原始响应，便于调试 */
+  raw?: unknown;
+}
+
+/** Provider 无关的模型接口——所有适配器都实现它 */
+export interface ChatModel {
+  /** 例如 "openai:deepseek-chat" */
+  readonly id: string;
+  complete(opts: CompleteOptions): Promise<CompleteResult>;
+}
