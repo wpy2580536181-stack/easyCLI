@@ -78,15 +78,16 @@ pnpm lint        # eslint
 | 期 | 模块 | 状态 |
 |---|---|---|
 | 1 | 脚手架 + REPL + 流式对话 + ChatModel/OpenAI 适配器 | ✅ 完成 |
-| 2 | ReAct 循环 + Tool Calling | 待做 |
-| 3 | 内置工具 + 安全围栏 | 待做 |
-| 4 | Memory（SQLite + 压缩） | 待做 |
-| 5 | MCP 客户端（stdio） | 待做 |
+| 2 | ReAct 循环 + Tool Calling + 最小内置工具（read_file/bash） | 待做 |
+| 3 | 内置工具扩展 + 安全围栏（isReadOnly/isDestructive；读并行/写串行；三级权限+围栏+黑名单+HITL+审计） | 待做 |
+| 4 | 上下文压缩（裁剪/去重/折叠/摘要）+ 长期记忆（SQLite） | 待做 |
+| 5 | MCP 客户端（stdio，JSON-RPC 连接状态机） | 待做 |
 | 6 | RAG | 待做 |
-| 7 | Skill 系统 | 待做 |
-| 8 | Multi-Agent | 待做 |
-| 9 | MCP Server + 多模型补全 | 待做 |
-| 10 | Browser(CDP) + 异步并行 + Plan 模式 | 待做 |
+| 7 | Skill 系统（三层加载 + 渐进式披露保护 cache） | 待做 |
+| 8 | Multi-Agent（Planner/Worker/Reviewer + 文件隔离 worktree + 事件总线） | 待做 |
+| 9 | MCP Server + 多模型补全（补齐 Anthropic/Ollama 适配器 + fallback model 降级） | 待做 |
+| 10 | Plan 模式 + 异步并行（与 ReAct 共享同一引擎） | 待做 |
+| 11 | Browser（CDP） | 待做 |
 
 ---
 

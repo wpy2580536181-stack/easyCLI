@@ -36,13 +36,29 @@ export interface ToolCall {
 }
 
 /**
- * 工具定义。Phase 1 仅用于把 schema 透传给 OpenAI；Phase 3 会补 execute()。
+ * 工具执行上下文——由 Agent 循环在每次调用工具时注入。
+ * 工具应把相对路径解析到 `cwd`，长耗时操作监听 `signal` 以便中断。
+ */
+export interface ToolContext {
+  cwd: string;
+  signal?: AbortSignal;
+}
+
+/**
+ * 工具定义。Phase 1 仅用于把 schema 透传给 OpenAI；
+ * Phase 2 起补入 `execute` 与并发标记，内置工具与 MCP 工具统一进同一 `ToolRegistry`。
  * inputSchema 采用 JSON Schema 对象（与 OpenAI function calling 对齐）。
  */
 export interface ToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** 是否只读——推理用：只读工具可并行执行（Phase 3 执行器据此优化） */
+  isReadOnly?: boolean;
+  /** 是否破坏性操作（写/删除类）——Phase 3 接 HITL 更严格审批 */
+  isDestructive?: boolean;
+  /** 工具执行体，由 ToolRegistry 统一调度 */
+  execute?: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
 }
 
 export interface ToolResult {

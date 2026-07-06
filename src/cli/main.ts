@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import { loadConfig, type ConfigOverrides } from '../config';
 import { createChatModel } from '../core/chatmodel';
+import { createToolRegistry } from '../core/tools/registry';
 import { runOnce, startRepl } from './repl';
 
 const program = new Command();
@@ -23,11 +24,12 @@ program
       apiKey: opts.apiKey,
     });
     const model = createChatModel(config);
+    const tools = createToolRegistry();
 
     if (opts.prompt) {
-      await runOnce(model, opts.prompt);
+      await runOnce(model, opts.prompt, tools);
     } else {
-      await startRepl(config, model);
+      await startRepl(config, model, tools);
     }
   });
 
