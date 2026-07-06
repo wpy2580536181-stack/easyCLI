@@ -136,7 +136,7 @@ docs/                 各期学习文档（强制产出）
 - 推送 GitHub（`wpy2580536181-stack/easyCLI`，默认分支 `main`）。
 - 推送用 git 临时凭据，**绝不把 token 明文写入 `.git/config` 或仓库**；推送后清除临时凭据。
 - `node_modules`/`dist`/`.env` 不入库。
-- **`CLAUDE.md` 本身已在 `.gitignore`**，仅本地生效、绝不入库。
+- `CLAUDE.md`（项目总章程）已纳入版本管理，随仓库同步；`.env` 等密钥文件永不入库。
 
 ---
 
