@@ -107,7 +107,7 @@ pnpm typecheck      # tsc --noEmit
 | 1 | 脚手架 + REPL + 流式对话 + ChatModel/OpenAI 适配器 | ✅ 完成 |
 | 2 | ReAct 循环 + Tool Calling + **最小内置工具**（read_file/bash，循环才非空转） | 待做 |
 | 3 | 内置工具扩展 + 安全围栏（`isReadOnly/isDestructive` 标记；**读并行/写串行**；三级权限+围栏+黑名单+HITL+审计挂事件总线） | 待做 |
-| 4 | **上下文压缩**（裁剪/去重/折叠/摘要）+ 长期记忆（SQLite） | 待做 |
+| 4 | **上下文压缩**（裁剪/去重/折叠/摘要）+ 长期记忆（SQLite） | ✅ 已完成 |
 | 5 | MCP 客户端（stdio，JSON-RPC 连接状态机） | 待做 |
 | 6 | RAG | 待做 |
 | 7 | Skill 系统（三层加载 + **渐进式披露**保护 cache） | 待做 |

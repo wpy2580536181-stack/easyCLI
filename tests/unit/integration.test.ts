@@ -7,6 +7,7 @@ import { runAgent } from '../../src/core/agent';
 import { createToolRegistry } from '../../src/core/tools/registry';
 import { EventBus, type AgentEvent } from '../../src/core/events/bus';
 import { PermissionManager } from '../../src/core/security/permission';
+import type { CompressOptions } from '../../src/core/memory/compressor';
 import type { ChatMessage, ChatModel, CompleteResult, ToolCall } from '../../src/core/chatmodel/types';
 
 class ScriptedModel implements ChatModel {
@@ -76,6 +77,60 @@ describe('垂直集成：ReAct 循环 + 权限 + 总线 + 工具', () => {
 
     const toolMsg = history[3]!;
     expect(String(toolMsg.content)).toBe('hi'); // 真正读到了内容
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('上下文超预算时触发压缩（emit compact 且配对仍合法）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'easycli-comp-'));
+    await writeFile(join(dir, 'a.txt'), 'x'.repeat(20000), 'utf8'); // 制造超长工具结果
+    const tools = createToolRegistry();
+    const bus = new EventBus();
+    let compacted = false;
+    let beforeTok = 0;
+    let afterTok = 0;
+    bus.on('compact', (e) => {
+      compacted = true;
+      const ev = e as { before?: number; after?: number };
+      beforeTok = ev.before ?? 0;
+      afterTok = ev.after ?? 0;
+    });
+
+    const permission = new PermissionManager({ settingsPath: join(dir, 'p3.json'), registry: tools });
+    const call: ToolCall = { id: 'r1', name: 'read_file', arguments: { path: 'a.txt' } };
+    const model = new ScriptedModel([
+      { content: '读一下', toolCalls: [call] },
+      { content: '完成', toolCalls: [] },
+    ]);
+    const compress: CompressOptions = {
+      budgetTokens: 50,
+      keepRecentTurns: 2,
+      maxToolOutputChars: 200,
+      summarizer: async () => 'SUMMARY',
+    };
+    const history: ChatMessage[] = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: '读 a.txt' },
+    ];
+
+    await runAgent(history, { model, tools, permission, bus, cwd: dir, compress });
+
+    expect(compacted).toBe(true);
+    expect(afterTok).toBeLessThanOrEqual(beforeTok);
+    // 规范 history 的配对仍合法（压缩只动了「发给模型的副本」）
+    const valid = (() => {
+      for (let i = 0; i < history.length; i++) {
+        const m = history[i]!;
+        if (m.role === 'assistant' && Array.isArray(m.content)) {
+          for (const b of m.content) {
+            if (b.type === 'tool_call' && !history.slice(i + 1).some((x) => x.role === 'tool' && x.tool_call_id === b.id))
+              return false;
+          }
+        }
+      }
+      return true;
+    })();
+    expect(valid).toBe(true);
 
     await rm(dir, { recursive: true, force: true });
   });

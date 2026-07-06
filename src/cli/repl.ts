@@ -5,6 +5,7 @@ import type { AppConfig } from '../config';
 import type { ToolRegistry } from '../core/tools/registry';
 import type { PermissionManager, Decision, Resolver } from '../core/security/permission';
 import type { EventBus } from '../core/events/bus';
+import type { CompressOptions } from '../core/memory/compressor';
 import { runAgent } from '../core/agent';
 import { StreamRenderer } from './renderer';
 
@@ -39,6 +40,7 @@ export async function runOnce(
   tools: ToolRegistry,
   permission: PermissionManager,
   bus: EventBus,
+  compress?: CompressOptions,
 ): Promise<void> {
   const renderer = new StreamRenderer(chalk.green);
   const history: ChatMessage[] = [
@@ -51,6 +53,7 @@ export async function runOnce(
     tools,
     permission,
     bus,
+    compress,
     cwd: process.cwd(),
     onText: (c) => renderer.push(c),
     onToolCall: (call) => renderer.status(`🔧 调用工具 ${call.name}`),
@@ -66,6 +69,7 @@ export async function startRepl(
   tools: ToolRegistry,
   permission: PermissionManager,
   bus: EventBus,
+  compress?: CompressOptions,
 ): Promise<void> {
   const console_ = console;
   console_.log(
@@ -98,11 +102,13 @@ export async function startRepl(
       tools,
       permission,
       bus,
+      compress,
       signal: abort.signal,
       cwd: process.cwd(),
       onText: (c) => r.push(c),
       onToolCall: (call) => r.status(`🔧 调用工具 ${call.name}`),
       onToolResult: (call, res) => r.status(`${res.ok ? '✓' : '✗'} ${call.name}`),
+      onCompact: (info) => r.status(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
     }).then(() => r.newline());
   }
 

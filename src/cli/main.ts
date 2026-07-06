@@ -8,6 +8,9 @@ import { createToolRegistry } from '../core/tools/registry';
 import { EventBus } from '../core/events/bus';
 import { PermissionManager } from '../core/security/permission';
 import { AuditLogger } from '../core/security/audit';
+import { MemoryStore } from '../core/memory/store';
+import { getMemoryTools } from '../core/memory/tools';
+import type { CompressOptions } from '../core/memory/compressor';
 import { runOnce, startRepl } from './repl';
 
 const program = new Command();
@@ -31,16 +34,27 @@ program
     const model = createChatModel(config);
     const tools = createToolRegistry();
 
+    // Phase 4：长期记忆仓库 + 记忆工具注册
+    const memory = new MemoryStore(join(homedir(), '.config', 'agent-cli', 'memory.db'));
+    tools.registerAll(getMemoryTools(memory));
+
     // Phase 3：事件总线 + 权限 + 审计日志
     const bus = new EventBus();
     const permission = new PermissionManager({ registry: tools });
     permission.load(); // 加载已持久化的 allow/deny
     new AuditLogger(join(homedir(), '.config', 'agent-cli', 'audit.jsonl')).attach(bus);
 
+    // Phase 4：上下文压缩配置（超预算时自动压缩后重试）
+    const compress: CompressOptions = {
+      budgetTokens: 8000,
+      keepRecentTurns: 4,
+      maxToolOutputChars: 1500,
+    };
+
     if (opts.prompt) {
-      await runOnce(model, opts.prompt, tools, permission, bus);
+      await runOnce(model, opts.prompt, tools, permission, bus, compress);
     } else {
-      await startRepl(config, model, tools, permission, bus);
+      await startRepl(config, model, tools, permission, bus, compress);
     }
   });
 

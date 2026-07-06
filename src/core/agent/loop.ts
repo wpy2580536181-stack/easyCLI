@@ -11,12 +11,20 @@ import type { ToolRegistry } from '../tools/registry';
 import { executeTools } from '../tools/executor';
 import type { PermissionManager } from '../security/permission';
 import type { EventBus } from '../events/bus';
+import {
+  compressHistory,
+  estimateHistoryTokens,
+  type CompressOptions,
+  type Summarizer,
+} from '../memory/compressor';
 
 /** Agent 循环对外的钩子：用于渲染器把过程可视化 */
 export interface AgentHooks {
   onText?: (chunk: string) => void;
   onToolCall?: (call: ToolCall, tool: ToolDef | undefined) => void;
   onToolResult?: (call: ToolCall, result: ToolResult) => void;
+  /** 上下文被压缩时回调（决策 9 的 onCompact 挂载点） */
+  onCompact?: (info: { before: number; after: number }) => void;
 }
 
 export interface AgentOptions extends AgentHooks {
@@ -26,9 +34,28 @@ export interface AgentOptions extends AgentHooks {
   permission?: PermissionManager;
   /** 事件总线（Phase 3 接入）；提供则审计等订阅者收到事件 */
   bus?: EventBus;
+  /** 上下文压缩配置（Phase 4）；提供且超预算时，发给模型的副本会被压缩 */
+  compress?: CompressOptions;
   cwd?: string;
   maxIterations?: number;
   signal?: AbortSignal;
+}
+
+/** 默认摘要器：用当前模型把中间历史压成中文摘要（无工具，纯文本总结） */
+function defaultSummarizer(model: ChatModel): Summarizer {
+  return async (text: string) => {
+    const r = await model.complete({
+      messages: [
+        {
+          role: 'system',
+          content:
+            '你是上下文压缩器。把下列对话历史压缩成简洁中文摘要，保留：关键事实、用户偏好、已做的决策、未完成的任务。不要编造。',
+        },
+        { role: 'user', content: text },
+      ],
+    });
+    return r.content ?? '';
+  };
 }
 
 /**
@@ -54,9 +81,25 @@ export async function runAgent(
     // 用户中断（Ctrl+C）时 fetch 会抛 AbortError，需就地消化为「正常停止」，
     // 否则异常会冒泡冲垮 REPL 的事件循环。
     let result: CompleteResult;
+
+    // 上下文超限自动压缩（决策 10 + 决策 7）：压缩「发给模型的副本」，不动规范 history
+    let messages: ChatMessage[] = history;
+    try {
+      if (opts.compress && estimateHistoryTokens(history) > opts.compress.budgetTokens) {
+        const summarizer = opts.compress.summarizer ?? defaultSummarizer(opts.model);
+        messages = await compressHistory(history, { ...opts.compress, summarizer });
+        const before = estimateHistoryTokens(history);
+        const after = estimateHistoryTokens(messages);
+        opts.bus?.emit({ type: 'compact', before, after });
+        opts.onCompact?.({ before, after });
+      }
+    } catch {
+      messages = history; // 压缩失败则退回原文，保证主流程不中断
+    }
+
     try {
       result = await opts.model.complete({
-        messages: history,
+        messages,
         tools: opts.tools.list(),
         signal: opts.signal,
         onText: opts.onText,
