@@ -10,18 +10,13 @@ import { RagStore } from '../core/rag/store';
 import { SkillLoader } from '../core/skill';
 import { SessionStore, extractConversation, withSystem, AUTOSAVE_NAME } from '../core/session/store';
 import { runAgent } from '../core/agent';
+import { buildAgentSystemPrompt } from '../core/prompts';
 import { StreamRenderer } from './renderer';
 import { HistoryStore } from './history';
 import { completeLine, SLASH_COMMANDS } from './completer';
 
 /** 多行粘贴判定的 debounce 窗口：窗口内连续到达的非 slash 行视为同一次粘贴 */
 const PASTE_DEBOUNCE_MS = 12;
-
-const SYSTEM_PROMPT =
-  '你是一个运行在终端里的 AI 编程助手，类似 Claude Code。用简洁、准确的中文回答用户的问题；' +
-  '需要操作文件或执行命令时，优先调用工具：read_file / write_file / edit_file / list_dir / glob / grep / bash。' +
-  '若已提供 rag_search 工具（本地知识库语义检索），在回答涉及项目文档、规范、历史决策等问题前，应先检索补充上下文。' +
-  '若下方列出「可用技能」，在任务匹配时应调用 use_skill 获取其详细指令并严格遵循。';
 
 /** 构造 HITL 审批器：交互式询问用户是否放行（y/n/a），a 表示持久预批准 */
 function makeResolver(rl: readline.Interface, permission: PermissionManager): Resolver {
@@ -55,7 +50,10 @@ export async function runOnce(
   skillLoader?: SkillLoader | null,
 ): Promise<void> {
   const renderer = new StreamRenderer(chalk.green);
-  const sys = SYSTEM_PROMPT + (skillLoader?.menuText() ? '\n\n' + skillLoader.menuText()! : '');
+  const sys = buildAgentSystemPrompt({
+    cwd: process.cwd(),
+    skillsMenu: skillLoader?.menuText() ?? undefined,
+  });
   const history: ChatMessage[] = [
     { role: 'system', content: sys },
     { role: 'user', content: prompt },
@@ -120,7 +118,13 @@ export async function startRepl(
     },
   });
   const history: ChatMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT + (skillLoader?.menuText() ? '\n\n' + skillLoader.menuText()! : '') },
+    {
+      role: 'system',
+      content: buildAgentSystemPrompt({
+        cwd: process.cwd(),
+        skillsMenu: skillLoader?.menuText() ?? undefined,
+      }),
+    },
   ];
   // Phase 9：会话存储 + 跨会话恢复。每轮结束自动写 autosave，--resume 时恢复。
   const sessionStore = new SessionStore();

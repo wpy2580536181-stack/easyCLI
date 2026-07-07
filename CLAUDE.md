@@ -116,7 +116,7 @@ pnpm typecheck      # tsc --noEmit
 | 10 | **REPL 体验打磨**：跨会话命令历史文件、多行粘贴输入、基础补全、更顺滑的流式渲染 | ✅ 已完成 |
 | 11 | **多模型适配补全**：Anthropic/Ollama 适配器 + **fallback model 降级**；把 Phase 6 的 `embed()` 抽象为可插拔接口（手写/API 双实现） | ✅ 已完成 |
 | 12 | **MCP Server**（与 Phase 5 客户端对端；暴露 tools/resources，可选 Streamable HTTP 传输） | ✅ 已完成 |
-| 13 | **System Prompt 工程化**：抽出 `src/core/prompts/` 模块，按 identity / behavior / tool-policy / output-format 分块组合；**动态上下文注入**（当前时间、cwd、git 分支、OS）；输出格式约定 + 少量 few-shot；把压缩子 prompt 也统一收进该模块管理；配套 `docs/phase13.md` | 待做 |
+| 13 | **System Prompt 工程化**：抽出 `src/core/prompts/` 模块，按 identity / behavior / tool-policy / output-format 分块组合；**动态上下文注入**（当前时间、cwd、git 分支、OS）；输出格式约定 + 少量 few-shot；把压缩子 prompt 也统一收进该模块管理；配套 `docs/phase13.md` | ✅ 已完成 |
 | 14 | **Token / 成本统计与可观测性**：每轮 token 估算、累计成本、压缩/检索事件汇总，挂事件总线统一观测 | 待做 |
 | 15 | **Plan 模式 + 异步并行**（与 ReAct 共享同一引擎；先规划再执行，子任务可并行预执行只读工具） | 待做 |
 | 16 | **记忆与检索自动注入**：把 recall（期4）/ RAG（期6）结果在每轮自动注入上下文，无需模型主动调，提升「上下文智能化」 | 待做 |

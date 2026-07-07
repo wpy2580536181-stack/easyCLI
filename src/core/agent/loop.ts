@@ -9,6 +9,7 @@ import type {
 } from '../chatmodel/types';
 import type { ToolRegistry } from '../tools/registry';
 import { executeTools } from '../tools/executor';
+import { compressorSystemPrompt } from '../prompts';
 import type { PermissionManager } from '../security/permission';
 import type { EventBus } from '../events/bus';
 import {
@@ -48,8 +49,7 @@ function defaultSummarizer(model: ChatModel): Summarizer {
       messages: [
         {
           role: 'system',
-          content:
-            '你是上下文压缩器。把下列对话历史压缩成简洁中文摘要，保留：关键事实、用户偏好、已做的决策、未完成的任务。不要编造。',
+          content: compressorSystemPrompt(),
         },
         { role: 'user', content: text },
       ],
