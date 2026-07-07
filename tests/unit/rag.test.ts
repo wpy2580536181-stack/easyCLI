@@ -73,61 +73,61 @@ describe('手写嵌入 + 余弦相似度', () => {
 });
 
 describe('RagStore 向量检索（SQLite :memory:）', () => {
-  it('reindex 后 status 计数正确，search 命中相关块', () => {
+  it('reindex 后 status 计数正确，search 命中相关块', async () => {
     const store = new RagStore(':memory:');
     store.setSources([join(dir, 'a.txt'), join(dir, 'b.txt')]);
-    const { docs, chunks } = store.reindex();
+    const { docs, chunks } = await store.reindex();
     expect(docs).toBe(2);
     expect(chunks).toBeGreaterThan(0);
     expect(store.status().chunks).toBe(chunks);
 
-    const top = store.search('ReAct 循环 工具调用', 3);
+    const top = await store.search('ReAct 循环 工具调用', 3);
     expect(top.length).toBeGreaterThan(0);
     expect(top[0]!.text).toContain('ReAct');
   });
 
-  it('不同查询命中不同文档', () => {
+  it('不同查询命中不同文档', async () => {
     const store = new RagStore(':memory:');
     store.setSources([join(dir, 'a.txt'), join(dir, 'b.txt')]);
-    store.reindex();
-    const r1 = store.search('检索增强生成 分块嵌入', 1)[0]!;
-    const r2 = store.search('命令行 Agent ReAct', 1)[0]!;
+    await store.reindex();
+    const r1 = (await store.search('检索增强生成 分块嵌入', 1))[0]!;
+    const r2 = (await store.search('命令行 Agent ReAct', 1))[0]!;
     expect(r1.text).toContain('RAG');
     expect(r2.text).toContain('easyCLI');
   });
 
-  it('toContext 把结果拼成可注入字符串', () => {
+  it('toContext 把结果拼成可注入字符串', async () => {
     const store = new RagStore(':memory:');
     store.setSources([join(dir, 'a.txt')]);
-    store.reindex();
-    const ctx = RagStore.toContext(store.search('ReAct', 2));
+    await store.reindex();
+    const ctx = RagStore.toContext(await store.search('ReAct', 2));
     expect(ctx).toContain('参考 1');
     expect(ctx).toContain('来源:');
   });
 
-  it('空库检索返回空，toContext 给占位提示', () => {
+  it('空库检索返回空，toContext 给占位提示', async () => {
     const store = new RagStore(':memory:');
-    expect(store.search('x', 3)).toEqual([]);
+    expect(await store.search('x', 3)).toEqual([]);
     expect(RagStore.toContext([])).toContain('未检索到');
   });
 
-  it('addSource 增量追加并重索引，status 片段数增加', () => {
+  it('addSource 增量追加并重索引，status 片段数增加', async () => {
     const store = new RagStore(':memory:');
     store.setSources([join(dir, 'a.txt')]);
-    store.reindex();
+    await store.reindex();
     const before = store.status().chunks;
-    const { docs, chunks } = store.addSource(join(dir, 'b.txt'));
+    const { docs, chunks } = await store.addSource(join(dir, 'b.txt'));
     expect(docs).toBe(2);
     expect(chunks).toBeGreaterThan(before);
     expect(store.getSources()).toEqual([join(dir, 'a.txt'), join(dir, 'b.txt')]);
   });
 
-  it('threshold 抬高后候选减少', () => {
+  it('threshold 抬高后候选减少', async () => {
     const store = new RagStore(':memory:');
     store.setSources([join(dir, 'a.txt'), join(dir, 'b.txt')]);
-    store.reindex();
-    const loose = store.search('ReAct 循环', 5, 0);
-    const strict = store.search('ReAct 循环', 5, 0.999);
+    await store.reindex();
+    const loose = await store.search('ReAct 循环', 5, 0);
+    const strict = await store.search('ReAct 循环', 5, 0.999);
     expect(loose.length).toBeGreaterThanOrEqual(strict.length);
   });
 });
@@ -147,7 +147,7 @@ describe('rag_search 工具经执行器/权限跑通一轮', () => {
   it('Agent 调用 rag_search 并把检索内容回注历史', async () => {
     const store = new RagStore(':memory:');
     store.setSources([join(dir, 'a.txt')]);
-    store.reindex();
+    await store.reindex();
 
     const tools = createToolRegistry();
     tools.registerAll(getRagTools(store));

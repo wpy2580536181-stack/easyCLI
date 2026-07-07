@@ -14,6 +14,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import type { McpServerSpec } from '../core/mcp/client';
+import type { EmbedderConfig, FallbackConfig } from '../config';
 
 /** 配置文件绝对路径（跨平台：~/.config/agent-cli/config.json） */
 export const CONFIG_PATH = join(homedir(), '.config', 'agent-cli', 'config.json');
@@ -27,6 +28,10 @@ export interface UserConfig {
   mcpServers?: McpServerSpec[];
   /** 文件里用数组存，加载时 join(',') 成与 CLI/env 一致的逗号串 */
   ragPaths?: string[];
+  /** Phase 11：fallback 模型配置（可选） */
+  fallback?: FallbackConfig;
+  /** Phase 11：RAG 嵌入器配置（可选，默认手写 TF-IDF） */
+  embedder?: EmbedderConfig;
 }
 
 const mcpServerSchema = z.object({
@@ -43,6 +48,26 @@ const userConfigSchema = z.object({
   model: z.string().optional(),
   mcpServers: z.array(mcpServerSchema).optional(),
   ragPaths: z.array(z.string()).optional(),
+  fallback: z
+    .object({
+      provider: z.string().optional(),
+      baseURL: z.string().optional(),
+      apiKey: z.string().optional(),
+      model: z.string().optional(),
+    })
+    .optional(),
+  embedder: z
+    .union([
+      z.object({ type: z.literal('tfidf') }),
+      z.object({
+        type: z.literal('api'),
+        baseURL: z.string(),
+        apiKey: z.string(),
+        model: z.string(),
+        dim: z.number().optional(),
+      }),
+    ])
+    .optional(),
 });
 
 /**

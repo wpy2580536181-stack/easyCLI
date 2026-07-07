@@ -28,7 +28,7 @@ export function getRagTools(store: RagStore): ToolDef[] {
         const query = typeof args.query === 'string' ? args.query.trim() : '';
         if (!query) return { ok: false, output: '缺少参数 query' };
         const k = typeof args.k === 'number' ? args.k : 5;
-        const results = store.search(query, k);
+        const results = await store.search(query, k);
         return { ok: true, output: RagStore.toContext(results) };
       },
     },

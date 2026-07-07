@@ -222,13 +222,13 @@ export async function startRepl(
         const [sub, ...rest2] = rest;
         const arg = rest2.join(' ').trim();
         if (sub === 'search' && arg) {
-          const r = ragStore.search(arg, 5);
+          const r = await ragStore.search(arg, 5);
           console_.log(RagStore.toContext(r));
         } else if (sub === 'ingest' && arg) {
-          const { docs, chunks } = ragStore.addSource(arg);
+          const { docs, chunks } = await ragStore.addSource(arg);
           console_.log(chalk.gray(`已增量索引 ${arg}：共 ${docs} 文档 / ${chunks} 片段`));
         } else if (sub === 'reindex') {
-          const { docs, chunks } = ragStore.reindex();
+          const { docs, chunks } = await ragStore.reindex();
           console_.log(chalk.gray(`已重建索引：${docs} 文档 / ${chunks} 片段`));
         } else if (sub === 'status') {
           const s = ragStore.status();

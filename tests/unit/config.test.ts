@@ -163,6 +163,7 @@ describe('Phase 8 配置持久化（store + 文件层）', () => {
       llm: { baseURL: 'https://x', apiKey: 'sk-y', model: 'm' },
       mcpServers: [{ command: 'c' }],
       ragPath: './d',
+      embedder: { type: 'tfidf' },
     });
     expect(uc).toEqual({
       provider: 'openai',

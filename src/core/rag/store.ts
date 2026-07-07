@@ -10,8 +10,9 @@
 import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { tokenize, embed, cosine, computeIdf, EMBED_DIM } from './embed';
+import { tokenize, cosine, computeIdf } from './embed';
 import { chunkText } from './chunk';
+import { HandwrittenEmbedder, type Embedder } from './embedder';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite') as {
@@ -69,8 +70,13 @@ function* walk(dir: string, depth = 0): Generator<string> {
 export class RagStore {
   private readonly db: SqliteDb;
   private sources: string[] = [];
+  /** 可插拔嵌入器——默认手写 TF-IDF，可换 API 嵌入器（Phase 11） */
+  private readonly embedder: Embedder;
+  private readonly dim: number;
 
-  constructor(path: string) {
+  constructor(path: string, embedder?: Embedder) {
+    this.embedder = embedder ?? new HandwrittenEmbedder();
+    this.dim = this.embedder.dim;
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec(
@@ -101,7 +107,7 @@ export class RagStore {
   }
 
   /** 追加一个源并重索引（/rag ingest 用） */
-  addSource(path: string): { docs: number; chunks: number } {
+  async addSource(path: string): Promise<{ docs: number; chunks: number }> {
     if (!this.sources.includes(path)) this.sources.push(path);
     return this.reindex();
   }
@@ -117,7 +123,7 @@ export class RagStore {
   }
 
   /** 把一组源（文件/目录）全量重建索引：分块 → 全局 IDF → 嵌入 → 落库 */
-  reindex(): { docs: number; chunks: number } {
+  async reindex(): Promise<{ docs: number; chunks: number }> {
     this.clear();
     const docs: { source: string; text: string }[] = [];
     for (const src of this.sources) {
@@ -145,25 +151,31 @@ export class RagStore {
       for (const piece of chunkText(d.text)) chunks.push({ source: d.source, text: piece });
     }
 
-    // 2) 全局 IDF（跨所有块统计文档频率 df）
+    // 2) 全局 IDF（跨所有块统计文档频率 df）——手写 TF-IDF 需要；API 嵌入会忽略
     const df = new Map<string, number>();
     const termSets = chunks.map((c) => new Set(tokenize(c.text)));
     for (const set of termSets) for (const t of set) df.set(t, (df.get(t) ?? 0) + 1);
     const idf = computeIdf(df, termSets.length);
 
-    // 3) 写 docs / chunks(含向量) / idf
+    // 3) 嵌入（每条相互独立，可并行；手写实现其实是同步包 Promise，并行退化顺序也无妨）
+    const vectors = await Promise.all(
+      chunks.map((c) => this.embedder.embed(c.text, idf)),
+    );
+
+    // 4) 写 docs / chunks(含向量) / idf
     const insDoc = this.db.prepare('INSERT INTO rag_docs (source, title, ctime) VALUES (?, ?, ?)');
     const insChunk = this.db.prepare(
       'INSERT INTO rag_chunks (doc_id, idx, source, text, vec) VALUES (?, ?, ?, ?, ?)',
     );
     const insIdf = this.db.prepare('INSERT OR REPLACE INTO rag_idf (term, val) VALUES (?, ?)');
 
+    let cursor = 0;
     for (const d of docs) {
       const res = insDoc.run(d.source, d.source.split('/').pop() ?? d.source, new Date().toISOString());
       const docId = Number(res.lastInsertRowid);
       const pieces = chunkText(d.text);
       for (let i = 0; i < pieces.length; i++) {
-        const vec = embed(tokenize(pieces[i]!), idf);
+        const vec = vectors[cursor++]!;
         insChunk.run(docId, i, d.source, pieces[i]!, vecToBuffer(vec));
       }
     }
@@ -185,8 +197,8 @@ export class RagStore {
    * @param k     返回条数，默认 5
    * @param threshold 余弦阈值（默认 0，即返回所有候选里最高的 k 条）
    */
-  search(query: string, k = 5, threshold = 0): RagChunk[] {
-    const qVec = embed(tokenize(query), this.loadIdf());
+  async search(query: string, k = 5, threshold = 0): Promise<RagChunk[]> {
+    const qVec = await this.embedder.embed(query, this.loadIdf());
     const rows = this.db
       .prepare('SELECT id, source, text, vec FROM rag_chunks')
       .all() as { id: number; source: string; text: string; vec: Uint8Array | Buffer }[];
@@ -210,6 +222,6 @@ export class RagStore {
   status(): RagStatus {
     const docs = (this.db.prepare('SELECT COUNT(*) AS n FROM rag_docs').all() as { n: number }[])[0]!.n;
     const chunks = (this.db.prepare('SELECT COUNT(*) AS n FROM rag_chunks').all() as { n: number }[])[0]!.n;
-    return { docs, chunks, dim: EMBED_DIM };
+    return { docs, chunks, dim: this.dim };
   }
 }

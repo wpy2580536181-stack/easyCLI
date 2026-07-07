@@ -12,6 +12,9 @@
 
 export const EMBED_DIM = 1024;
 
+/** 向量类型别名（Float32Array），让「嵌入向量」在签名里语义更清晰 */
+export type Embedding = Float32Array;
+
 /** FNV-1a 32 位哈希（稳定、分布均匀） */
 function hash32(s: string): number {
   let h = 0x811c9dc5;

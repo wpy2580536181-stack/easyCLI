@@ -20,6 +20,7 @@ import { getMemoryTools } from '../core/memory/tools';
 import { connectMcpServers, type McpClient } from '../core/mcp/client';
 import { RagStore } from '../core/rag/store';
 import { getRagTools } from '../core/rag/tools';
+import { createEmbedder } from '../core/rag/embedder';
 import { SkillLoader, getSkillTools, type SkillSource } from '../core/skill';
 import type { CompressOptions } from '../core/memory/compressor';
 import { runOnce, startRepl } from './repl';
@@ -36,6 +37,8 @@ program
   .option('--api-key <key>', 'API key')
   .option('--mcp <json>', 'MCP 服务器规格（JSON 数组），如 \'[{"command":"node","args":["srv.mjs"]}]\'')
   .option('--rag <paths>', 'RAG 语料路径（文件或目录，逗号分隔）')
+  .option('--embedder <json>', 'RAG 嵌入器配置 JSON，如 \'{"type":"api","baseURL":"...","apiKey":"...","model":"text-embedding-3-small"}\'（默认手写 TF-IDF）')
+  .option('--fallback <json>', 'fallback 模型配置 JSON，如 \'{"provider":"openai","model":"gpt-4o"}\'（主模型失败时自动降级）')
   .option('--save-config', '把本次生效配置写入 ~/.config/agent-cli/config.json（持久化）')
   .option('--resume', '恢复上次自动保存的会话（跨会话继续）')
   .action(async () => {
@@ -50,6 +53,8 @@ program
         apiKey: opts.apiKey,
         mcp: opts.mcp,
         rag: opts.rag,
+        embedder: opts.embedder,
+        fallback: opts.fallback,
       },
       fileCfg,
     );
@@ -72,10 +77,11 @@ program
       .map((s) => s.trim())
       .filter(Boolean);
     if (ragSources.length > 0) {
-      ragStore = new RagStore(join(homedir(), '.config', 'agent-cli', 'rag.db'));
+      const embedder = createEmbedder(config.embedder ?? { type: 'tfidf' });
+      ragStore = new RagStore(join(homedir(), '.config', 'agent-cli', 'rag.db'), embedder);
       ragStore.setSources(ragSources);
       if (ragStore.status().chunks === 0) {
-        const { docs, chunks } = ragStore.reindex();
+        const { docs, chunks } = await ragStore.reindex();
         console.log(`[RAG] 已索引 ${docs} 个文档 / ${chunks} 个片段`);
       }
       tools.registerAll(getRagTools(ragStore));

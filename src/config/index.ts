@@ -5,12 +5,24 @@
 // 这样设计：用户设一次 config.json 即长期生效，但单次运行仍可用 --model 等旗标临时改写。
 
 import type { McpServerSpec } from '../core/mcp/client';
+import type { EmbedderConfig } from '../core/rag/embedder';
 import { loadUserConfig, saveUserConfig, maskSecret, CONFIG_PATH, type UserConfig } from './store';
+
+// 供 store.ts / 上层一处引入嵌入器配置类型
+export type { EmbedderConfig };
 
 export interface LlmConfig {
   baseURL: string;
   apiKey: string;
   model: string;
+}
+
+/** fallback 模型配置（决策 10：主模型失败自动切换备用） */
+export interface FallbackConfig {
+  provider?: string;
+  baseURL?: string;
+  apiKey?: string;
+  model?: string;
 }
 
 export interface AppConfig {
@@ -20,6 +32,10 @@ export interface AppConfig {
   mcpServers: McpServerSpec[];
   /** Phase 6：RAG 语料源（文件/目录，逗号分隔），可为空 */
   ragPath: string;
+  /** Phase 11：fallback 模型（可选）；配置且含 model 时启用降级 */
+  fallback?: FallbackConfig;
+  /** Phase 11：RAG 嵌入器配置；默认手写 TF-IDF（离线） */
+  embedder: EmbedderConfig;
 }
 
 export interface ConfigOverrides {
@@ -31,6 +47,10 @@ export interface ConfigOverrides {
   mcp?: string;
   /** CLI 直接传入的 RAG 语料路径（逗号分隔），优先级高于 env */
   rag?: string;
+  /** CLI 直接传入的 fallback 配置（JSON 字符串），优先级高于 env/file */
+  fallback?: string;
+  /** CLI 直接传入的 embedder 配置（JSON 字符串），优先级高于 env/file */
+  embedder?: string;
 }
 
 /**
@@ -43,6 +63,17 @@ function firstNonEmpty(def: string, ...cands: (string | undefined)[]): string {
     if (c !== undefined && c !== '') return c;
   }
   return def;
+}
+
+/** 解析 JSON 对象（CLI/env 传来的配置片段）：非法时回退 undefined（不阻断启动） */
+function parseJsonObject<T extends object>(raw: string | undefined): T | undefined {
+  if (!raw) return undefined;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === 'object' ? (v as T) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** 解析 MCP 服务器规格：接受 JSON 字符串，非法时回退空数组（不阻断主流程） */
@@ -111,11 +142,33 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
   const ragFromFile = file?.ragPaths?.join(',') ?? '';
   const ragPath = ragFromCli || ragFromEnv || ragFromFile || '';
 
+  // Phase 11：fallback 模型（决策 10）。优先级：CLI > env > file；缺 model 视为未配置。
+  // 未显式给的字段（provider/baseURL/apiKey）回退到主模型对应值，让「只换 model」成为常见用法。
+  const fbCli = parseJsonObject<FallbackConfig>(overrides.fallback);
+  const fbEnv = parseJsonObject<FallbackConfig>(process.env.AGENTCLI_FALLBACK);
+  const fbSrc = fbCli ?? fbEnv ?? file?.fallback;
+  const fallback: FallbackConfig | undefined = fbSrc
+    ? {
+        provider: fbSrc.provider ?? provider,
+        baseURL: fbSrc.baseURL ?? baseURL,
+        apiKey: fbSrc.apiKey ?? apiKey,
+        model: fbSrc.model ?? '',
+      }
+    : undefined;
+  const fallbackFinal = fallback && fallback.model ? fallback : undefined;
+
+  // Phase 11：嵌入器（手写 TF-IDF / API）。优先级：CLI > env > file > 默认 tfidf（离线零依赖）。
+  const embCli = parseJsonObject<EmbedderConfig>(overrides.embedder);
+  const embEnv = parseJsonObject<EmbedderConfig>(process.env.AGENTCLI_EMBEDDER);
+  const embedder: EmbedderConfig = embCli ?? embEnv ?? file?.embedder ?? { type: 'tfidf' };
+
   return {
     provider,
     llm: { baseURL, apiKey, model },
     mcpServers,
     ragPath,
+    fallback: fallbackFinal,
+    embedder,
   };
 }
 
@@ -131,6 +184,9 @@ export function appConfigToUserConfig(cfg: AppConfig): UserConfig {
   if (cfg.llm.model) out.model = cfg.llm.model;
   if (cfg.mcpServers.length) out.mcpServers = cfg.mcpServers;
   if (cfg.ragPath) out.ragPaths = cfg.ragPath.split(',').map((s) => s.trim()).filter(Boolean);
+  if (cfg.fallback && cfg.fallback.model) out.fallback = cfg.fallback;
+  // 手写 TF-IDF 是默认值，无需落盘；只有切换到 API 嵌入器时才持久化，避免冗余配置
+  if (cfg.embedder && cfg.embedder.type !== 'tfidf') out.embedder = cfg.embedder;
   return out;
 }
 
