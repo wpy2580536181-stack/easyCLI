@@ -5,9 +5,10 @@ import { type AppConfig, saveUserConfig, appConfigToUserConfig, maskSecret, CONF
 import type { ToolRegistry } from '../core/tools/registry';
 import type { PermissionManager, Decision, Resolver } from '../core/security/permission';
 import type { EventBus } from '../core/events/bus';
-import type { CompressOptions } from '../core/memory/compressor';
+import { compressHistory, type CompressOptions } from '../core/memory/compressor';
 import { RagStore } from '../core/rag/store';
 import { SkillLoader } from '../core/skill';
+import { SessionStore, extractConversation, withSystem, AUTOSAVE_NAME } from '../core/session/store';
 import { runAgent } from '../core/agent';
 import { StreamRenderer } from './renderer';
 
@@ -79,6 +80,7 @@ export async function startRepl(
   compress?: CompressOptions,
   ragStore?: RagStore | null,
   skillLoader?: SkillLoader | null,
+  resume?: boolean,
 ): Promise<void> {
   const console_ = console;
   console_.log(
@@ -99,12 +101,33 @@ export async function startRepl(
   const history: ChatMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT + (skillLoader?.menuText() ? '\n\n' + skillLoader.menuText()! : '') },
   ];
+  // Phase 9：会话存储 + 跨会话恢复。每轮结束自动写 autosave，--resume 时恢复。
+  const sessionStore = new SessionStore();
+  if (resume && sessionStore.exists(AUTOSAVE_NAME)) {
+    const loaded = sessionStore.load(AUTOSAVE_NAME);
+    if (loaded) {
+      const systemContent = typeof history[0]?.content === 'string' ? history[0].content : '';
+      history.length = 0;
+      history.push(...withSystem(loaded, systemContent));
+      console_.log(chalk.gray(`⟳ 已从自动保存的会话恢复（${loaded.length} 条消息）`));
+    }
+  }
   const abort = new AbortController();
   rl.on('SIGINT', () => abort.abort());
   const resolver = makeResolver(rl, permission);
   // 把交互式 HITL 提示器注入权限管理器，执行器在 ask 决策时回调它
   permission.setResolver(resolver);
   let busy = false;
+
+  async function persistAutosave(): Promise<void> {
+    // 每轮结束把当前对话（不含 system）压缩后写入 autosave，供 --resume 恢复。
+    // 失败不应打断用户，故吞掉异常。
+    try {
+      await sessionStore.save(AUTOSAVE_NAME, extractConversation(history), compress);
+    } catch {
+      /* 自动保存失败静默忽略 */
+    }
+  }
 
   function runTurn(): Promise<void> {
     const r = new StreamRenderer(chalk.green);
@@ -120,7 +143,11 @@ export async function startRepl(
       onToolCall: (call) => r.status(`🔧 调用工具 ${call.name}`),
       onToolResult: (call, res) => r.status(`${res.ok ? '✓' : '✗'} ${call.name}`),
       onCompact: (info) => r.status(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
-    }).then(() => r.newline());
+    })
+      .then(() => r.newline())
+      .then(() => {
+        void persistAutosave();
+      });
   }
 
   async function handleSlash(cmd: string): Promise<'exit' | 'continue'> {
@@ -219,6 +246,70 @@ export async function startRepl(
         }
         return 'continue';
       }
+      case 'save': {
+        const sname = rest[0]?.trim() || 'default';
+        await sessionStore.save(sname, extractConversation(history), compress);
+        console_.log(chalk.gray(`已保存会话「${sname}」（${history.length - 1} 条消息）`));
+        return 'continue';
+      }
+      case 'load': {
+        const sname = rest[0]?.trim() || 'default';
+        const loaded = sessionStore.load(sname);
+        if (!loaded) {
+          console_.log(chalk.yellow(`未找到会话: ${sname}`));
+          return 'continue';
+        }
+        const systemContent = typeof history[0]?.content === 'string' ? history[0].content : '';
+        history.length = 0;
+        history.push(...withSystem(loaded, systemContent));
+        console_.log(chalk.gray(`已载入会话「${sname}」（${loaded.length} 条消息）`));
+        return 'continue';
+      }
+      case 'sessions': {
+        const list = sessionStore.list();
+        if (list.length === 0) {
+          console_.log(chalk.gray('（当前无已保存会话）'));
+        } else {
+          for (const s of list) {
+            console_.log(
+              chalk.gray(`- ${s.name} ：${s.messageCount} 条消息，更新于 ${new Date(s.updatedAt).toLocaleString()}`),
+            );
+          }
+        }
+        return 'continue';
+      }
+      case 'session': {
+        const sname = rest[0]?.trim();
+        if (!sname) {
+          console_.log(chalk.yellow('用法: /session <会话名>'));
+          return 'continue';
+        }
+        const loaded = sessionStore.load(sname);
+        if (!loaded) {
+          console_.log(chalk.yellow(`未找到会话: ${sname}`));
+          return 'continue';
+        }
+        console_.log(chalk.bold(`会话「${sname}」（${loaded.length} 条）预览：`));
+        for (const m of loaded) {
+          const full =
+            typeof m.content === 'string'
+              ? m.content
+              : m.content.map((b) => (b.type === 'text' ? b.text : `[${b.type}]`)).join('');
+          const preview = full.slice(0, 200);
+          console_.log(chalk.gray(`  [${m.role}] ${preview}${full.length > 200 ? '…' : ''}`));
+        }
+        return 'continue';
+      }
+      case 'rm': {
+        const sname = rest[0]?.trim();
+        if (!sname) {
+          console_.log(chalk.yellow('用法: /rm <会话名>'));
+          return 'continue';
+        }
+        const ok = sessionStore.remove(sname);
+        console_.log(ok ? chalk.gray(`已删除会话「${sname}」`) : chalk.yellow(`未找到会话: ${sname}`));
+        return 'continue';
+      }
       case 'help':
         printHelp();
         return 'continue';
@@ -239,7 +330,8 @@ export async function startRepl(
     }
   }
 
-  async function processLine(input: string): Promise<'exit' | 'continue'> {
+  /** 处理一条输入：slash 走命令，普通文本入 history 并跑一轮 */
+  async function processInput(input: string): Promise<'exit' | 'continue'> {
     if (input.startsWith('/')) return handleSlash(input);
     history.push({ role: 'user', content: input });
     process.stdout.write(chalk.green('\n助手 › '));
@@ -247,21 +339,34 @@ export async function startRepl(
     return 'continue';
   }
 
-  rl.on('line', async (line) => {
-    if (busy) return;
+  // 输入队列：模型生成期间到达的输入（管道/多行粘贴）不丢弃，排队等本轮结束再顺序处理。
+  // 旧实现用 `if (busy) return` 直接丢弃，会在管道场景丢命令——这里是修正。
+  const pending: string[] = [];
+  rl.on('line', (line) => {
     const input = line.trim();
     if (!input) {
       rl.prompt();
       return;
     }
-    busy = true;
-    let exited = false;
-    try {
-      exited = (await processLine(input)) === 'exit';
-    } finally {
-      busy = false;
-      if (!exited) rl.prompt();
+    if (busy) {
+      pending.push(input);
+      return;
     }
+    busy = true;
+    void (async () => {
+      let exited = false;
+      try {
+        exited = (await processInput(input)) === 'exit';
+        // 排空排队输入（退出则停止）
+        while (!exited && pending.length) {
+          const next = pending.shift()!;
+          exited = (await processInput(next)) === 'exit';
+        }
+      } finally {
+        busy = false;
+        if (!exited) rl.prompt();
+      }
+    })();
   });
 
   rl.prompt();
@@ -280,6 +385,11 @@ function printHelp(): void {
       '  /skill <name>      查看某技能的完整指令',
       '  /perm              显示当前权限允许/拒绝列表',
       '  /config            查看当前生效配置（密钥打码）；/config save 持久化',
+      '  /save [名称]       保存当前会话（默认名 default）',
+      '  /load [名称]       载入已保存会话（默认名 default）',
+      '  /sessions          列出所有已保存会话',
+      '  /session <名称>    预览某会话内容',
+      '  /rm <名称>         删除某会话',
       '  /prompt <文本>     单次提问（不进入多轮）',
       '  /exit, /quit       退出',
       '',

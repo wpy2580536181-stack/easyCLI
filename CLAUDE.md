@@ -112,7 +112,7 @@ pnpm typecheck      # tsc --noEmit
 | 6 | RAG（检索增强生成，纯手写嵌入 + SQLite 向量检索） | ✅ 已完成 |
 | 7 | Skill 系统（三层加载 + **渐进式披露**保护 cache） | ✅ 已完成 |
 | 8 | **模型配置持久化**（`~/.config/agent-cli/config.json`：provider/model/默认参数/默认 MCP·RAG 源；文件为「持久化默认」层：CLI > 环境变量 > 文件 > 默认值） | ✅ 已完成 |
-| 9 | **会话持久化（Session）**：对话历史落盘（复用压缩+记忆存储模式），`/save` `/load`、跨会话恢复、历史浏览 | 待做 |
+| 9 | **会话持久化（Session）**：对话历史落盘（复用压缩+记忆存储模式），`/save` `/load`、跨会话恢复、历史浏览 | ✅ 已完成 |
 | 10 | **REPL 体验打磨**：跨会话命令历史文件、多行粘贴输入、基础补全、更顺滑的流式渲染 | 待做 |
 | 11 | **多模型适配补全**：Anthropic/Ollama 适配器 + **fallback model 降级**；把 Phase 6 的 `embed()` 抽象为可插拔接口（手写/API 双实现） | 待做 |
 | 12 | **MCP Server**（与 Phase 5 客户端对端；暴露 tools/resources，可选 Streamable HTTP 传输） | 待做 |

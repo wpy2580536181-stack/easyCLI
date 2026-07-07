@@ -37,8 +37,9 @@ program
   .option('--mcp <json>', 'MCP 服务器规格（JSON 数组），如 \'[{"command":"node","args":["srv.mjs"]}]\'')
   .option('--rag <paths>', 'RAG 语料路径（文件或目录，逗号分隔）')
   .option('--save-config', '把本次生效配置写入 ~/.config/agent-cli/config.json（持久化）')
+  .option('--resume', '恢复上次自动保存的会话（跨会话继续）')
   .action(async () => {
-    const opts = program.opts<ConfigOverrides & { prompt?: string; saveConfig?: boolean }>();
+    const opts = program.opts<ConfigOverrides & { prompt?: string; saveConfig?: boolean; resume?: boolean }>();
     // Phase 8：先读持久化配置（作为「持久化默认」层），再与 CLI/env 合并
     const fileCfg = loadUserConfig();
     const config = loadConfig(
@@ -124,7 +125,7 @@ program
       await runOnce(model, opts.prompt, tools, permission, bus, compress, ragStore, skillLoader);
       await shutdownMcp();
     } else {
-      await startRepl(config, model, tools, permission, bus, compress, ragStore, skillLoader);
+      await startRepl(config, model, tools, permission, bus, compress, ragStore, skillLoader, opts.resume);
       await shutdownMcp();
     }
   });
