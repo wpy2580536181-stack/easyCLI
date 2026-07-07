@@ -49,6 +49,9 @@ export class OpenAICompatibleAdapter implements ChatModel {
       ...(opts.tools && opts.tools.length > 0
         ? { tools: opts.tools.map(toOpenAITool) }
         : {}),
+      // 请求真实 token 用量（OpenAI 流式默认不回报，需显式开启）。
+      // 绝大多数 OpenAI 兼容服务忽略未知字段，无需担心兼容性。
+      stream_options: { include_usage: true },
       ...this.config.extraBody,
     };
 
@@ -78,6 +81,7 @@ export class OpenAICompatibleAdapter implements ChatModel {
     const decoder = new TextDecoder();
     let buffer = '';
     let content = '';
+    let lastUsage: any;
     const toolCalls = new Map<number, StreamToolCall>();
 
     for (;;) {
@@ -100,6 +104,9 @@ export class OpenAICompatibleAdapter implements ChatModel {
         } catch {
           continue; // 跳过非 JSON 行（注释/心跳）
         }
+
+        // 真实用量通常在 [DONE] 前的最后一个分片回报（choices 可能为空），先记下
+        if (json?.usage) lastUsage = json.usage;
 
         const delta = json?.choices?.[0]?.delta;
         if (!delta) continue;
@@ -140,7 +147,20 @@ export class OpenAICompatibleAdapter implements ChatModel {
       parsedToolCalls.push({ id: entry.id ?? '', name: entry.name ?? '', arguments: args });
     }
 
-    return { content, toolCalls: parsedToolCalls, raw: undefined };
+    // 翻译真实用量（仅当流式回报了 usage 时存在；否则由上层估算）
+    const usage = lastUsage
+      ? {
+          promptTokens: Number(lastUsage.prompt_tokens ?? 0),
+          completionTokens: Number(lastUsage.completion_tokens ?? 0),
+          totalTokens: Number(lastUsage.total_tokens ?? 0),
+        }
+      : undefined;
+    return {
+      content,
+      toolCalls: parsedToolCalls,
+      raw: undefined,
+      ...(usage ? { usage } : {}),
+    };
   }
 }
 

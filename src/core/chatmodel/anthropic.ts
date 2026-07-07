@@ -94,6 +94,8 @@ export class AnthropicAdapter implements ChatModel {
     let buffer = '';
     let dataBuf = '';
     let content = '';
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
     const toolCalls = new Map<number, StreamToolCall>();
 
     const dispatch = (): void => {
@@ -108,6 +110,18 @@ export class AnthropicAdapter implements ChatModel {
       }
 
       switch (json.type) {
+        case 'message_start': {
+          // input_tokens 在 message_start 的 usage 里（含 cache 命中/创建）
+          const it = json?.message?.usage?.input_tokens;
+          if (typeof it === 'number') inputTokens = it;
+          break;
+        }
+        case 'message_delta': {
+          // output_tokens 在 message_delta 的 usage 里
+          const ot = json?.usage?.output_tokens;
+          if (typeof ot === 'number') outputTokens = ot;
+          break;
+        }
         case 'content_block_start': {
           // 工具调用开始：记下 id 与 name
           const cb = json.content_block;
@@ -170,7 +184,21 @@ export class AnthropicAdapter implements ChatModel {
       parsedToolCalls.push({ id: entry.id ?? '', name: entry.name ?? '', arguments: args });
     }
 
-    return { content, toolCalls: parsedToolCalls, raw: undefined };
+    // 翻译真实用量（message_start 给 input，message_delta 给 output；任一存在即记录）
+    const usage =
+      inputTokens != null || outputTokens != null
+        ? {
+            promptTokens: inputTokens ?? 0,
+            completionTokens: outputTokens ?? 0,
+            totalTokens: (inputTokens ?? 0) + (outputTokens ?? 0),
+          }
+        : undefined;
+    return {
+      content,
+      toolCalls: parsedToolCalls,
+      raw: undefined,
+      ...(usage ? { usage } : {}),
+    };
   }
 }
 

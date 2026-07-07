@@ -11,6 +11,7 @@ import { SkillLoader } from '../core/skill';
 import { SessionStore, extractConversation, withSystem, AUTOSAVE_NAME } from '../core/session/store';
 import { runAgent } from '../core/agent';
 import { buildAgentSystemPrompt } from '../core/prompts';
+import { formatSnapshot, formatTokens, formatUSD, type CostTracker, type TrackerSnapshot } from '../core/observability';
 import { StreamRenderer } from './renderer';
 import { HistoryStore } from './history';
 import { completeLine, SLASH_COMMANDS } from './completer';
@@ -45,6 +46,7 @@ export async function runOnce(
   tools: ToolRegistry,
   permission: PermissionManager,
   bus: EventBus,
+  tracker: CostTracker,
   compress?: CompressOptions,
   ragStore?: RagStore | null,
   skillLoader?: SkillLoader | null,
@@ -72,6 +74,8 @@ export async function runOnce(
       renderer.status(`${res.ok ? '✓' : '✗'} ${call.name} 返回 ${String(res.output).length} 字符`),
   });
   renderer.newline();
+  // Phase 14：打印本次会话总成本（单次模式，单轮即累计）
+  console.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
 }
 
 export async function startRepl(
@@ -80,6 +84,7 @@ export async function startRepl(
   tools: ToolRegistry,
   permission: PermissionManager,
   bus: EventBus,
+  tracker: CostTracker,
   compress?: CompressOptions,
   ragStore?: RagStore | null,
   skillLoader?: SkillLoader | null,
@@ -156,6 +161,7 @@ export async function startRepl(
 
   function runTurn(): Promise<void> {
     const r = new StreamRenderer(chalk.green);
+    tracker.beginTurn();
     return runAgent(history, {
       model,
       tools,
@@ -172,6 +178,8 @@ export async function startRepl(
       .then(() => r.newline())
       .then(() => {
         void persistAutosave();
+        // Phase 14：每轮结束展示本轮 + 累计成本
+        console_.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
       });
   }
 
@@ -191,6 +199,23 @@ export async function startRepl(
       case 'tools':
         console_.log(chalk.gray(`已注册工具: ${tools.list().map((t) => t.name).join(', ')}`));
         return 'continue';
+      case 'cost': {
+        // Phase 14：详细展示本次会话的用量与成本
+        const s = tracker.snapshot();
+        const est = s.estimated ? chalk.yellow(' （含估算值）') : '';
+        console_.log(chalk.bold('本次会话用量与成本：') + est);
+        console_.log(chalk.gray(`  模型调用 : ${s.calls} 次`));
+        console_.log(chalk.gray(`  Prompt   : ~${formatTokens(s.promptTokens)} token`));
+        console_.log(chalk.gray(`  Completion: ~${formatTokens(s.completionTokens)} token`));
+        console_.log(chalk.gray(`  合计     : ~${formatTokens(s.totalTokens)} token`));
+        console_.log(chalk.gray(`  成本     : ${formatUSD(s.cost)}`));
+        const extras: string[] = [];
+        if (s.compressions)
+          extras.push(`压缩 ${s.compressions} 次 / 省 ~${formatTokens(s.tokensSavedByCompact)} tok`);
+        if (s.retrievals) extras.push(`检索 ${s.retrievals} 次`);
+        if (extras.length) console_.log(chalk.gray(`  事件     : ${extras.join(' · ')}`));
+        return 'continue';
+      }
       case 'perm':
         console_.log(chalk.gray(`允许: ${permission.getAllow().join(', ') || '(空)'}`));
         console_.log(chalk.gray(`拒绝: ${permission.getDeny().join(', ') || '(空)'}`));
@@ -464,6 +489,7 @@ function printHelp(): void {
       '  /clear             清空对话上下文（保留系统提示）',
       '  /model             显示当前模型',
       '  /tools             显示已注册工具',
+      '  /cost              显示本次会话的用量与成本（Phase 14）',
       '  /rag               知识库：/rag search <q> | ingest <路径> | reindex | status',
       '  /skills            列出已加载技能',
       '  /skill <name>      查看某技能的完整指令',

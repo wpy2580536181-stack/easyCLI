@@ -76,6 +76,13 @@ export interface CompleteOptions {
   maxTokens?: number;
 }
 
+/** 一次模型调用的真实 token 用量（API 在响应里回报；未回报则为 undefined，由上层估算） */
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface CompleteResult {
   /** 拼接后的完整文本 */
   content: string;
@@ -83,6 +90,8 @@ export interface CompleteResult {
   toolCalls: ToolCall[];
   /** 原始响应，便于调试 */
   raw?: unknown;
+  /** 真实 token 用量；仅当适配器从响应解析到用量时存在（否则由上层估算） */
+  usage?: TokenUsage;
 }
 
 /** Provider 无关的模型接口——所有适配器都实现它 */

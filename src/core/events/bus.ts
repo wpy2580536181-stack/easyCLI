@@ -1,5 +1,11 @@
 /** Agent 运行期事件类型，审计/可观测性统一订阅此总线（决策 9） */
-export type AgentEventType = 'tool:call' | 'tool:result' | 'error' | 'turn' | 'compact';
+export type AgentEventType =
+  | 'tool:call'
+  | 'tool:result'
+  | 'error'
+  | 'turn'
+  | 'compact'
+  | 'token';
 
 export interface AgentEvent {
   type: AgentEventType;

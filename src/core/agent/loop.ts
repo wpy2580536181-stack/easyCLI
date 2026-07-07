@@ -10,6 +10,7 @@ import type {
 import type { ToolRegistry } from '../tools/registry';
 import { executeTools } from '../tools/executor';
 import { compressorSystemPrompt } from '../prompts';
+import { estimateMessagesTokens, estimateTokens } from '../observability/tokenizer';
 import type { PermissionManager } from '../security/permission';
 import type { EventBus } from '../events/bus';
 import {
@@ -55,6 +56,45 @@ function defaultSummarizer(model: ChatModel): Summarizer {
       ],
     });
     return r.content ?? '';
+  };
+}
+
+/**
+ * 计算一次模型调用的 token 用量记录：
+ * - 适配器回报了真实 usage → 直接用（estimated=false）；
+ * - 否则用本地轻量估算（CJK 感知，见 observability/tokenizer）。
+ * 返回结构直接作为 `token` 事件载荷发给事件总线。
+ */
+function computeUsage(
+  modelId: string,
+  messages: ChatMessage[],
+  result: CompleteResult,
+): {
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  estimated: boolean;
+} {
+  if (result.usage) {
+    return {
+      model: modelId,
+      promptTokens: result.usage.promptTokens,
+      completionTokens: result.usage.completionTokens,
+      totalTokens: result.usage.totalTokens,
+      estimated: false,
+    };
+  }
+  const promptTokens = estimateMessagesTokens(messages);
+  const completionTokens =
+    estimateTokens(result.content) +
+    result.toolCalls.reduce((s, tc) => s + estimateTokens(JSON.stringify(tc.arguments)), 0);
+  return {
+    model: modelId,
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+    estimated: true,
   };
 }
 
@@ -108,6 +148,10 @@ export async function runAgent(
       if (opts.signal?.aborted) break;
       throw e;
     }
+
+    // 每轮 token 用量：真实优先（适配器回报），否则本地估算 → 发事件给可观测层（决策 9）
+    const usage = computeUsage(opts.model.id, messages, result);
+    opts.bus?.emit({ type: 'token', ...usage });
 
     // 1) 落 assistant 消息：文本与 tool_call 都存成 ContentBlock[]，
     //    保证下一轮模型能看到自己上一轮的工具调用与参数。

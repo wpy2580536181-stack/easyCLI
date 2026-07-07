@@ -24,6 +24,7 @@ import { getRagTools } from '../core/rag/tools';
 import { createEmbedder } from '../core/rag/embedder';
 import { SkillLoader, getSkillTools, type SkillSource } from '../core/skill';
 import type { CompressOptions } from '../core/memory/compressor';
+import { CostTracker } from '../core/observability';
 import { runOnce, startRepl } from './repl';
 
 const program = new Command();
@@ -137,6 +138,9 @@ program
     const permission = new PermissionManager({ registry: tools });
     permission.load(); // 加载已持久化的 allow/deny
     new AuditLogger(join(homedir(), '.config', 'agent-cli', 'audit.jsonl')).attach(bus);
+    // Phase 14：成本/用量追踪器，同样挂在事件总线上统一观测
+    const tracker = new CostTracker();
+    tracker.attach(bus);
 
     // Phase 4：上下文压缩配置（超预算时自动压缩后重试）
     const compress: CompressOptions = {
@@ -151,10 +155,10 @@ program
     process.on('SIGINT', () => void shutdownMcp());
 
     if (opts.prompt) {
-      await runOnce(model, opts.prompt, tools, permission, bus, compress, ragStore, skillLoader);
+      await runOnce(model, opts.prompt, tools, permission, bus, tracker, compress, ragStore, skillLoader);
       await shutdownMcp();
     } else {
-      await startRepl(config, model, tools, permission, bus, compress, ragStore, skillLoader, opts.resume);
+      await startRepl(config, model, tools, permission, bus, tracker, compress, ragStore, skillLoader, opts.resume);
       await shutdownMcp();
     }
   });
