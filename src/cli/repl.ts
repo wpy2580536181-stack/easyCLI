@@ -11,6 +11,11 @@ import { SkillLoader } from '../core/skill';
 import { SessionStore, extractConversation, withSystem, AUTOSAVE_NAME } from '../core/session/store';
 import { runAgent } from '../core/agent';
 import { StreamRenderer } from './renderer';
+import { HistoryStore } from './history';
+import { completeLine, SLASH_COMMANDS } from './completer';
+
+/** 多行粘贴判定的 debounce 窗口：窗口内连续到达的非 slash 行视为同一次粘贴 */
+const PASTE_DEBOUNCE_MS = 12;
 
 const SYSTEM_PROMPT =
   '你是一个运行在终端里的 AI 编程助手，类似 Claude Code。用简洁、准确的中文回答用户的问题；' +
@@ -93,10 +98,26 @@ export async function startRepl(
     );
   }
 
+  const historyStore = new HistoryStore();
+  // 本地维护一份「新 → 旧」历史，用于 Tab 补全与跨会话 ↑/↓。
+  // 注：新版 @types/node 的 readline.Interface 已不直接暴露可读写的 rl.history 属性，
+  // 历史只能经 createInterface 的 history/historySize 选项初始化、由 readline 内部维护，
+  // 故补全所需的「历史句子」我们用本地数组 mirror 一份。
+  const histLines: string[] = historyStore.forReadline();
+  // Phase 10：跨会话命令历史。
+  // historySize>0 启用 readline 内部历史（↑/↓ 可用），初始用历史文件 seed；
+  // 用户输入由 readline 自动记录，我们额外通过 HistoryStore 落盘（去重 + 限长）。
+  // completer：Tab 补全（slash 命令名 / 历史句子）。
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     prompt: chalk.blue('你 › '),
+    history: histLines,
+    historySize: 2000,
+    completer: (line: string) => {
+      const { hits, line: src } = completeLine(line, SLASH_COMMANDS, histLines);
+      return [hits, src] as [string[], string];
+    },
   });
   const history: ChatMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT + (skillLoader?.menuText() ? '\n\n' + skillLoader.menuText()! : '') },
@@ -339,15 +360,16 @@ export async function startRepl(
     return 'continue';
   }
 
-  // 输入队列：模型生成期间到达的输入（管道/多行粘贴）不丢弃，排队等本轮结束再顺序处理。
-  // 旧实现用 `if (busy) return` 直接丢弃，会在管道场景丢命令——这里是修正。
+  // ---- Phase 10：输入处理（多行粘贴缓冲 + 命令历史 + 跨会话队列） ----
+  // busy/pending：模型生成期间到达的输入不丢弃，排队在本轮结束后顺序处理（沿用 Phase 9 修正）。
+  // lineBuf/flushTimer：连续到达的「非 slash」行（通常是一次粘贴）合并为一条消息，
+  //   避免 readline 把多行粘贴拆成 N 条输入；slash 命令则原子逐条处理，保证可管道化、可逐条执行。
   const pending: string[] = [];
-  rl.on('line', (line) => {
-    const input = line.trim();
-    if (!input) {
-      rl.prompt();
-      return;
-    }
+  const lineBuf: string[] = [];
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** 真正的「取一条输入去执行」入口：busy 时排队，否则立即跑 */
+  function dispatch(input: string): void {
     if (busy) {
       pending.push(input);
       return;
@@ -367,6 +389,64 @@ export async function startRepl(
         if (!exited) rl.prompt();
       }
     })();
+  }
+
+  /** 多行缓冲窗口到点：把累积的行合并成一条输入送出 */
+  function flushLines(): void {
+    flushTimer = null;
+    const combined = lineBuf.join('\n');
+    lineBuf.length = 0;
+    if (!combined.trim()) {
+      rl.prompt();
+      return;
+    }
+    recordHistory(combined);
+    dispatch(combined);
+  }
+
+  /** 记一条命令到跨会话历史（去重 + 落盘 + 同步本地历史供 Tab 补全） */
+  function recordHistory(line: string): void {
+    const t = line.trim();
+    if (!t) return;
+    historyStore.add(t);
+    if (histLines[0] !== t) {
+      histLines.unshift(t);
+      if (histLines.length > 2000) histLines.length = 2000;
+    }
+  }
+
+  rl.on('line', (line) => {
+    const input = line.trim();
+    if (!input) {
+      // 空行：若正处于多行粘贴缓冲中，归并入缓冲（代码粘贴常含空行）；否则忽略
+      if (lineBuf.length) {
+        lineBuf.push('');
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = setTimeout(flushLines, PASTE_DEBOUNCE_MS);
+      } else {
+        rl.prompt();
+      }
+      return;
+    }
+    if (input.startsWith('/')) {
+      // slash 命令：原子处理，不进入多行缓冲（保证可管道化、可逐条执行）。
+      // 但若缓冲里还有未触发的多行文本（如「多行提示 + /exit」），先把它作为一条消息送出，
+      // 再处理 slash——否则直接清定时器会丢弃前面的输入。
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (lineBuf.length) {
+        flushLines(); // 清空缓冲并 dispatch 合并文本（可能进入 busy，slash 随后排队）
+      }
+      recordHistory(input);
+      dispatch(input);
+      return;
+    }
+    // 普通文本：进入多行缓冲，短窗内到达的后续行视为同一次粘贴
+    lineBuf.push(line);
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = setTimeout(flushLines, PASTE_DEBOUNCE_MS);
   });
 
   rl.prompt();
@@ -393,6 +473,7 @@ function printHelp(): void {
       '  /prompt <文本>     单次提问（不进入多轮）',
       '  /exit, /quit       退出',
       '',
+      chalk.gray('交互提示：Tab 补全命令 · ↑↓ 翻历史（跨会话持久）· 直接粘贴多行代码作为「一条消息」'),
       chalk.gray('模型可自主调用 read_file / write_file / edit_file / list_dir / glob / grep / bash 完成多步任务。'),
     ].join('\n'),
   );
