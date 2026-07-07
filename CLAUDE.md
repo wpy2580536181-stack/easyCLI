@@ -83,7 +83,7 @@ pnpm typecheck      # tsc --noEmit
 | 1 | 实现语言/技术栈 | TS/Node，纯从零手写；PaiCLI/paicli-ts 仅作参考 |
 | 2 | 模型适配 | 先接 OpenAI 兼容协议；接口设计为 Provider 无关的 `ChatModel` + 首批 `OpenAICompatibleAdapter` |
 | 3 | 模块分期 | 采用修订后 11 期路线（见 §4），全做到底；实现蓝本优先参照 claude-code-from-scratch |
-| 4 | MCP 范围 | 客户端优先、stdio 优先；Server 模式留到第 9 期 |
+| 4 | MCP 范围 | 客户端优先、stdio 优先；Server 模式留到第 12 期 |
 | 5 | 交互/UX | 轻量 `readline`+`chalk` 手写流式 REPL；Claude Code 式三级权限（allow/deny/ask）持久化到 `~/.config/<cli>/settings.json` |
 | 6 | 安全审计 | 核心三道防线（路径围栏+命令黑名单+HITL），前两者为不可关闭硬限制；脱敏/Token 预算延后 |
 
@@ -100,21 +100,27 @@ pnpm typecheck      # tsc --noEmit
 
 ---
 
-## 4. 11 期路线图（每期 = 一个小模块，独立提交+独立测试）
+## 4. 17 期路线图（每期 = 一个小模块，独立提交+独立测试）
 
 | 期 | 模块 | 状态 |
 |---|---|---|
 | 1 | 脚手架 + REPL + 流式对话 + ChatModel/OpenAI 适配器 | ✅ 完成 |
-| 2 | ReAct 循环 + Tool Calling + **最小内置工具**（read_file/bash，循环才非空转） | 待做 |
-| 3 | 内置工具扩展 + 安全围栏（`isReadOnly/isDestructive` 标记；**读并行/写串行**；三级权限+围栏+黑名单+HITL+审计挂事件总线） | 待做 |
+| 2 | ReAct 循环 + Tool Calling + **最小内置工具**（read_file/bash，循环才非空转） | ✅ 完成 |
+| 3 | 内置工具扩展 + 安全围栏（`isReadOnly/isDestructive` 标记；**读并行/写串行**；三级权限+围栏+黑名单+HITL+审计挂事件总线） | ✅ 完成 |
 | 4 | **上下文压缩**（裁剪/去重/折叠/摘要）+ 长期记忆（SQLite） | ✅ 已完成 |
 | 5 | MCP 客户端（stdio，JSON-RPC 连接状态机） | ✅ 已完成 |
-| 6 | RAG | ✅ 已完成 |
+| 6 | RAG（检索增强生成，纯手写嵌入 + SQLite 向量检索） | ✅ 已完成 |
 | 7 | Skill 系统（三层加载 + **渐进式披露**保护 cache） | 待做 |
-| 8 | Multi-Agent（Planner/Worker/Reviewer + **文件隔离 worktree** + 事件总线落地） | 待做 |
-| 9 | MCP Server + 多模型补全（补齐 Anthropic/Ollama 适配器 + **fallback model 降级**） | 待做 |
-| 10 | **Plan 模式 + 异步并行**（与 ReAct 共享同一引擎） | 待做 |
-| 11 | Browser（CDP） | 待做 |
+| 8 | **模型配置持久化**（`~/.config/agent-cli/config.json`：provider/model/默认参数/默认 MCP·RAG 源；文件 > CLI > 环境变量 > 默认） | 待做 |
+| 9 | **会话持久化（Session）**：对话历史落盘（复用压缩+记忆存储模式），`/save` `/load`、跨会话恢复、历史浏览 | 待做 |
+| 10 | **REPL 体验打磨**：跨会话命令历史文件、多行粘贴输入、基础补全、更顺滑的流式渲染 | 待做 |
+| 11 | **多模型适配补全**：Anthropic/Ollama 适配器 + **fallback model 降级**；把 Phase 6 的 `embed()` 抽象为可插拔接口（手写/API 双实现） | 待做 |
+| 12 | **MCP Server**（与 Phase 5 客户端对端；暴露 tools/resources，可选 Streamable HTTP 传输） | 待做 |
+| 13 | **Token / 成本统计与可观测性**：每轮 token 估算、累计成本、压缩/检索事件汇总，挂事件总线统一观测 | 待做 |
+| 14 | **Plan 模式 + 异步并行**（与 ReAct 共享同一引擎；先规划再执行，子任务可并行预执行只读工具） | 待做 |
+| 15 | **记忆与检索自动注入**：把 recall（期4）/ RAG（期6）结果在每轮自动注入上下文，无需模型主动调，提升「上下文智能化」 | 待做 |
+| 16 | Multi-Agent（Planner/Worker/Reviewer + **文件隔离 worktree** + 事件总线落地） | 待做 |
+| 17 | Browser（CDP） | 待做 |
 
 > **贯穿性关注点**（不单独占期，但每期实现时遵守，对应决策 7–10）：① 上下文压缩；② 工具并发模型（只读并行/写串行）；③ 事件总线/钩子（审计与可观测性挂载点）；④ 错误恢复（上下文超限自动压缩、max-tokens 续写、API 错误指数退避、fallback model）。这些在 Phase 1 定义类型、Phase 3 写工具时就要留接口。
 
@@ -138,7 +144,7 @@ src/core/chatmodel/   ChatModel 接口 + 适配器（期1/9）
 src/core/agent/       ReAct 循环（期2，决策核心，不依赖 REPL）
 src/core/events/      事件总线/钩子（决策9，期3落地）
 src/core/tools/       工具系统（期3，含 isReadOnly/isDestructive 标记）
-src/core/mcp/         McpClient（期5）/McpServer（期9）
+src/core/mcp/         McpClient（期5）/McpServer（期12）
 src/core/memory/      上下文压缩 + SQLite 长期记忆（期4）
 src/core/rag/         向量检索（期6）
 src/core/skill/       三层加载 + 渐进式披露（期7）
@@ -209,8 +215,8 @@ flowchart TD
 - **200ms 防抖确认**：HITL 确认框加防抖，防键盘连击误确认。→ 落地期：期3 安全。
 
 ### 8.3 安全（硬核升级方向）
-- **命令 AST 分析**：用 tree-sitter 解析 Shell 真实意图（Claude Code 含 23 项检查：命令注入、环境变量泄露、特殊字符攻击等），而非正则黑名单。本项目 Phase 3 用黑名单（够用但弱），多模型/复杂命令场景应升级为 AST 分析。→ 升级期：期3/期9。
-- **纵深防御层数**：在现有「围栏+黑名单+HITL」之上，未来可加 Sandbox、Hook 校验（允许自动给 `rm` 加 `--dry-run`）、审计日志脱敏。→ 升级期：期3/期9。
+- **命令 AST 分析**：用 tree-sitter 解析 Shell 真实意图（Claude Code 含 23 项检查：命令注入、环境变量泄露、特殊字符攻击等），而非正则黑名单。本项目 Phase 3 用黑名单（够用但弱），多模型/复杂命令场景应升级为 AST 分析。→ 升级期：期3/期11。
+- **纵深防御层数**：在现有「围栏+黑名单+HITL」之上，未来可加 Sandbox、Hook 校验（允许自动给 `rm` 加 `--dry-run`）、审计日志脱敏。→ 升级期：期3/期11。
 
 ### 8.4 错误恢复（「用起来稳」的关键）
 Claude Code 有约 7 种「继续」策略，大部分错误用户无感：
@@ -219,7 +225,7 @@ Claude Code 有约 7 种「继续」策略，大部分错误用户无感：
 - API 错误 → 指数退避
 - 可选 fallback model 切换
 - token 预算不足 → 自动升级预算再试
-→ 落地期：期2（循环骨架）/ 期9（fallback model）。
+→ 落地期：期2（循环骨架）/ 期11（fallback model）。
 
 ### 8.5 对照蓝本
 - **claude-code-from-scratch**（[GitHub](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)）：约 4300 行、13 章 clean-room 教程，从零造受 Claude Code 启发的 Coding Agent。**作为本项目实现的首要对照蓝本**——照着它能少走弯路，但代码仍须自己手写（不 fork）。

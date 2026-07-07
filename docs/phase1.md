@@ -92,7 +92,7 @@ export interface ChatModel {
   ```ts
   switch (config.provider) {
     case 'openai': return new OpenAICompatibleAdapter({ baseURL, apiKey, model });
-    default: throw new Error('未实现的 provider（Claude/Ollama 在第 9 期补齐）');
+    default: throw new Error('未实现的 provider（Claude/Ollama 在第 11 期补齐）');
   }
   ```
 - 这是典型的**策略模式 + 简单工厂**：运行时按配置决定用哪个策略（`ChatModel` 实现），调用方只认接口。
@@ -157,7 +157,7 @@ sequenceDiagram
 
 | 设计决策 | 为什么 | 不这样做会怎样 |
 |---|---|---|
-| **Provider 无关接口 + 适配器** | 把「厂商差异」收敛到一层，未来加 Claude/Ollama 不动上层 | 若到处 `if (provider==='openai')`，第 9 期会爆炸式 if-else |
+| **Provider 无关接口 + 适配器** | 把「厂商差异」收敛到一层，未来加 Claude/Ollama 不动上层 | 若到处 `if (provider==='openai')`，第 11 期会爆炸式 if-else |
 | **手写 SSE 解析，不引官方 SDK** | 本项目目标是学原理；SSE 解析是流式能力的核心，亲手写才真懂 | 用 SDK 一行搞定，但「流式怎么实现的」仍是黑盒 |
 | **轻量 `readline` + `chalk`，不套 TUI 框架** | 流式渲染、光标控制本就是学习点；少依赖=可控 | ink/blessed 把渲染封装掉，反而学不到 |
 | **配置三层合并 + 空串回退** | 同时支持「命令行临时试」「环境变量持久用」「开箱默认值」 | 只靠 env 不够灵活，只靠默认值不能切换模型 |
@@ -235,7 +235,7 @@ sequenceDiagram
 
 ## 10. 自测题（检验是否真懂）
 
-1. 为什么 `ChatModel` 要设计成接口而不是一个固定的 `callOpenAI()` 函数？如果第 9 期要接 Claude，需要改 REPL 吗？
+1. 为什么 `ChatModel` 要设计成接口而不是一个固定的 `callOpenAI()` 函数？如果第 11 期要接 Claude，需要改 REPL 吗？
 2. SSE 的帧是怎么分隔的？如果一次 `read()` 拿到半个帧，应该怎么处理？
 3. `tool_calls` 流式下为什么不能每帧直接 `JSON.parse(arguments)`？
 4. 配置合并里 `process.env.AGENTCLI_API_KEY ?? process.env.OPENAI_API_KEY ?? ''` 有什么隐患？正确写法是什么？

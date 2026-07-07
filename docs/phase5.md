@@ -16,7 +16,7 @@
 | 10 | Plan 模式 + 异步并行 | 待做 |
 | 11 | Browser（CDP） | 待做 |
 
-本期把「工具」的边界从进程内扩展到**另一个进程（MCP Server）**：Agent 的模型侧完全无感——MCP 工具被归一化成与普通内置工具完全相同的 `ToolDef`，复用同一套执行器、三级权限、审计与事件总线。**这也是为第 9 期写 MCP Server 打基础**：先把协议客户端吃透，再反过来理解 Server 该回什么。
+本期把「工具」的边界从进程内扩展到**另一个进程（MCP Server）**：Agent 的模型侧完全无感——MCP 工具被归一化成与普通内置工具完全相同的 `ToolDef`，复用同一套执行器、三级权限、审计与事件总线。**这也是为第 12 期写 MCP Server 打基础**：先把协议客户端吃透，再反过来理解 Server 该回什么。
 
 ---
 
@@ -107,7 +107,7 @@ flowchart LR
 | 决策点 | 选择 | 反方案 | 取舍理由 |
 |---|---|---|---|
 | 手写 vs 官方 SDK | **纯手写**（CLAUDE.md 硬约束） | `@modelcontextprotocol/sdk` | 项目目标是吃透协议原理，SDK 会把 JSON-RPC/状态机封装成黑盒；手写 250 行反而把「请求-响应配对、超时、状态机」讲透 |
-| 传输方式 | **stdio** | HTTP/SSE | 第 9 期前只做客户端且 stdio 优先（决策 4）；stdio 进程隔离最好、零网络配置 |
+| 传输方式 | **stdio** | HTTP/SSE | 第 12 期前只做客户端且 stdio 优先（决策 4）；stdio 进程隔离最好、零网络配置 |
 | 消息分隔 | **换行分隔 JSON** | `Content-Length` 头 | stdio 场景下一行一条足够简单，且便于测试桩用 `console.log` 直接输出 |
 | `isReadOnly` 缺省 | **false（保守）** | 默认 true | MCP Server 能力未知，按「写/危险」处理 → 默认走 `ask` 权限，安全优先；Server 用 `annotations.readOnlyHint` 声明只读可放开 |
 | 单 Server 失败 | **容错跳过，不阻断主流程** | 任一失败即整体崩溃 | 多 Server 场景下一个挂了不应拖垮 CLI（`connectMcpServers` 逐个 try/catch） |
@@ -192,7 +192,7 @@ flowchart LR
    `connect` 里若先 `request` 后 `on('data')`，首条 `initialize` 的响应可能在监听器挂上前到达而丢失。顺序改为：先 `stdout.on('data', ...)`，再发请求。
 
 6. **`isReadOnly` 缺省 false 的双刃剑**
-   好处是安全默认（默认 `ask`）；代价是 `runOnce` 无 HITL resolver 时 MCP 工具会被拒。真机验证时我用了 `defaultForAsk:'allow'` 的权限管理器来模拟「用户已预批准」——这也提示第 9 期做 MCP Server 时，对可信 Server 可以考虑更宽松的默认策略。
+   好处是安全默认（默认 `ask`）；代价是 `runOnce` 无 HITL resolver 时 MCP 工具会被拒。真机验证时我用了 `defaultForAsk:'allow'` 的权限管理器来模拟「用户已预批准」——这也提示第 12 期做 MCP Server 时，对可信 Server 可以考虑更宽松的默认策略。
 
 7. **ESLint 缺配置文件**（项目既有问题，非本期引入）：仓库没有 `eslint.config.js`，`pnpm lint` 直接报错。本期未新增 lint 配置（保持改动聚焦），但 `tsc --noEmit` 严格模式已覆盖类型正确性。
 
@@ -221,8 +221,8 @@ flowchart LR
 
 ## 11. 延伸与下一步
 
-- **第 9 期 MCP Server**：本期是客户端，Server 端要回 `initialize`/`tools/list`/`tools/call`——正好把本期发的请求当成「Server 该回什么」的测试基准（我们的 `fake-mcp-server.mjs` 其实就是最小 Server 雏形）。
-- **更多传输**：本期只做 stdio；HTTP+SSE（Streamable HTTP）是第 9 期的扩展方向，传输层可抽象成接口，stdio/HTTP 可插拔。
+- **第 12 期 MCP Server**：本期是客户端，Server 端要回 `initialize`/`tools/list`/`tools/call`——正好把本期发的请求当成「Server 该回什么」的测试基准（我们的 `fake-mcp-server.mjs` 其实就是最小 Server 雏形）。
+- **更多传输**：本期只做 stdio；HTTP+SSE（Streamable HTTP）是第 12 期的扩展方向，传输层可抽象成接口，stdio/HTTP 可插拔。
 - **进度通知 / 取消**：真实 MCP 支持 `notifications/progress` 与 `cancelled` 通知；本期只消费请求-响应，服务端通知被忽略——可作为健壮性增强。
 - **MCP 资源与 Prompt**：本期只接 `tools` 能力；MCP 还有 `resources`/`prompts` 能力，对应 RAG（第 6 期）与 Skill（第 7 期）的天然接入点。
 - **安全增强**：对不可信 Server 可加「MCP 工具白名单」与 `annotations` 审计，进一步收紧默认 `ask` 策略。
