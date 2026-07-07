@@ -7,13 +7,15 @@ import type { PermissionManager, Decision, Resolver } from '../core/security/per
 import type { EventBus } from '../core/events/bus';
 import type { CompressOptions } from '../core/memory/compressor';
 import { RagStore } from '../core/rag/store';
+import { SkillLoader } from '../core/skill';
 import { runAgent } from '../core/agent';
 import { StreamRenderer } from './renderer';
 
 const SYSTEM_PROMPT =
   '你是一个运行在终端里的 AI 编程助手，类似 Claude Code。用简洁、准确的中文回答用户的问题；' +
   '需要操作文件或执行命令时，优先调用工具：read_file / write_file / edit_file / list_dir / glob / grep / bash。' +
-  '若已提供 rag_search 工具（本地知识库语义检索），在回答涉及项目文档、规范、历史决策等问题前，应先检索补充上下文。';
+  '若已提供 rag_search 工具（本地知识库语义检索），在回答涉及项目文档、规范、历史决策等问题前，应先检索补充上下文。' +
+  '若下方列出「可用技能」，在任务匹配时应调用 use_skill 获取其详细指令并严格遵循。';
 
 /** 构造 HITL 审批器：交互式询问用户是否放行（y/n/a），a 表示持久预批准 */
 function makeResolver(rl: readline.Interface, permission: PermissionManager): Resolver {
@@ -44,10 +46,12 @@ export async function runOnce(
   bus: EventBus,
   compress?: CompressOptions,
   ragStore?: RagStore | null,
+  skillLoader?: SkillLoader | null,
 ): Promise<void> {
   const renderer = new StreamRenderer(chalk.green);
+  const sys = SYSTEM_PROMPT + (skillLoader?.menuText() ? '\n\n' + skillLoader.menuText()! : '');
   const history: ChatMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: sys },
     { role: 'user', content: prompt },
   ];
   // 非交互模式无 HITL 提示：默认只读工具放行，写/危险操作被拒（安全默认）
@@ -74,6 +78,7 @@ export async function startRepl(
   bus: EventBus,
   compress?: CompressOptions,
   ragStore?: RagStore | null,
+  skillLoader?: SkillLoader | null,
 ): Promise<void> {
   const console_ = console;
   console_.log(
@@ -91,7 +96,9 @@ export async function startRepl(
     output: process.stdout,
     prompt: chalk.blue('你 › '),
   });
-  const history: ChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
+  const history: ChatMessage[] = [
+    { role: 'system', content: SYSTEM_PROMPT + (skillLoader?.menuText() ? '\n\n' + skillLoader.menuText()! : '') },
+  ];
   const abort = new AbortController();
   rl.on('SIGINT', () => abort.abort());
   const resolver = makeResolver(rl, permission);
@@ -163,6 +170,32 @@ export async function startRepl(
         }
         return 'continue';
       }
+      case 'skills': {
+        const list = skillLoader?.list() ?? [];
+        if (list.length === 0) {
+          console_.log(chalk.gray('（当前无已加载技能）'));
+        } else {
+          for (const s of list) {
+            console_.log(chalk.gray(`- ${s.name} [${s.layer}]：${s.description}`));
+          }
+        }
+        return 'continue';
+      }
+      case 'skill': {
+        const name = rest.join(' ').trim();
+        if (!name) {
+          console_.log(chalk.yellow('用法: /skill <技能名>'));
+          return 'continue';
+        }
+        const skill = skillLoader?.load(name);
+        if (!skill) {
+          console_.log(chalk.yellow(`未找到技能: ${name}`));
+        } else {
+          console_.log(chalk.bold(`技能：${skill.name}`) + chalk.gray(`（来源 ${skill.layer}）`));
+          console_.log(skill.body.trim());
+        }
+        return 'continue';
+      }
       case 'help':
         printHelp();
         return 'continue';
@@ -220,6 +253,8 @@ function printHelp(): void {
       '  /model             显示当前模型',
       '  /tools             显示已注册工具',
       '  /rag               知识库：/rag search <q> | ingest <路径> | reindex | status',
+      '  /skills            列出已加载技能',
+      '  /skill <name>      查看某技能的完整指令',
       '  /perm              显示当前权限允许/拒绝列表',
       '  /prompt <文本>     单次提问（不进入多轮）',
       '  /exit, /quit       退出',

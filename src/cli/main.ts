@@ -13,6 +13,7 @@ import { getMemoryTools } from '../core/memory/tools';
 import { connectMcpServers, type McpClient } from '../core/mcp/client';
 import { RagStore } from '../core/rag/store';
 import { getRagTools } from '../core/rag/tools';
+import { SkillLoader, getSkillTools, type SkillSource } from '../core/skill';
 import type { CompressOptions } from '../core/memory/compressor';
 import { runOnce, startRepl } from './repl';
 
@@ -61,6 +62,20 @@ program
       tools.registerAll(getRagTools(ragStore));
     }
 
+    // Phase 7：Skill 系统（三层加载 + 渐进式披露）
+    const skillBuiltinDirs = (process.env.AGENTCLI_SKILLS_BUILTIN ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((dir) => ({ layer: 'builtin' as const, dir }));
+    const skillSources: SkillSource[] = [
+      ...skillBuiltinDirs,
+      { layer: 'user', dir: join(homedir(), '.config', 'agent-cli', 'skills') },
+      { layer: 'project', dir: join(process.cwd(), '.agent', 'skills') },
+    ];
+    const skillLoader = new SkillLoader(skillSources);
+    tools.registerAll(getSkillTools(skillLoader));
+
     // Phase 5：连接并注册 MCP Server 工具（与内置工具进同一张表）
     const mcpClients: McpClient[] = await connectMcpServers(
       config.mcpServers,
@@ -88,10 +103,10 @@ program
     process.on('SIGINT', () => void shutdownMcp());
 
     if (opts.prompt) {
-      await runOnce(model, opts.prompt, tools, permission, bus, compress, ragStore);
+      await runOnce(model, opts.prompt, tools, permission, bus, compress, ragStore, skillLoader);
       await shutdownMcp();
     } else {
-      await startRepl(config, model, tools, permission, bus, compress, ragStore);
+      await startRepl(config, model, tools, permission, bus, compress, ragStore, skillLoader);
       await shutdownMcp();
     }
   });
