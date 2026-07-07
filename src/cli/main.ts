@@ -11,6 +11,8 @@ import { AuditLogger } from '../core/security/audit';
 import { MemoryStore } from '../core/memory/store';
 import { getMemoryTools } from '../core/memory/tools';
 import { connectMcpServers, type McpClient } from '../core/mcp/client';
+import { RagStore } from '../core/rag/store';
+import { getRagTools } from '../core/rag/tools';
 import type { CompressOptions } from '../core/memory/compressor';
 import { runOnce, startRepl } from './repl';
 
@@ -25,6 +27,7 @@ program
   .option('--base-url <url>', 'API base url')
   .option('--api-key <key>', 'API key')
   .option('--mcp <json>', 'MCP 服务器规格（JSON 数组），如 \'[{"command":"node","args":["srv.mjs"]}]\'')
+  .option('--rag <paths>', 'RAG 语料路径（文件或目录，逗号分隔）')
   .action(async () => {
     const opts = program.opts<ConfigOverrides & { prompt?: string }>();
     const config = loadConfig({
@@ -33,6 +36,7 @@ program
       baseURL: opts.baseURL,
       apiKey: opts.apiKey,
       mcp: opts.mcp,
+      rag: opts.rag,
     });
     const model = createChatModel(config);
     const tools = createToolRegistry();
@@ -40,6 +44,22 @@ program
     // Phase 4：长期记忆仓库 + 记忆工具注册
     const memory = new MemoryStore(join(homedir(), '.config', 'agent-cli', 'memory.db'));
     tools.registerAll(getMemoryTools(memory));
+
+    // Phase 6：RAG 知识库（如配置了语料源则建索引并注册检索工具）
+    let ragStore: RagStore | undefined;
+    const ragSources = config.ragPath
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (ragSources.length > 0) {
+      ragStore = new RagStore(join(homedir(), '.config', 'agent-cli', 'rag.db'));
+      ragStore.setSources(ragSources);
+      if (ragStore.status().chunks === 0) {
+        const { docs, chunks } = ragStore.reindex();
+        console.log(`[RAG] 已索引 ${docs} 个文档 / ${chunks} 个片段`);
+      }
+      tools.registerAll(getRagTools(ragStore));
+    }
 
     // Phase 5：连接并注册 MCP Server 工具（与内置工具进同一张表）
     const mcpClients: McpClient[] = await connectMcpServers(
@@ -68,10 +88,10 @@ program
     process.on('SIGINT', () => void shutdownMcp());
 
     if (opts.prompt) {
-      await runOnce(model, opts.prompt, tools, permission, bus, compress);
+      await runOnce(model, opts.prompt, tools, permission, bus, compress, ragStore);
       await shutdownMcp();
     } else {
-      await startRepl(config, model, tools, permission, bus, compress);
+      await startRepl(config, model, tools, permission, bus, compress, ragStore);
       await shutdownMcp();
     }
   });

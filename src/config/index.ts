@@ -15,6 +15,8 @@ export interface AppConfig {
   llm: LlmConfig;
   /** Phase 5：要连接的 MCP Server 列表（stdio），可为空 */
   mcpServers: McpServerSpec[];
+  /** Phase 6：RAG 语料源（文件/目录，逗号分隔），可为空 */
+  ragPath: string;
 }
 
 export interface ConfigOverrides {
@@ -24,6 +26,8 @@ export interface ConfigOverrides {
   model?: string;
   /** CLI 直接传入的 MCP 规格（JSON 字符串数组），优先级高于 env */
   mcp?: string;
+  /** CLI 直接传入的 RAG 语料路径（逗号分隔），优先级高于 env */
+  rag?: string;
 }
 
 /**
@@ -80,5 +84,6 @@ export function loadConfig(overrides: ConfigOverrides = {}): AppConfig {
     mcpServers: parseMcpServers(
       firstNonEmpty('', overrides.mcp, process.env.AGENTCLI_MCP_SERVERS),
     ),
+    ragPath: firstNonEmpty('', overrides.rag, process.env.AGENTCLI_RAG_PATH),
   };
 }

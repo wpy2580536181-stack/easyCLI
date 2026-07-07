@@ -6,12 +6,14 @@ import type { ToolRegistry } from '../core/tools/registry';
 import type { PermissionManager, Decision, Resolver } from '../core/security/permission';
 import type { EventBus } from '../core/events/bus';
 import type { CompressOptions } from '../core/memory/compressor';
+import { RagStore } from '../core/rag/store';
 import { runAgent } from '../core/agent';
 import { StreamRenderer } from './renderer';
 
 const SYSTEM_PROMPT =
   '你是一个运行在终端里的 AI 编程助手，类似 Claude Code。用简洁、准确的中文回答用户的问题；' +
-  '需要操作文件或执行命令时，优先调用工具：read_file / write_file / edit_file / list_dir / glob / grep / bash。';
+  '需要操作文件或执行命令时，优先调用工具：read_file / write_file / edit_file / list_dir / glob / grep / bash。' +
+  '若已提供 rag_search 工具（本地知识库语义检索），在回答涉及项目文档、规范、历史决策等问题前，应先检索补充上下文。';
 
 /** 构造 HITL 审批器：交互式询问用户是否放行（y/n/a），a 表示持久预批准 */
 function makeResolver(rl: readline.Interface, permission: PermissionManager): Resolver {
@@ -41,6 +43,7 @@ export async function runOnce(
   permission: PermissionManager,
   bus: EventBus,
   compress?: CompressOptions,
+  ragStore?: RagStore | null,
 ): Promise<void> {
   const renderer = new StreamRenderer(chalk.green);
   const history: ChatMessage[] = [
@@ -70,6 +73,7 @@ export async function startRepl(
   permission: PermissionManager,
   bus: EventBus,
   compress?: CompressOptions,
+  ragStore?: RagStore | null,
 ): Promise<void> {
   const console_ = console;
   console_.log(
@@ -132,6 +136,33 @@ export async function startRepl(
         console_.log(chalk.gray(`允许: ${permission.getAllow().join(', ') || '(空)'}`));
         console_.log(chalk.gray(`拒绝: ${permission.getDeny().join(', ') || '(空)'}`));
         return 'continue';
+      case 'rag': {
+        if (!ragStore) {
+          console_.log(chalk.yellow('未启用 RAG：启动时请用 --rag <路径> 或设置 AGENTCLI_RAG_PATH'));
+          return 'continue';
+        }
+        const [sub, ...rest2] = rest;
+        const arg = rest2.join(' ').trim();
+        if (sub === 'search' && arg) {
+          const r = ragStore.search(arg, 5);
+          console_.log(RagStore.toContext(r));
+        } else if (sub === 'ingest' && arg) {
+          const { docs, chunks } = ragStore.addSource(arg);
+          console_.log(chalk.gray(`已增量索引 ${arg}：共 ${docs} 文档 / ${chunks} 片段`));
+        } else if (sub === 'reindex') {
+          const { docs, chunks } = ragStore.reindex();
+          console_.log(chalk.gray(`已重建索引：${docs} 文档 / ${chunks} 片段`));
+        } else if (sub === 'status') {
+          const s = ragStore.status();
+          console_.log(chalk.gray(`RAG 状态：文档 ${s.docs} / 片段 ${s.chunks} / 维度 ${s.dim}`));
+          console_.log(chalk.gray(`来源: ${ragStore.getSources().join(', ') || '(空)'}`));
+        } else {
+          console_.log(
+            chalk.yellow('用法: /rag <search|ingest|reindex|status> [参数]'),
+          );
+        }
+        return 'continue';
+      }
       case 'help':
         printHelp();
         return 'continue';
@@ -188,6 +219,7 @@ function printHelp(): void {
       '  /clear             清空对话上下文（保留系统提示）',
       '  /model             显示当前模型',
       '  /tools             显示已注册工具',
+      '  /rag               知识库：/rag search <q> | ingest <路径> | reindex | status',
       '  /perm              显示当前权限允许/拒绝列表',
       '  /prompt <文本>     单次提问（不进入多轮）',
       '  /exit, /quit       退出',

@@ -32,7 +32,7 @@ export interface MemoryRecord {
  * - `:memory:` 用于测试，不落盘；
  * - 生产路径默认 ~/.config/agent-cli/memory.db；
  * - 只存「事实」，检索靠最近 N 条或_like_ 模糊搜索，足够学习项目；
- *   语义检索（向量/RAG）留到第 6 期升级。
+ *   语义检索（向量/RAG）已在第 6 期实现，见 src/core/rag。
  */
 export class MemoryStore {
   private readonly db: SqliteDb;
