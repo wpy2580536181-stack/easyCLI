@@ -5,7 +5,8 @@ export type AgentEventType =
   | 'error'
   | 'turn'
   | 'compact'
-  | 'token';
+  | 'token'
+  | 'tool:batch';
 
 export interface AgentEvent {
   type: AgentEventType;

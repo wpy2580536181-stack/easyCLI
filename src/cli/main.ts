@@ -46,12 +46,14 @@ program
   .option('--mcp-port <number>', 'MCP 服务端 HTTP 传输监听端口（默认 3000）')
   .option('--save-config', '把本次生效配置写入 ~/.config/agent-cli/config.json（持久化）')
   .option('--resume', '恢复上次自动保存的会话（跨会话继续）')
+  .option('--plan', '规划模式：只生成执行计划、不执行（搭配 -p 单次使用）')
   .action(async () => {
     const opts = program.opts<
       ConfigOverrides & {
         prompt?: string;
         saveConfig?: boolean;
         resume?: boolean;
+        plan?: boolean;
         mcpServe?: boolean;
         mcpTransport?: 'stdio' | 'http';
         mcpPort?: string;
@@ -155,7 +157,7 @@ program
     process.on('SIGINT', () => void shutdownMcp());
 
     if (opts.prompt) {
-      await runOnce(model, opts.prompt, tools, permission, bus, tracker, compress, ragStore, skillLoader);
+      await runOnce(model, opts.prompt, tools, permission, bus, tracker, compress, ragStore, skillLoader, opts.plan);
       await shutdownMcp();
     } else {
       await startRepl(config, model, tools, permission, bus, tracker, compress, ragStore, skillLoader, opts.resume);

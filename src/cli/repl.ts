@@ -10,7 +10,7 @@ import { RagStore } from '../core/rag/store';
 import { SkillLoader } from '../core/skill';
 import { SessionStore, extractConversation, withSystem, AUTOSAVE_NAME } from '../core/session/store';
 import { runAgent } from '../core/agent';
-import { buildAgentSystemPrompt } from '../core/prompts';
+import { buildAgentSystemPrompt, buildPlanSystemPrompt, type AgentMode } from '../core/prompts';
 import { formatSnapshot, formatTokens, formatUSD, type CostTracker, type TrackerSnapshot } from '../core/observability';
 import { StreamRenderer } from './renderer';
 import { HistoryStore } from './history';
@@ -50,16 +50,16 @@ export async function runOnce(
   compress?: CompressOptions,
   ragStore?: RagStore | null,
   skillLoader?: SkillLoader | null,
+  planMode?: boolean,
 ): Promise<void> {
   const renderer = new StreamRenderer(chalk.green);
-  const sys = buildAgentSystemPrompt({
-    cwd: process.cwd(),
-    skillsMenu: skillLoader?.menuText() ?? undefined,
-  });
+  const sysCtx = { cwd: process.cwd(), skillsMenu: skillLoader?.menuText() ?? undefined };
+  const sys = planMode ? buildPlanSystemPrompt(sysCtx) : buildAgentSystemPrompt(sysCtx);
   const history: ChatMessage[] = [
     { role: 'system', content: sys },
     { role: 'user', content: prompt },
   ];
+  if (planMode) console.log(chalk.bold.yellow('（规划模式：仅生成计划，不执行）'));
   // 非交互模式无 HITL 提示：默认只读工具放行，写/危险操作被拒（安全默认）
   await runAgent(history, {
     model,
@@ -68,6 +68,7 @@ export async function runOnce(
     bus,
     compress,
     cwd: process.cwd(),
+    planMode,
     onText: (c) => renderer.push(c),
     onToolCall: (call) => renderer.status(`🔧 调用工具 ${call.name}`),
     onToolResult: (call, res) =>
@@ -122,15 +123,27 @@ export async function startRepl(
       return [hits, src] as [string[], string];
     },
   });
+  // 规划模式（Phase 15）需要「切换系统提示」：把正常/规划两套系统提示都准备好，
+  // 进入/退出规划模式时只替换 history[0].content，不另起引擎。
+  const sysCtx = { cwd: process.cwd(), skillsMenu: skillLoader?.menuText() ?? undefined };
   const history: ChatMessage[] = [
     {
       role: 'system',
-      content: buildAgentSystemPrompt({
-        cwd: process.cwd(),
-        skillsMenu: skillLoader?.menuText() ?? undefined,
-      }),
+      content: buildAgentSystemPrompt(sysCtx),
     },
   ];
+  // 模式与批准状态（Phase 15）
+  let mode: AgentMode = 'normal';
+  let normalSys = buildAgentSystemPrompt(sysCtx);
+  let awaitingApproval = false;
+  let planCheckpoint = 0;
+
+  /** 切换运行模式：替换 system 消息内容（normal <-> plan），其余 history 不动 */
+  function setMode(m: AgentMode): void {
+    mode = m;
+    const content = m === 'plan' ? buildPlanSystemPrompt(sysCtx) : normalSys;
+    if (history[0] && typeof history[0].content === 'string') history[0].content = content;
+  }
   // Phase 9：会话存储 + 跨会话恢复。每轮结束自动写 autosave，--resume 时恢复。
   const sessionStore = new SessionStore();
   if (resume && sessionStore.exists(AUTOSAVE_NAME)) {
@@ -139,6 +152,8 @@ export async function startRepl(
       const systemContent = typeof history[0]?.content === 'string' ? history[0].content : '';
       history.length = 0;
       history.push(...withSystem(loaded, systemContent));
+      // 恢复后把 normalSys 同步成实际 system，保证 /plan→/discard 切换时 system 不丢
+      if (typeof history[0]?.content === 'string') normalSys = history[0].content;
       console_.log(chalk.gray(`⟳ 已从自动保存的会话恢复（${loaded.length} 条消息）`));
     }
   }
@@ -180,6 +195,38 @@ export async function startRepl(
         void persistAutosave();
         // Phase 14：每轮结束展示本轮 + 累计成本
         console_.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
+      });
+  }
+
+  /** 规划模式的一轮：只读探测 + 产出计划，结束后进入「待批准」状态（Phase 15） */
+  async function runPlan(): Promise<void> {
+    const r = new StreamRenderer(chalk.green);
+    tracker.beginTurn();
+    return runAgent(history, {
+      model,
+      tools,
+      permission,
+      bus,
+      compress,
+      signal: abort.signal,
+      cwd: process.cwd(),
+      planMode: true,
+      onText: (c) => r.push(c),
+      onToolCall: (call) => r.status(`🔍 规划探测 ${call.name}`),
+      onToolResult: (call, res) => r.status(`${res.ok ? '✓' : '✗'} ${call.name}`),
+      onBatch: (info) =>
+        r.status(`⚡ 并行探测 ${info.readCount} 个只读工具（峰值并发 ${info.maxConcurrency}）`),
+      onCompact: (info) => r.status(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
+    })
+      .then(() => r.newline())
+      .then(() => {
+        void persistAutosave();
+        console_.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
+        awaitingApproval = true;
+        console_.log(chalk.bold.yellow('\n⬆ 以上是模型生成的执行计划。'));
+        console_.log(
+          chalk.gray('   /approve 执行  ·  /discard 放弃  ·  直接输入补充让模型修订'),
+        );
       });
   }
 
@@ -374,15 +421,60 @@ export async function startRepl(
         }
         return 'continue';
       }
+      case 'plan': {
+        // Phase 15：进入规划模式，生成执行计划待批准
+        const task = rest.join(' ').trim();
+        if (!task) {
+          console_.log(chalk.yellow('用法: /plan <任务描述>  进入规划模式并生成执行计划'));
+          return 'continue';
+        }
+        setMode('plan');
+        planCheckpoint = history.length; // 记录规划前位置，便于 /discard 回滚
+        history.push({ role: 'user', content: task });
+        process.stdout.write(chalk.green('\n规划中 › '));
+        awaitingApproval = false;
+        await runPlan();
+        return 'continue';
+      }
+      case 'approve': {
+        // Phase 15：批准计划 → 切回正常模式并执行（同一份 history，计划即上下文）
+        if (!awaitingApproval) {
+          console_.log(chalk.yellow('当前没有待批准计划，请先用 /plan 生成计划。'));
+          return 'continue';
+        }
+        setMode('normal');
+        awaitingApproval = false;
+        dispatch('(计划已批准，请按上述计划开始执行所需操作)');
+        return 'continue';
+      }
+      case 'discard': {
+        // Phase 15：放弃计划并回滚到规划前（含只读探测），切回正常模式
+        if (!awaitingApproval) {
+          console_.log(chalk.yellow('当前没有待批准计划。'));
+          return 'continue';
+        }
+        history.length = planCheckpoint;
+        setMode('normal');
+        awaitingApproval = false;
+        console_.log(chalk.gray('已放弃计划，回到正常模式。'));
+        return 'continue';
+      }
       default:
         console_.log(chalk.yellow(`未知命令: ${cmd}（输入 /help 查看可用命令）`));
         return 'continue';
     }
   }
 
-  /** 处理一条输入：slash 走命令，普通文本入 history 并跑一轮 */
+  /** 处理一条输入：slash 走命令，普通文本入 history 并跑一轮（Phase 15：待批准时普通输入视为修订计划） */
   async function processInput(input: string): Promise<'exit' | 'continue'> {
     if (input.startsWith('/')) return handleSlash(input);
+    if (awaitingApproval) {
+      // 计划待批准时，普通输入 = 对计划的补充修订：保留已生成计划，重新规划
+      history.push({ role: 'user', content: input });
+      process.stdout.write(chalk.green('\n修订规划中 › '));
+      await runPlan();
+      return 'continue';
+    }
     history.push({ role: 'user', content: input });
     process.stdout.write(chalk.green('\n助手 › '));
     await runTurn();
@@ -490,6 +582,9 @@ function printHelp(): void {
       '  /model             显示当前模型',
       '  /tools             显示已注册工具',
       '  /cost              显示本次会话的用量与成本（Phase 14）',
+      '  /plan <任务>       进入规划模式，只读探测并生成执行计划（Phase 15）',
+      '  /approve           批准当前计划并进入执行',
+      '  /discard           放弃当前计划并回滚',
       '  /rag               知识库：/rag search <q> | ingest <路径> | reindex | status',
       '  /skills            列出已加载技能',
       '  /skill <name>      查看某技能的完整指令',

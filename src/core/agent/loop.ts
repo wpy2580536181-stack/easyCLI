@@ -8,7 +8,7 @@ import type {
   ToolResult,
 } from '../chatmodel/types';
 import type { ToolRegistry } from '../tools/registry';
-import { executeTools } from '../tools/executor';
+import { executeTools, type ToolBatchInfo } from '../tools/executor';
 import { compressorSystemPrompt } from '../prompts';
 import { estimateMessagesTokens, estimateTokens } from '../observability/tokenizer';
 import type { PermissionManager } from '../security/permission';
@@ -27,6 +27,8 @@ export interface AgentHooks {
   onToolResult?: (call: ToolCall, result: ToolResult) => void;
   /** 上下文被压缩时回调（决策 9 的 onCompact 挂载点） */
   onCompact?: (info: { before: number; after: number }) => void;
+  /** 一批工具执行完毕的并发画像（Phase 15 异步并行可观测） */
+  onBatch?: (info: ToolBatchInfo) => void;
 }
 
 export interface AgentOptions extends AgentHooks {
@@ -41,6 +43,11 @@ export interface AgentOptions extends AgentHooks {
   cwd?: string;
   maxIterations?: number;
   signal?: AbortSignal;
+  /**
+   * 规划模式（Phase 15）：开启后执行器只放行只读工具、拦截一切写/破坏性操作，
+   * 配合 plan 系统提示即可「先只读探测、产出计划、待批准再执行」，与 ReAct 共用同一引擎。
+   */
+  planMode?: boolean;
 }
 
 /** 默认摘要器：用当前模型把中间历史压成中文摘要（无工具，纯文本总结） */
@@ -176,7 +183,12 @@ export async function runAgent(
       bus: opts.bus,
       cwd,
       signal: opts.signal,
-      hooks: { onToolCall: opts.onToolCall, onToolResult: opts.onToolResult },
+      planMode: opts.planMode,
+      hooks: {
+        onToolCall: opts.onToolCall,
+        onToolResult: opts.onToolResult,
+        onBatch: opts.onBatch,
+      },
     });
     for (let k = 0; k < result.toolCalls.length; k++) {
       const tc = result.toolCalls[k]!;

@@ -9,19 +9,26 @@
 //    沿用 Phase 7 的「渐进式披露」——正文仍只在 use_skill 时加载。
 // 4. 压缩子 prompt 统一收口：原本硬编码在 loop.ts 的压缩指令也收进本模块，
 //    所有「写给模型的系统提示」集中管理，一处可维护。
+// 5. Phase 15：规划模式（plan）复用同一套分块底座，仅追加「约束 + 产出格式」块，
+//    不另起炉灶——保证规划与执行走同一引擎、同一提示底座。
 
 import { gatherContext, type DynamicContext } from './context';
 
 export { gatherContext } from './context';
 export type { DynamicContext } from './context';
 
+/** Agent 运行模式：normal=正常 ReAct 执行；plan=规划模式（只读探测 + 产出计划待批准） */
+export type AgentMode = 'normal' | 'plan';
+
 export interface AgentPromptContext {
   /** 工作目录（注入运行上下文） */
   cwd: string;
   /** 渐进式披露：技能 name+description 清单（来自 SkillLoader.menuText），可选 */
   skillsMenu?: string;
-  /** 注入时间��默认 new Date()；单测可注入固定值保证确定性 */
+  /** 注入时间；默认 new Date()；单测可注入固定值保证确定性 */
   now?: Date;
+  /** 运行模式；plan 模式会追加「仅只读 + 产出计划」指令（Phase 15） */
+  mode?: AgentMode;
 }
 
 // ── 可组合的系统提示块（每块职责单一） ──────────────
@@ -44,6 +51,23 @@ const fewShotBlock = (): string =>
   '示例——用户：「把 utils.ts 里的 foo 改成异步」\n' +
   '你：① glob 定位 utils.ts → ② read_file 读取 → ③ edit_file 修改 → ④ 复述改动与理由。';
 
+/**
+ * 规划模式指令块（Phase 15）。
+ * 与正常模式共用同一套身份/行为块，仅追加「约束 + 产出格式」，
+ * 不另起炉灶——保证规划与执行走同一引擎、同一提示底座。
+ */
+const planModeBlock = (): string =>
+  '【规划模式】你当前处于规划模式，目标是先理解任务、再给出可执行的实施计划，而不是直接改动任何东西。\n' +
+  '约束：\n' +
+  '1. 只能调用只读工具（read_file / list_dir / glob / grep / bash 只读探测等）去收集上下文；不要调用任何会写文件或执行破坏性命令的工具。\n' +
+  '2. 不要做任何实际改动，也不要假装已经改完。\n' +
+  '3. 探索充分后，输出一份结构化计划（用中文、Markdown），包含：\n' +
+  '   - 目标：要解决什么；\n' +
+  '   - 现状/发现：你通过只读工具确认到的关键事实；\n' +
+  '   - 步骤：编号的 execution 步骤，每步注明会用到的工具与预期产物；\n' +
+  '   - 风险与待确认：需要用户拍板的点。\n' +
+  '4. 输出计划即结束本轮，等待用户批准后再进入执行。';
+
 /** 把动态上下文渲染成「运行上下文」块 */
 function contextBlock(dc: DynamicContext): string {
   const lines = [`当前时间：${dc.now}`, `工作目录：${dc.cwd}`, `运行环境：${dc.os}`];
@@ -56,16 +80,23 @@ const BLOCKS = [identityBlock, behaviorBlock, toolPolicyBlock, outputFormatBlock
 /**
  * 组装 Agent 主系统提示：分块组合 + 动态上下文注入 + 可选技能清单追加。
  * 返回的字符串可直接作为 ChatMessage(role:'system') 的 content。
+ * mode='plan' 时追加规划模式约束块（Phase 15）。
  */
 export function buildAgentSystemPrompt(ctx: AgentPromptContext): string {
   const dc = gatherContext(ctx.cwd, ctx.now);
   const parts = BLOCKS.map((b) => b());
   parts.push(contextBlock(dc));
+  if (ctx.mode === 'plan') parts.push(planModeBlock());
   // 技能清单按需追加（渐进式披露：仅 name+description 常驻，正文仍按需加载）
   if (ctx.skillsMenu && ctx.skillsMenu.trim()) {
     parts.push(`可用技能：\n${ctx.skillsMenu.trim()}`);
   }
   return parts.join('\n\n');
+}
+
+/** 规划模式系统提示（Phase 15）：正常提示 + 规划约束块，供 REPL/main 切模式时直接替换 system 消息 */
+export function buildPlanSystemPrompt(ctx: AgentPromptContext): string {
+  return buildAgentSystemPrompt({ ...ctx, mode: 'plan' });
 }
 
 /** 上下文压缩子调用的系统提示（原硬编码在 loop.ts，现统一收口于此） */
