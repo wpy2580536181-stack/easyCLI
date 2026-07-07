@@ -115,7 +115,7 @@ pnpm typecheck      # tsc --noEmit
 | 9 | **会话持久化（Session）**：对话历史落盘（复用压缩+记忆存储模式），`/save` `/load`、跨会话恢复、历史浏览 | ✅ 已完成 |
 | 10 | **REPL 体验打磨**：跨会话命令历史文件、多行粘贴输入、基础补全、更顺滑的流式渲染 | ✅ 已完成 |
 | 11 | **多模型适配补全**：Anthropic/Ollama 适配器 + **fallback model 降级**；把 Phase 6 的 `embed()` 抽象为可插拔接口（手写/API 双实现） | ✅ 已完成 |
-| 12 | **MCP Server**（与 Phase 5 客户端对端；暴露 tools/resources，可选 Streamable HTTP 传输） | 待做 |
+| 12 | **MCP Server**（与 Phase 5 客户端对端；暴露 tools/resources，可选 Streamable HTTP 传输） | ✅ 已完成 |
 | 13 | **Token / 成本统计与可观测性**：每轮 token 估算、累计成本、压缩/检索事件汇总，挂事件总线统一观测 | 待做 |
 | 14 | **Plan 模式 + 异步并行**（与 ReAct 共享同一引擎；先规划再执行，子任务可并行预执行只读工具） | 待做 |
 | 15 | **记忆与检索自动注入**：把 recall（期4）/ RAG（期6）结果在每轮自动注入上下文，无需模型主动调，提升「上下文智能化」 | 待做 |

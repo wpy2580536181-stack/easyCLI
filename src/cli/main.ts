@@ -18,6 +18,7 @@ import { AuditLogger } from '../core/security/audit';
 import { MemoryStore } from '../core/memory/store';
 import { getMemoryTools } from '../core/memory/tools';
 import { connectMcpServers, type McpClient } from '../core/mcp/client';
+import { startMcpServer } from '../core/mcp/demo-server';
 import { RagStore } from '../core/rag/store';
 import { getRagTools } from '../core/rag/tools';
 import { createEmbedder } from '../core/rag/embedder';
@@ -39,10 +40,32 @@ program
   .option('--rag <paths>', 'RAG 语料路径（文件或目录，逗号分隔）')
   .option('--embedder <json>', 'RAG 嵌入器配置 JSON，如 \'{"type":"api","baseURL":"...","apiKey":"...","model":"text-embedding-3-small"}\'（默认手写 TF-IDF）')
   .option('--fallback <json>', 'fallback 模型配置 JSON，如 \'{"provider":"openai","model":"gpt-4o"}\'（主模型失败时自动降级）')
+  .option('--mcp-serve', '以 MCP 服务端模式启动（暴露内置工具，不进入 Agent/REPL）')
+  .option('--mcp-transport <stdio|http>', 'MCP 服务端传输方式（默认 stdio）')
+  .option('--mcp-port <number>', 'MCP 服务端 HTTP 传输监听端口（默认 3000）')
   .option('--save-config', '把本次生效配置写入 ~/.config/agent-cli/config.json（持久化）')
   .option('--resume', '恢复上次自动保存的会话（跨会话继续）')
   .action(async () => {
-    const opts = program.opts<ConfigOverrides & { prompt?: string; saveConfig?: boolean; resume?: boolean }>();
+    const opts = program.opts<
+      ConfigOverrides & {
+        prompt?: string;
+        saveConfig?: boolean;
+        resume?: boolean;
+        mcpServe?: boolean;
+        mcpTransport?: 'stdio' | 'http';
+        mcpPort?: string;
+      }
+    >();
+
+    // Phase 12：MCP 服务端模式——暴露内置工具，不进入 Agent/REPL，也不需要模型配置
+    if (opts.mcpServe) {
+      const transport = opts.mcpTransport === 'http' ? 'http' : 'stdio';
+      const port = opts.mcpPort ? Number(opts.mcpPort) : 3000;
+      if (Number.isNaN(port)) throw new Error(`--mcp-port 非法：${opts.mcpPort}`);
+      await startMcpServer({ transport, port, cwd: process.cwd() });
+      return;
+    }
+
     // Phase 8：先读持久化配置（作为「持久化默认」层），再与 CLI/env 合并
     const fileCfg = loadUserConfig();
     const config = loadConfig(
