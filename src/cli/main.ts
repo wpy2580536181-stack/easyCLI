@@ -10,6 +10,7 @@ import { PermissionManager } from '../core/security/permission';
 import { AuditLogger } from '../core/security/audit';
 import { MemoryStore } from '../core/memory/store';
 import { getMemoryTools } from '../core/memory/tools';
+import { connectMcpServers, type McpClient } from '../core/mcp/client';
 import type { CompressOptions } from '../core/memory/compressor';
 import { runOnce, startRepl } from './repl';
 
@@ -23,6 +24,7 @@ program
   .option('--model <model>', '模型名（如 deepseek-chat）')
   .option('--base-url <url>', 'API base url')
   .option('--api-key <key>', 'API key')
+  .option('--mcp <json>', 'MCP 服务器规格（JSON 数组），如 \'[{"command":"node","args":["srv.mjs"]}]\'')
   .action(async () => {
     const opts = program.opts<ConfigOverrides & { prompt?: string }>();
     const config = loadConfig({
@@ -30,6 +32,7 @@ program
       model: opts.model,
       baseURL: opts.baseURL,
       apiKey: opts.apiKey,
+      mcp: opts.mcp,
     });
     const model = createChatModel(config);
     const tools = createToolRegistry();
@@ -37,6 +40,14 @@ program
     // Phase 4：长期记忆仓库 + 记忆工具注册
     const memory = new MemoryStore(join(homedir(), '.config', 'agent-cli', 'memory.db'));
     tools.registerAll(getMemoryTools(memory));
+
+    // Phase 5：连接并注册 MCP Server 工具（与内置工具进同一张表）
+    const mcpClients: McpClient[] = await connectMcpServers(
+      config.mcpServers,
+      tools,
+      { timeoutMs: 30_000, connectTimeoutMs: 15_000 },
+      (m) => console.log(m),
+    );
 
     // Phase 3：事件总线 + 权限 + 审计日志
     const bus = new EventBus();
@@ -51,10 +62,17 @@ program
       maxToolOutputChars: 1500,
     };
 
+    // 退出时回收 MCP 子进程，避免孤儿进程
+    const shutdownMcp = (): Promise<unknown> =>
+      Promise.allSettled(mcpClients.map((c) => c.disconnect()));
+    process.on('SIGINT', () => void shutdownMcp());
+
     if (opts.prompt) {
       await runOnce(model, opts.prompt, tools, permission, bus, compress);
+      await shutdownMcp();
     } else {
       await startRepl(config, model, tools, permission, bus, compress);
+      await shutdownMcp();
     }
   });
 
