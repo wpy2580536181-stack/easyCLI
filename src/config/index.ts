@@ -1,8 +1,11 @@
 // 配置加载与合并。
-// 优先级：CLI 参数 > 环境变量 > 默认值。
-// 这样 Phase 1 跑 MVP 只需 export AGENTCLI_API_KEY=xxx 即可。
+// 优先级（高 → 低）：CLI 参数 > 环境变量 > 配置文件 > 默认值。
+// 即「配置文件」是比硬编码默认值更高一层的「持久化默认」，CLI 参数与环境变量仍可临时覆盖它
+// （与 CLAUDE.md §5 既定原则「CLI 参数 > 环境变量 > 默认值」一致，只是把文件插在默认值之上）。
+// 这样设计：用户设一次 config.json 即长期生效，但单次运行仍可用 --model 等旗标临时改写。
 
 import type { McpServerSpec } from '../core/mcp/client';
+import { loadUserConfig, saveUserConfig, maskSecret, CONFIG_PATH, type UserConfig } from './store';
 
 export interface LlmConfig {
   baseURL: string;
@@ -33,6 +36,7 @@ export interface ConfigOverrides {
 /**
  * 按候选顺序取第一个"非空"值；全空则回退默认值。
  * 空字符串视为"未设置"，从而正常回退（避免 env 被显式置空时卡在 ''）。
+ * 注意：候选按「低优先级 → 高优先级」传入，本函数返回第一个非空值，故高优先级（靠后）胜出。
  */
 function firstNonEmpty(def: string, ...cands: (string | undefined)[]): string {
   for (const c of cands) {
@@ -55,35 +59,81 @@ function parseMcpServers(raw: string | undefined): McpServerSpec[] {
   }
 }
 
-export function loadConfig(overrides: ConfigOverrides = {}): AppConfig {
+/**
+ * 加载配置。
+ * @param overrides CLI 旗标覆盖（最高优先级）
+ * @param fileConfig 从 ~/.config/agent-cli/config.json 读取的用户配置（持久化默认层）。
+ *                    不传则视为「无文件」；main.ts 会先 loadUserConfig() 再传入。
+ */
+export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserConfig | null): AppConfig {
+  const file = fileConfig ?? null;
+
+  // 单 env 字段：cands = [CLI, 环境变量, 文件]，def = 默认值。
+  // firstNonEmpty 返回「第一个非空候选」，故高优先级放在 cands 最前（文件仅高于默认值）。
   const provider = firstNonEmpty(
     'openai',
     overrides.provider,
     process.env.AGENTCLI_PROVIDER,
+    file?.provider,
   );
   const baseURL = firstNonEmpty(
     'https://api.deepseek.com/v1',
     overrides.baseURL,
     process.env.AGENTCLI_BASE_URL,
-  );
-  const apiKey = firstNonEmpty(
-    '',
-    overrides.apiKey,
-    process.env.AGENTCLI_API_KEY,
-    process.env.OPENAI_API_KEY,
+    file?.baseURL,
   );
   const model = firstNonEmpty(
     'deepseek-chat',
     overrides.model,
     process.env.AGENTCLI_MODEL,
+    file?.model,
   );
+
+  // apiKey 有两个 env 候选（AGENTCLI_API_KEY 优先于 OPENAI_API_KEY）。
+  // cands = [CLI, AGENTCLI_API_KEY, OPENAI_API_KEY, 文件]，def = ''。整层 env 位于文件之上。
+  const apiKey = firstNonEmpty(
+    '',
+    overrides.apiKey,
+    process.env.AGENTCLI_API_KEY,
+    process.env.OPENAI_API_KEY,
+    file?.apiKey,
+  );
+
+  // MCP/RAG：CLI > 环境变量 > 文件 > 默认([] / '')
+  const mcpFromCli = overrides.mcp ? parseMcpServers(overrides.mcp) : null;
+  const mcpFromEnv = process.env.AGENTCLI_MCP_SERVERS
+    ? parseMcpServers(process.env.AGENTCLI_MCP_SERVERS)
+    : null;
+  const mcpServers = mcpFromCli ?? mcpFromEnv ?? file?.mcpServers ?? [];
+
+  const ragFromCli = overrides.rag || '';
+  const ragFromEnv = process.env.AGENTCLI_RAG_PATH || '';
+  const ragFromFile = file?.ragPaths?.join(',') ?? '';
+  const ragPath = ragFromCli || ragFromEnv || ragFromFile || '';
 
   return {
     provider,
     llm: { baseURL, apiKey, model },
-    mcpServers: parseMcpServers(
-      firstNonEmpty('', overrides.mcp, process.env.AGENTCLI_MCP_SERVERS),
-    ),
-    ragPath: firstNonEmpty('', overrides.rag, process.env.AGENTCLI_RAG_PATH),
+    mcpServers,
+    ragPath,
   };
 }
+
+/**
+ * 把「生效配置」转回可持久化结构（仅含非空字段），供 saveUserConfig 写入文件。
+ * 例如 --save-config 时，把本次实际用到的 provider/model/apiKey/MCP/RAG 落盘。
+ */
+export function appConfigToUserConfig(cfg: AppConfig): UserConfig {
+  const out: UserConfig = {};
+  if (cfg.provider) out.provider = cfg.provider;
+  if (cfg.llm.baseURL) out.baseURL = cfg.llm.baseURL;
+  if (cfg.llm.apiKey) out.apiKey = cfg.llm.apiKey;
+  if (cfg.llm.model) out.model = cfg.llm.model;
+  if (cfg.mcpServers.length) out.mcpServers = cfg.mcpServers;
+  if (cfg.ragPath) out.ragPaths = cfg.ragPath.split(',').map((s) => s.trim()).filter(Boolean);
+  return out;
+}
+
+// 对外再导出持久化层 API，方便 main.ts / repl.ts 一处引入
+export { loadUserConfig, saveUserConfig, maskSecret, CONFIG_PATH };
+export type { UserConfig };

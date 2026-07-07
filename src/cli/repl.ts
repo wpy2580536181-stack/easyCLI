@@ -1,7 +1,7 @@
 import readline from 'node:readline';
 import chalk from 'chalk';
 import type { ChatMessage, ChatModel } from '../core/chatmodel';
-import type { AppConfig } from '../config';
+import { type AppConfig, saveUserConfig, appConfigToUserConfig, maskSecret, CONFIG_PATH } from '../config';
 import type { ToolRegistry } from '../core/tools/registry';
 import type { PermissionManager, Decision, Resolver } from '../core/security/permission';
 import type { EventBus } from '../core/events/bus';
@@ -143,6 +143,29 @@ export async function startRepl(
         console_.log(chalk.gray(`允许: ${permission.getAllow().join(', ') || '(空)'}`));
         console_.log(chalk.gray(`拒绝: ${permission.getDeny().join(', ') || '(空)'}`));
         return 'continue';
+      case 'config': {
+        const [sub, ...rest2] = rest;
+        if (sub === 'save') {
+          // 把当前生效配置落盘（与已有文件浅合并）
+          saveUserConfig(appConfigToUserConfig(config));
+          console_.log(chalk.gray(`已写入 ${CONFIG_PATH}`));
+        } else {
+          const mcp = config.mcpServers;
+          const rag = config.ragPath
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          console_.log(chalk.bold('当前配置（生效值）：'));
+          console_.log(chalk.gray(`  provider : ${config.provider}`));
+          console_.log(chalk.gray(`  model    : ${config.llm.model}`));
+          console_.log(chalk.gray(`  baseURL  : ${config.llm.baseURL}`));
+          console_.log(chalk.gray(`  apiKey   : ${maskSecret(config.llm.apiKey)}`));
+          console_.log(chalk.gray(`  MCP 源   : ${mcp.length} 个`));
+          console_.log(chalk.gray(`  RAG 源   : ${rag.length ? rag.join(', ') : '(空)'}`));
+          console_.log(chalk.gray('（/config save 可持久化当前配置）'));
+        }
+        return 'continue';
+      }
       case 'rag': {
         if (!ragStore) {
           console_.log(chalk.yellow('未启用 RAG：启动时请用 --rag <路径> 或设置 AGENTCLI_RAG_PATH'));
@@ -256,6 +279,7 @@ function printHelp(): void {
       '  /skills            列出已加载技能',
       '  /skill <name>      查看某技能的完整指令',
       '  /perm              显示当前权限允许/拒绝列表',
+      '  /config            查看当前生效配置（密钥打码）；/config save 持久化',
       '  /prompt <文本>     单次提问（不进入多轮）',
       '  /exit, /quit       退出',
       '',

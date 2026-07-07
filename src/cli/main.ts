@@ -2,7 +2,14 @@
 import { Command } from 'commander';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { loadConfig, type ConfigOverrides } from '../config';
+import {
+  loadConfig,
+  appConfigToUserConfig,
+  loadUserConfig,
+  saveUserConfig,
+  CONFIG_PATH,
+  type ConfigOverrides,
+} from '../config';
 import { createChatModel } from '../core/chatmodel';
 import { createToolRegistry } from '../core/tools/registry';
 import { EventBus } from '../core/events/bus';
@@ -29,16 +36,27 @@ program
   .option('--api-key <key>', 'API key')
   .option('--mcp <json>', 'MCP 服务器规格（JSON 数组），如 \'[{"command":"node","args":["srv.mjs"]}]\'')
   .option('--rag <paths>', 'RAG 语料路径（文件或目录，逗号分隔）')
+  .option('--save-config', '把本次生效配置写入 ~/.config/agent-cli/config.json（持久化）')
   .action(async () => {
-    const opts = program.opts<ConfigOverrides & { prompt?: string }>();
-    const config = loadConfig({
-      provider: opts.provider,
-      model: opts.model,
-      baseURL: opts.baseURL,
-      apiKey: opts.apiKey,
-      mcp: opts.mcp,
-      rag: opts.rag,
-    });
+    const opts = program.opts<ConfigOverrides & { prompt?: string; saveConfig?: boolean }>();
+    // Phase 8：先读持久化配置（作为「持久化默认」层），再与 CLI/env 合并
+    const fileCfg = loadUserConfig();
+    const config = loadConfig(
+      {
+        provider: opts.provider,
+        model: opts.model,
+        baseURL: opts.baseURL,
+        apiKey: opts.apiKey,
+        mcp: opts.mcp,
+        rag: opts.rag,
+      },
+      fileCfg,
+    );
+    // --save-config：把本次生效配置落盘（与已有文件浅合并）
+    if (opts.saveConfig) {
+      saveUserConfig(appConfigToUserConfig(config));
+      console.log(`[config] 已写入 ${CONFIG_PATH}`);
+    }
     const model = createChatModel(config);
     const tools = createToolRegistry();
 

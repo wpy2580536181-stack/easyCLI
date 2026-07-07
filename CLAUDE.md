@@ -111,7 +111,7 @@ pnpm typecheck      # tsc --noEmit
 | 5 | MCP 客户端（stdio，JSON-RPC 连接状态机） | ✅ 已完成 |
 | 6 | RAG（检索增强生成，纯手写嵌入 + SQLite 向量检索） | ✅ 已完成 |
 | 7 | Skill 系统（三层加载 + **渐进式披露**保护 cache） | ✅ 已完成 |
-| 8 | **模型配置持久化**（`~/.config/agent-cli/config.json`：provider/model/默认参数/默认 MCP·RAG 源；文件 > CLI > 环境变量 > 默认） | 待做 |
+| 8 | **模型配置持久化**（`~/.config/agent-cli/config.json`：provider/model/默认参数/默认 MCP·RAG 源；文件为「持久化默认」层：CLI > 环境变量 > 文件 > 默认值） | ✅ 已完成 |
 | 9 | **会话持久化（Session）**：对话历史落盘（复用压缩+记忆存储模式），`/save` `/load`、跨会话恢复、历史浏览 | 待做 |
 | 10 | **REPL 体验打磨**：跨会话命令历史文件、多行粘贴输入、基础补全、更顺滑的流式渲染 | 待做 |
 | 11 | **多模型适配补全**：Anthropic/Ollama 适配器 + **fallback model 降级**；把 Phase 6 的 `embed()` 抽象为可插拔接口（手写/API 双实现） | 待做 |
@@ -131,7 +131,7 @@ pnpm typecheck      # tsc --noEmit
 - **`ChatModel` 归一化接口**（`src/core/chatmodel/types.ts`）：`complete(opts)` 返回 `{ content, toolCalls }`，屏蔽厂商差异。新增模型 = 新增适配器，上层零改动。**多模型适配的核心在 Phase 1 已就位**，Phase 9 仅补 Anthropic/Ollama 适配器。
 - **工具统一契约** `ToolDef`：内置工具与 MCP 工具统一进同一 `ToolRegistry`；`ToolDef` 自带 `isReadOnly`/`isDestructive` 标记（决策8），执行器据此**只读并行、写串行**；后续期把 `execute` 补进 `ToolDef`。
 - **MCP 客户端**：`child_process.spawn` + JSON-RPC 2.0（`initialize`→`tools/list`→`tools/call`），stdio 先于 HTTP；维护连接状态机。
-- **配置**：`CLI 参数 > 环境变量 > 默认值`，空字符串视为未设置（`firstNonEmpty`）。
+- **配置**：`CLI 参数 > 环境变量 > 配置文件 > 默认值`，空字符串视为未设置（`firstNonEmpty`，高优先级排在候选最前）；文件为「持久化默认」层，启动即生效但可被单次旗标/环境变量临时覆盖（详见 `docs/phase8.md` §4）。
 - **权限/安全**：三级模型 + 路径围栏/命令黑名单硬 gate；写操作/bash 默认 `ask`；审计日志挂事件总线。
 - **事件总线/钩子（预留）**：工具执行、错误、压缩等关键节点发事件（`onToolCall`/`onError`/`onCompact`），审计与可观测性统一挂载（决策9），避免后期推翻结构。
 - **上下文压缩（贯穿）**：压缩策略（裁剪/去重/折叠/摘要）约束 `ChatMessage`/`ContentBlock` 结构，Phase 1 定义类型时即需为「可被折叠/摘要」预留（决策7）。
