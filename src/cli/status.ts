@@ -29,6 +29,12 @@ export interface StatusLineOpts {
   out?: OutputSink;
   /** 动画帧间隔（ms） */
   intervalMs?: number;
+  /**
+   * 可选的 Markdown 渲染器：传入后，流式正文会被当作 Markdown 实时渲染
+   * （标题/粗体/列表/代码块等→终端 ANSI）。非 TTY 下忽略（直接输出纯文本）。
+   * 签名：(markdown源码, 终端宽度) => 每一屏显行。
+   */
+  markdown?: (md: string, width: number) => string[];
 }
 
 type Mode = 'idle' | 'thinking' | 'tool' | 'stream';
@@ -38,6 +44,8 @@ export class StatusLine {
   private readonly out: OutputSink;
   private readonly intervalMs: number;
   private readonly tty: boolean;
+  /** 可选的 Markdown 渲染器（TTY 下把正文渲染成 Markdown） */
+  private readonly md: ((md: string, width: number) => string[]) | null;
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private frame = 0;
@@ -57,6 +65,7 @@ export class StatusLine {
     this.out = opts.out ?? process.stdout;
     this.intervalMs = opts.intervalMs ?? 120;
     this.tty = !!process.stdout.isTTY;
+    this.md = opts.markdown ?? null;
   }
 
   /** 开新一轮：显示「思考中…」并启动动画 */
@@ -174,11 +183,20 @@ export class StatusLine {
     return chalk.gray(`${glyph} ${this.label} (${sec}s)`);
   }
 
-  /** 把 body 按终端宽度折行（CJK 按 2 列、latin 尽量按词），返回每一屏显行 */
-  private wrapBody(width: number): string[] {
+  /** 计算流式正文应当显示的屏显行（Markdown 模式实时渲染，否则纯文本按宽度折行） */
+  private bodyLines(width: number): string[] {
     if (!this.body) return []; // 空正文不占行，避免 footer 上方多出空行
+    if (this.md && this.tty) {
+      const lines = this.md(this.body, width);
+      return lines.length ? lines : [];
+    }
+    return this.wrapPlain(this.body, width);
+  }
+
+  /** 纯文本按终端宽度折行（CJK 按 2 列、latin 尽量按词），返回每一屏显行 */
+  private wrapPlain(body: string, width: number): string[] {
     const lines: string[] = [];
-    for (const para of this.body.split('\n')) {
+    for (const para of body.split('\n')) {
       if (para === '') {
         lines.push('');
         continue;
@@ -207,7 +225,7 @@ export class StatusLine {
     const sink = this.out as OutputSink & { columns?: number; rows?: number };
     const width = sink.columns ?? process.stdout.columns ?? 80;
     const rows = sink.rows ?? process.stdout.rows ?? 24;
-    const bodyLines = this.wrapBody(width);
+    const bodyLines = this.bodyLines(width);
     const footer = this.footerLine();
 
     // 回到上一次自己画的区域顶部（最多上移 rows-1，避免清到已滚出视野的上方内容）。
@@ -218,7 +236,10 @@ export class StatusLine {
     this.out.write('\x1b[J'); // 清到屏幕末尾（本区域 + 其下方，绝不动上方）
 
     if (bodyLines.length > 0) {
-      this.out.write(this.color(bodyLines.join('\n')));
+      // Markdown 模式：正文自带样式，不再套用统一的 color（避免覆盖）；
+      // 纯文本模式：套用 color（如跟随终端前景色）。
+      const text = this.md ? bodyLines.join('\n') : this.color(bodyLines.join('\n'));
+      this.out.write(text);
       this.out.write('\n');
     }
     this.out.write(footer);

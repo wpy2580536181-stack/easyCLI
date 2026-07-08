@@ -16,6 +16,7 @@ import { buildAgentSystemPrompt, buildPlanSystemPrompt, type AgentMode } from '.
 import { formatSnapshot, formatTokens, formatUSD, type CostTracker, type TrackerSnapshot } from '../core/observability';
 import { StreamRenderer } from './renderer';
 import { StatusLine } from './status';
+import { renderMarkdown } from './markdown';
 import { HistoryStore } from './history';
 import { COMMANDS } from './commands';
 import { printSplash } from './splash';
@@ -65,7 +66,7 @@ export async function runOnce(
   autoContextEnabled?: boolean,
   planMode?: boolean,
 ): Promise<void> {
-  const status = new StatusLine({ color: ui.assistant });
+  const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown });
   const sysCtx = { cwd: process.cwd(), skillsMenu: skillLoader?.menuText() ?? undefined };
   const sys = planMode ? buildPlanSystemPrompt(sysCtx) : buildAgentSystemPrompt(sysCtx);
   const history: ChatMessage[] = [
@@ -214,7 +215,7 @@ export async function startRepl(
   }
 
   async function runTurn(): Promise<void> {
-    const status = new StatusLine({ color: ui.assistant });
+    const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown });
     tracker.beginTurn();
     // Phase 16：自动上下文注入（记忆 + 知识库），作为临时系统消息进入本轮模型调用
     const ac = await autoCtxForTurn();
@@ -249,7 +250,7 @@ export async function startRepl(
 
   /** 规划模式的一轮：只读探测 + 产出计划，结束后进入「待批准」状态（Phase 15） */
   async function runPlan(): Promise<void> {
-    const status = new StatusLine({ color: ui.assistant });
+    const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown });
     tracker.beginTurn();
     // Phase 16：规划阶段同样自动注入上下文，帮助模型理解既有记忆/知识
     const ac = await autoCtxForTurn();
