@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import type { OutputSink } from './renderer';
+import type { StatusBar } from './statusbar';
 
 /**
  * 终端「状态行」：让用户在模型思考 / 调工具 / 流式输出期间，始终能看到一个
@@ -35,6 +36,11 @@ export interface StatusLineOpts {
    * 签名：(markdown源码, 终端宽度) => 每一屏显行。
    */
   markdown?: (md: string, width: number) => string[];
+  /**
+   * 可选的常驻状态栏。传入后，生成动画的 footer 行让出最底行（画在 rows-1），
+   * 最底行留给 StatusBar；每次重绘末尾顺带刷新 StatusBar。
+   */
+  statusBar?: StatusBar | null;
 }
 
 type Mode = 'idle' | 'thinking' | 'tool' | 'stream';
@@ -46,6 +52,8 @@ export class StatusLine {
   private readonly tty: boolean;
   /** 可选的 Markdown 渲染器（TTY 下把正文渲染成 Markdown） */
   private readonly md: ((md: string, width: number) => string[]) | null;
+  /** 可选的常驻状态栏（footer 让出最底行） */
+  private readonly sb: StatusBar | null;
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private frame = 0;
@@ -66,6 +74,7 @@ export class StatusLine {
     this.intervalMs = opts.intervalMs ?? 120;
     this.tty = !!process.stdout.isTTY;
     this.md = opts.markdown ?? null;
+    this.sb = opts.statusBar ?? null;
   }
 
   /** 开新一轮：显示「思考中…」并启动动画 */
@@ -129,7 +138,7 @@ export class StatusLine {
     this.dirty = true;
   }
 
-  /** 结束本轮：清除状态行，保留上方正文（模型回复），留出干净新行供后续输出 */
+  /** 结束本轮：清除 footer 行（保留上方正文即模型回复），并刷新最底状态栏 */
   stop(): void {
     if (this.timer) {
       clearInterval(this.timer);
@@ -141,14 +150,18 @@ export class StatusLine {
       this.body = '';
       return;
     }
-    // 光标此刻在 footer 行末尾；回行首清掉整行 footer，再换行到干净新行
+    // footer 落在哪一行：有状态栏时让出最底行（rows-1），否则为最底行（rows）
+    const sink = this.out as OutputSink & { rows?: number };
+    const rows = sink.rows ?? 24;
+    const footerRow = this.sb ? rows - 1 : rows;
+    // 只清 footer 行本身（保留上方已渲染的模型回复），不再额外换行扰动状态栏
     if (this.prevLines > 0) {
-      this.out.write('\r\x1b[K');
+      this.out.write(`\x1b[${footerRow};1H\x1b[K`);
     }
-    this.out.write('\n');
     this.mode = 'idle';
     this.prevLines = 0;
     this.body = '';
+    this.sb?.render();
   }
 
   // ===================== 内部 =====================
@@ -220,7 +233,7 @@ export class StatusLine {
     return lines;
   }
 
-  /** 整段重绘：回到上一次区域顶部清屏 → 写 body → 写 footer */
+  /** 整段重绘：绝对定位到区域顶部清屏 → 写 body → 写 footer（footer 在 rows-1，让出最底行） */
   private render(): void {
     const sink = this.out as OutputSink & { columns?: number; rows?: number };
     const width = sink.columns ?? process.stdout.columns ?? 80;
@@ -228,12 +241,15 @@ export class StatusLine {
     const bodyLines = this.bodyLines(width);
     const footer = this.footerLine();
 
-    // 回到上一次自己画的区域顶部（最多上移 rows-1，避免清到已滚出视野的上方内容）。
-    // 区域共 prevLines 行、footer 是最后一行，故从 footer 末行回退到顶部需 prevLines-1 行。
-    const up = Math.min(Math.max(0, this.prevLines - 1), Math.max(0, rows - 1));
-    if (up > 0) this.out.write(`\x1b[${up}A`);
-    this.out.write('\r'); // 行首
-    this.out.write('\x1b[J'); // 清到屏幕末尾（本区域 + 其下方，绝不动上方）
+    // footer 行：有状态栏时画在 rows-1（最底行留给状态栏），否则画在 rows
+    const footerRow = this.sb ? rows - 1 : rows;
+    const total = bodyLines.length + 1; // body 行数 + 1 行 footer
+    // 区域顶部：footer 是区域最后一行，故顶部 = footerRow - total + 1（封顶到第 1 行，
+    // 超长回复时从顶部整体重绘会覆盖历史，与改造前一致；滚动回滚仍可看完整内容）
+    const top = Math.max(1, footerRow - total + 1);
+
+    this.out.write(`\x1b[${top};1H`); // 移到区域顶部
+    this.out.write('\x1b[J'); // 清到屏幕末尾（含 footer 与下方，状态栏会随后由 sb 重绘）
 
     if (bodyLines.length > 0) {
       // Markdown 模式：正文自带样式，不再套用统一的 color（避免覆盖）；
@@ -243,10 +259,12 @@ export class StatusLine {
       this.out.write('\n');
     }
     this.out.write(footer);
-    // 光标停在 footer 行末尾，便于 stop() 精准清行
+    // 光标停在 footer 行末尾
 
-    this.prevLines = bodyLines.length + 1;
+    this.prevLines = total;
     this.dirty = false;
+    // 顺带刷新最底状态栏（保存/恢复光标，不影响本行光标位置）
+    this.sb?.render();
   }
 }
 

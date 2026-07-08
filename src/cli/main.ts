@@ -50,6 +50,7 @@ program
   .option('--resume', '恢复上次自动保存的会话（跨会话继续）')
   .option('--plan', '规划模式：只生成执行计划、不执行（搭配 -p 单次使用）')
   .option('--no-auto-context', '关闭每轮自动注入记忆/知识库上下文（Phase 16，默认开启）')
+  .option('--no-statusline', '关闭底部状态栏（statusline，默认开启）')
   .action(async () => {
     const opts = program.opts<
       ConfigOverrides & {
@@ -92,6 +93,8 @@ program
         rag: opts.rag,
         embedder: opts.embedder,
         fallback: opts.fallback,
+        // --no-statusline 关闭底部状态栏；未指定则交回文件/默认（开）
+        statusline: process.argv.includes('--no-statusline') ? false : undefined,
       },
       fileCfg,
     );

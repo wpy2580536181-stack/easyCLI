@@ -1,0 +1,160 @@
+import chalk from 'chalk';
+import type { OutputSink } from './renderer';
+import { ui } from './theme';
+
+/**
+ * 终端「状态栏」（statusline）：常驻在屏幕**最底一行**的信息条，仿 Claude Code。
+ *
+ * 显示字段（用 `·` 分隔，避免 emoji 堆叠带来的终端兼容问题）：
+ *   `模型 · 分支 · [ctx%] · ¥成本 · 时长 · 模式`
+ *   - 模型：青色突出（来自 config.llm.model）
+ *   - 分支：灰色（来自 git 分支）
+ *   - ctx%：上下文占用率（仅空闲时显示；生成期间为免与动画行的 ↓ N tokens 重复而隐藏；≥80% 转琥珀）
+ *   - ¥成本：绿色（来自 CostTracker 累计花费）
+ *   - 时长：mm:ss 会话时长（每秒刷新）
+ *   - 模式：正常(绿) / 规划(琥珀)
+ *
+ * 与输入框盒子 / 生成动画的共存（关键，避免重蹈 StatusLine 覆写事故）：
+ *   - 用终端「滚动区」把最后一行隔离出来：设置 `ESC[1;(rows-1)r`，
+ *     所有正常输出 / 输入框盒子 / 生成动画都只在 1..rows-1 内滚动，绝不会触及第 rows 行。
+ *   - StatusBar 始终用绝对定位 `ESC[rows;1H` 写最底行，与上方内容彻底解耦。
+ *   - 每次重绘前 `ESC[s` 保存光标、写完后 `ESC[u` 恢复，绝不干扰输入光标位置。
+ *   - 非 TTY（管道 / 测试）完全禁用，不输出任何内容。
+ */
+
+export type StatusMode = 'normal' | 'plan';
+
+export interface StatusBarState {
+  /** 模型名（如 agnes-2.0-flash） */
+  model: string;
+  /** git 分支 */
+  branch: string;
+  /** 当前模式 */
+  mode: StatusMode;
+  /** 成本文本（已带货币符号，如 ¥0.0015） */
+  costText: string;
+  /** 是否显示上下文占用率（生成期间隐藏） */
+  showCtx: boolean;
+  /** 上下文占用率 0-100（仅 showCtx 为 true 时显示） */
+  ctxPct?: number;
+  /** 会话起始时间（ms epoch），用于计算时长 */
+  startedAt: number;
+}
+
+export interface StatusBarOpts {
+  /** 输出目标（默认 process.stdout） */
+  out?: OutputSink;
+  /** 是否启用（默认 true；--no-statusline 时 false） */
+  enabled?: boolean;
+}
+
+export class StatusBar {
+  private readonly out: OutputSink;
+  private enabled: boolean;
+  private state: StatusBarState | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private readonly tty: boolean;
+  /** 是否已设置滚动区（退出时需复位） */
+  private scrollRegionSet = false;
+
+  constructor(opts: StatusBarOpts = {}) {
+    this.out = opts.out ?? process.stdout;
+    this.enabled = opts.enabled ?? true;
+    this.tty = !!(this.out as OutputSink & { isTTY?: boolean }).isTTY;
+  }
+
+  private rows(): number {
+    return (this.out as OutputSink & { rows?: number }).rows ?? 24;
+  }
+
+  /** 设置滚动区为 1..rows-1，把最底一行留给状态栏；终端过矮则跳过避免非法序列 */
+  private setupScrollRegion(): void {
+    if (!this.tty || !this.enabled) return;
+    const r = this.rows();
+    if (r < 4) return;
+    this.out.write(`\x1b[1;${r - 1}r`);
+    // 光标移到滚动区底部，使首次绘制的输入框盒子天然落在最底
+    this.out.write(`\x1b[${r - 1};1H`);
+    this.scrollRegionSet = true;
+  }
+
+  /** 启动：记录初始状态、设置滚动区、启动每秒刷新 */
+  start(state: StatusBarState): void {
+    this.state = state;
+    if (!this.enabled || !this.tty) return;
+    this.setupScrollRegion();
+    if (this.timer) clearInterval(this.timer);
+    this.timer = setInterval(() => this.render(), 1000);
+    if (typeof this.timer.unref === 'function') this.timer.unref();
+    this.render();
+  }
+
+  /** 局部更新（模型/分支/模式/成本/ctx 任一变化即重绘） */
+  update(patch: Partial<StatusBarState>): void {
+    if (!this.state) {
+      this.state = {
+        model: '',
+        branch: '',
+        mode: 'normal',
+        costText: '',
+        showCtx: true,
+        startedAt: Date.now(),
+      };
+    }
+    this.state = { ...this.state, ...patch };
+    this.render();
+  }
+
+  /** 停止每秒刷新（保留显示内容，由 release 真正清理） */
+  stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  private duration(): string {
+    if (!this.state) return '00:00';
+    const s = Math.floor((Date.now() - this.state.startedAt) / 1000);
+    const mm = String(Math.floor(s / 60)).padStart(2, '0');
+    const ss = String(s % 60).padStart(2, '0');
+    return `${mm}:${ss}`;
+  }
+
+  /** 拼出状态栏文本（不含底色，行末 chalk 自动复位） */
+  private build(): string {
+    const st = this.state!;
+    const segs: string[] = [];
+    segs.push(ui.primary(st.model)); // 模型名：青色突出
+    segs.push(chalk.gray(st.branch)); // 分支：灰色
+    if (st.showCtx && st.ctxPct != null) {
+      segs.push(st.ctxPct >= 80 ? chalk.yellow(`${st.ctxPct}% ctx`) : chalk.gray(`${st.ctxPct}% ctx`));
+    }
+    segs.push(chalk.green(st.costText)); // 成本：绿色
+    segs.push(chalk.gray(this.duration())); // 会话时长
+    segs.push(st.mode === 'plan' ? chalk.yellow('规划') : chalk.green('正常')); // 模式
+    return segs.join(chalk.gray(' · '));
+  }
+
+  /** 把状态栏写到屏幕最底行的绝对位置（保存/恢复光标，不影响输入光标） */
+  render(): void {
+    if (!this.enabled || !this.tty || !this.state) return;
+    const r = this.rows();
+    this.out.write('\x1b[s'); // 保存光标
+    this.out.write(`\x1b[${r};1H\x1b[K` + this.build());
+    this.out.write('\x1b[u'); // 恢复光标
+  }
+
+  /** 退出时：复位滚动区、清掉状态栏所在行 */
+  release(): void {
+    this.stop();
+    if (this.scrollRegionSet && this.tty) {
+      this.out.write('\x1b[r'); // 复位滚动区为全文
+      this.scrollRegionSet = false;
+    }
+    if (this.tty) {
+      const r = this.rows();
+      this.out.write(`\x1b[${r};1H\x1b[K`);
+    }
+  }
+}

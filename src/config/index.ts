@@ -38,6 +38,8 @@ export interface AppConfig {
   fallback?: FallbackConfig;
   /** Phase 11：RAG 嵌入器配置；默认手写 TF-IDF（离线） */
   embedder: EmbedderConfig;
+  /** 底部状态栏（statusline）开关，默认开 */
+  statusline: boolean;
 }
 
 export interface ConfigOverrides {
@@ -55,6 +57,8 @@ export interface ConfigOverrides {
   fallback?: string;
   /** CLI 直接传入的 embedder 配置（JSON 字符串），优先级高于 env/file */
   embedder?: string;
+  /** 底部状态栏开关（--no-statusline 时 false）；默认开 */
+  statusline?: boolean;
 }
 
 /**
@@ -181,6 +185,11 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
   const embEnv = parseJsonObject<EmbedderConfig>(process.env.AGENTCLI_EMBEDDER);
   const embedder: EmbedderConfig = embCli ?? embEnv ?? file?.embedder ?? { type: 'tfidf' };
 
+  // statusline：CLI > 环境变量(AGENTCLI_STATUSLINE=false) > 文件 > 默认 true
+  const statusline =
+    overrides.statusline ??
+    (process.env.AGENTCLI_STATUSLINE === 'false' ? false : (file?.statusline ?? true));
+
   return {
     provider,
     llm: { baseURL, apiKey, model, stream },
@@ -188,6 +197,7 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
     ragPath,
     fallback: fallbackFinal,
     embedder,
+    statusline,
   };
 }
 
@@ -208,6 +218,8 @@ export function appConfigToUserConfig(cfg: AppConfig): UserConfig {
   if (cfg.fallback && cfg.fallback.model) out.fallback = cfg.fallback;
   // 手写 TF-IDF 是默认值，无需落盘；只有切换到 API 嵌入器时才持久化，避免冗余配置
   if (cfg.embedder && cfg.embedder.type !== 'tfidf') out.embedder = cfg.embedder;
+  // 仅在显式关闭状态栏时落盘，避免把默认 true 写进文件造成冗余
+  if (cfg.statusline === false) out.statusline = false;
   return out;
 }
 

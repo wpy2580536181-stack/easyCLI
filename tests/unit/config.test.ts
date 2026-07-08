@@ -164,6 +164,7 @@ describe('Phase 8 配置持久化（store + 文件层）', () => {
       mcpServers: [{ command: 'c' }],
       ragPath: './d',
       embedder: { type: 'tfidf' },
+      statusline: true,
     });
     expect(uc).toEqual({
       provider: 'openai',

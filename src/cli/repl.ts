@@ -16,7 +16,9 @@ import { buildAgentSystemPrompt, buildPlanSystemPrompt, type AgentMode } from '.
 import { formatSnapshot, formatTokens, formatUSD, type CostTracker, type TrackerSnapshot } from '../core/observability';
 import { StreamRenderer } from './renderer';
 import { StatusLine } from './status';
+import { StatusBar, type StatusBarState, type StatusMode } from './statusbar';
 import { renderMarkdown } from './markdown';
+import { gatherContext } from '../core/prompts/context';
 import { HistoryStore } from './history';
 import { COMMANDS } from './commands';
 import { printSplash } from './splash';
@@ -126,6 +128,20 @@ export async function startRepl(
     );
   }
 
+  // —— 常驻底部状态栏（statusline）：模型 · 分支 · ctx% · ¥成本 · 时长 · 模式 ——
+  // 初始 ctxPct 留空，待 history 声明后由 refreshStatus() 填充（避免 TDZ）
+  const statusBar = new StatusBar({ enabled: config.statusline !== false });
+  const branch = gatherContext(process.cwd()).gitBranch ?? '(无)';
+  statusBar.start({
+    model: model.id,
+    branch,
+    mode: 'normal',
+    costText: '¥' + formatUSD(tracker.snapshot().cost).replace(/^\$/, ''),
+    showCtx: true,
+    ctxPct: undefined,
+    startedAt: Date.now(),
+  });
+
   const historyStore = new HistoryStore();
   // 本地维护一份「新 → 旧」历史，用于 Tab 补全与跨会话 ↑/↓。
   // 注：新版 @types/node 的 readline.Interface 已不直接暴露可读写的 rl.history 属性，
@@ -149,6 +165,7 @@ export async function startRepl(
       if (busy) abort.abort();
       else editor.exit();
     },
+    statusBar,
   });
   // 规划模式（Phase 15）需要「切换系统提示」：把正常/规划两套系统提示都准备好，
   // 进入/退出规划模式时只替换 history[0].content，不另起引擎。
@@ -214,12 +231,24 @@ export async function startRepl(
     return res.text ? res : undefined;
   }
 
+  /** 同步状态栏：刷新成本 / 上下文占用率 / 模式（每轮结束、回到输入态时调用） */
+  function refreshStatus(extra: Partial<StatusBarState> = {}): void {
+    const cum = tracker.snapshot();
+    const costText = '¥' + formatUSD(cum.cost).replace(/^\$/, '');
+    const ctxPct = compress
+      ? Math.round((estimateHistoryTokens(history) / compress.budgetTokens) * 100)
+      : undefined;
+    statusBar.update({ costText, ctxPct, mode, ...extra });
+  }
+
   async function runTurn(): Promise<void> {
-    const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown });
+    const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown, statusBar });
     tracker.beginTurn();
     // Phase 16：自动上下文注入（记忆 + 知识库），作为临时系统消息进入本轮模型调用
     const ac = await autoCtxForTurn();
     status.begin('思考中…');
+    // 生成期间隐藏上下文占用率（避免与动画行的 ↓ N tokens 重复）
+    statusBar.update({ showCtx: false });
     if (ac && ac.text) {
       status.setLabel(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
     }
@@ -250,7 +279,7 @@ export async function startRepl(
 
   /** 规划模式的一轮：只读探测 + 产出计划，结束后进入「待批准」状态（Phase 15） */
   async function runPlan(): Promise<void> {
-    const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown });
+    const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown, statusBar });
     tracker.beginTurn();
     // Phase 16：规划阶段同样自动注入上下文，帮助模型理解既有记忆/知识
     const ac = await autoCtxForTurn();
@@ -571,6 +600,7 @@ export async function startRepl(
           return 'continue';
         }
         setMode('plan');
+        statusBar.update({ mode }); // 状态栏模式切换为「规划」
         planCheckpoint = history.length; // 记录规划前位置，便于 /discard 回滚
         history.push({ role: 'user', content: task });
         console_.log(ui.muted('\n⚙ 规划中…'));
@@ -586,6 +616,7 @@ export async function startRepl(
         }
         setMode('normal');
         awaitingApproval = false;
+        statusBar.update({ mode }); // 状态栏模式切回「正常」
         dispatch('(计划已批准，请按上述计划开始执行所需操作)');
         return 'continue';
       }
@@ -598,6 +629,7 @@ export async function startRepl(
         history.length = planCheckpoint;
         setMode('normal');
         awaitingApproval = false;
+        statusBar.update({ mode }); // 状态栏模式切回「正常」
         console_.log(chalk.gray('已放弃计划，回到正常模式。'));
         return 'continue';
       }
@@ -644,6 +676,7 @@ export async function startRepl(
         }
       } finally {
         busy = false;
+        refreshStatus({ showCtx: true }); // 一轮结束：刷新成本/ctx/模式，恢复显示 ctx%
         if (exited) editor.exit(); // /exit、/quit：退出（resolve startRepl）
         else editor.show(); // 回到输入态
       }
@@ -663,7 +696,12 @@ export async function startRepl(
 
   // startRepl 在 REPL 真正关闭（/exit、Ctrl+C 空闲、Ctrl+D）时才 resolve，
   // 这样 main 里的 await shutdownMcp() 会在退出时执行，正确清理 MCP 子进程等资源。
-  return editor.start();
+  try {
+    refreshStatus(); // 首屏填充 ctx% / 成本 / 模式
+    return await editor.start();
+  } finally {
+    statusBar.release(); // 复位滚动区、清掉最底状态栏，避免污染后续终端输出
+  }
 }
 
 function printHelp(): void {

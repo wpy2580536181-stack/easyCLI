@@ -34,6 +34,8 @@ export interface UserConfig {
   fallback?: FallbackConfig;
   /** Phase 11：RAG 嵌入器配置（可选，默认手写 TF-IDF） */
   embedder?: EmbedderConfig;
+  /** 底部状态栏（statusline）开关，默认开；false 关闭 */
+  statusline?: boolean;
 }
 
 const mcpServerSchema = z.object({
@@ -71,6 +73,7 @@ const userConfigSchema = z.object({
       }),
     ])
     .optional(),
+  statusline: z.boolean().optional(),
 });
 
 /**

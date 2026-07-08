@@ -18,6 +18,7 @@ import readline from 'node:readline';
 import chalk from 'chalk';
 import type { CommandMeta } from './commands';
 import { ui } from './theme';
+import type { StatusBar } from './statusbar';
 
 /** 多行粘贴判定的 debounce 窗口（与 repl 保持一致） */
 const PASTE_DEBOUNCE_MS = 12;
@@ -60,6 +61,8 @@ export interface LineEditorOpts {
   onSubmit: (line: string) => void;
   /** Ctrl+C 等中断信号回调（由调用方决定：忙→取消，空闲→退出） */
   onInterrupt: () => void;
+  /** 常驻底部状态栏（绘制输入框后顺带刷新它，保持最底行信息） */
+  statusBar?: StatusBar | null;
 }
 
 type State = 'input' | 'hidden' | 'asking';
@@ -156,6 +159,8 @@ export class LineEditor {
       this.out.write('\x1b[1A\r\x1b[J');
       this.boxOnScreen = false;
     }
+    // 盒子消失，但最底状态栏仍应保留（刷新它）
+    this.opts.statusBar?.render();
     this.state = 'hidden';
   }
 
@@ -228,6 +233,8 @@ export class LineEditor {
       // 光标移回输入行
       this.out.write('\x1b[1A\r');
     }
+    // 输入框盒子绘制完成，顺带刷新最底状态栏（保存/恢复光标，不影响输入光标位置）
+    this.opts.statusBar?.render();
     this.boxOnScreen = true;
   }
 
@@ -244,7 +251,8 @@ export class LineEditor {
     if (this.selIndex >= matches.length) this.selIndex = matches.length - 1;
     if (this.selIndex < 0) this.selIndex = 0;
 
-    const maxVisible = Math.min(matches.length, Math.max(3, (this.out.rows ?? 24) - 3));
+    // 预留：输入框盒子 3 行 + 最底状态栏 1 行 + 1 行缓冲
+    const maxVisible = Math.min(matches.length, Math.max(2, (this.out.rows ?? 24) - 4));
     const visible = matches.slice(0, maxVisible);
     const reserved = 6 + 16 + 2; // "  /" + 名字补位 + 分隔
     const maxDesc = Math.max(8, width - reserved);
@@ -493,6 +501,8 @@ export class LineEditor {
       const width = this.out.columns ?? 80;
       this.out.write(paintInputBox(this.opts.prompt + line, width) + '\n');
       this.state = 'hidden';
+      // 提交后刷新最底状态栏
+      this.opts.statusBar?.render();
     }
     this.opts.onSubmit(line);
   }
