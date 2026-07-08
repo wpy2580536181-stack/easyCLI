@@ -26,6 +26,7 @@ import { SkillLoader, getSkillTools, type SkillSource } from '../core/skill';
 import type { CompressOptions } from '../core/memory/compressor';
 import { CostTracker } from '../core/observability';
 import { runOnce, startRepl } from './repl';
+import { runFirstRunSetup } from './setup';
 
 const program = new Command();
 
@@ -71,7 +72,13 @@ program
       return;
     }
 
-    // Phase 8：先读持久化配置（作为「持久化默认」层），再与 CLI/env 合并
+    // 首次运行向导：配置文件不存在（loadUserConfig() 返回 null）且处于交互终端时，
+    // 交互式收集 API Key/BaseURL/Model 并落盘；之后照常加载，用户无需再次输入。
+    // 非 TTY（CI/管道输入）跳过，避免悬挂等待，由 env 变量或现有配置兜底。
+    if (!loadUserConfig() && process.stdin.isTTY) {
+      await runFirstRunSetup();
+    }
+    // Phase 8：读取持久化配置（向导可能刚写入），作为「持久化默认」层，再与 CLI/env 合并
     const fileCfg = loadUserConfig();
     const config = loadConfig(
       {
