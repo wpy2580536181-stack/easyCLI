@@ -22,6 +22,33 @@ import { ui } from './theme';
 /** 多行粘贴判定的 debounce 窗口（与 repl 保持一致） */
 const PASTE_DEBOUNCE_MS = 12;
 
+/** 单个字符的显示宽度（CJK 等宽字符按 2，其余按 1），忽略 ANSI 转义 */
+function displayWidth(s: string): number {
+  const strip = s.replace(/\x1b\[[0-9;]*m/g, '');
+  let w = 0;
+  for (const ch of strip) {
+    w += ch.charCodeAt(0) > 0x2e80 ? 2 : 1;
+  }
+  return w;
+}
+
+/**
+ * 把一行内容渲染成「整行带输入框底色」：内容 + 右侧补空格到终端宽度，
+ * 这样行末到屏幕右边缘都有底色（不再只有文字部分有底色、后边空着）。
+ */
+function paintBoxLine(content: string, width: number): string {
+  const pad = Math.max(0, width - displayWidth(content));
+  return ui.inputBg(content + ' '.repeat(pad));
+}
+
+/**
+ * 把可能含换行的内容逐行刷底色（多行输入 / 粘贴的多行提交都各自撑满整行）。
+ */
+function paintInputBox(text: string, width: number): string {
+  return text.split('\n').map((ln) => paintBoxLine(ln, width)).join('');
+}
+
+
 export interface LineEditorOpts {
   /** 输入提示符，如 chalk.blue('你 › ') */
   prompt: string;
@@ -185,14 +212,14 @@ export class LineEditor {
       this.out.write('\x1b[1A');
       this.prevBoxRows = 0;
     }
-    // 3) 画提示符 + 当前输入（带输入框底色，与输出区分）
-    this.out.write(ui.inputBg(this.opts.prompt + this.input));
+    // 3) 画提示符 + 当前输入（整行带输入框底色，撑满终端宽度，与输出区分）
+    this.out.write(paintBoxLine(this.opts.prompt + this.input, width));
     // 4) 画斜杠命令菜单
     const box = this.computeDropdown(width);
     if (box.length > 0) {
       this.out.write('\n' + box.join('\n'));
       // 把光标移回提示行输入末尾，保证下一次按键位置正确
-      this.out.write(`\x1b[${box.length}A\r` + ui.inputBg(this.opts.prompt + this.input));
+      this.out.write(`\x1b[${box.length}A\r` + paintBoxLine(this.opts.prompt + this.input, width));
       this.prevBoxRows = box.length;
     }
   }
@@ -455,8 +482,9 @@ export class LineEditor {
         this.out.write('\x1b[1B\x1b[J\x1b[1A');
         this.prevBoxRows = 0;
       }
-      // 把输入回显为永久的一行（带输入框底色，与输出区分）
-      this.out.write(ui.inputBg(this.opts.prompt + line) + '\n');
+      // 把输入回显为永久行（整行带输入框底色，撑满终端宽度；多行粘贴逐行刷底色）
+      const width = this.out.columns ?? 80;
+      this.out.write(paintInputBox(this.opts.prompt + line, width) + '\n');
       this.state = 'hidden';
     }
     this.opts.onSubmit(line);
