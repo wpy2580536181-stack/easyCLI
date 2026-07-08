@@ -420,4 +420,42 @@ describe('LineEditor + StatusBar 集成（伪 TTY）', () => {
     editor.exit();
     await startP;
   });
+
+  it('输入 / 展开下拉后真实退格(DEL)删除，只保留一个干净输入框', async () => {
+    vi.useFakeTimers();
+    const { vt, stdin } = setup();
+    const sb = new StatusBar({ enabled: true });
+    sb.start({ model: 'agnes-2.0-flash', branch: 'main', mode: 'normal', costText: '¥0', showCtx: true, ctxPct: 0, startedAt: Date.now() });
+    // 很多命令 → 下拉很高，盒子锚定到靠近顶部
+    const cmds = Array.from({ length: 40 }, (_, i) => ({ name: `cmd${i}`, description: `命令 ${i}` }));
+    const editor = new LineEditor({
+      prompt: '> ',
+      history: [],
+      commands: cmds,
+      onSubmit: () => {},
+      onInterrupt: () => {},
+      statusBar: sb,
+    });
+    const startP = editor.start();
+
+    // 输入 /
+    stdin.emitData(Buffer.from('/'));
+    // 下拉已展开：应能看到命令项
+    const withDropdown = [1, 2, 3, 4, 5, 6, 7, 8].map((r) => stripAnsi(vt.line(r))).join('\n');
+    expect(withDropdown).toContain('/cmd0');
+
+    // 真实终端退格发 DEL(0x7f)
+    stdin.emitData(Buffer.from([0x7f]));
+
+    // 删除后：全屏只有 1 行输入提示（> ），且不再含 '/'
+    // 注意：vt.line() 会去掉行尾空白，故用 '>' 而非 '> ' 匹配
+    const inputLines = [1, 2, 3, 4, 5, 6, 7, 8, 9].filter((r) => stripAnsi(vt.line(r)).includes('>'));
+    expect(inputLines.length).toBe(1); // 恰好一个输入框
+    expect(stripAnsi(vt.line(8))).toContain('>'); // 输入行（空，无 /）
+    expect(stripAnsi(vt.line(8))).not.toContain('/'); // '/' 已被删除
+    expect(stripAnsi(vt.line(10))).toContain('agnes'); // 状态栏完好且唯一
+
+    editor.exit();
+    await startP;
+  });
 });

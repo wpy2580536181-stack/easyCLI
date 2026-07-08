@@ -216,34 +216,34 @@ export class LineEditor {
   private draw(): void {
     if (!this.tty) return;
     const width = this.out.columns ?? 80;
-    const box = this.computeDropdown(width);
+    const dropdown = this.computeDropdown(width);
+    const k = dropdown.length;
     const rows = this.out.rows ?? 24;
-    // 盒子高度：顶边(1) + 输入(1) + 下拉(k) + 底边(1)
-    const height = 3 + box.length;
-    // 有常驻状态栏时，最底行 rows 留给状态栏，盒子底边落在 rows-1；否则落在 rows。
-    // 这样盒子永远锚定在底部、绝不与状态栏重叠，也不受滚动区约束（彻底规避旧版
-    // 「滚动区让 \n 变成整段滚动 → 输入框塌缩/出现多个盒子」的问题）。
-    const bottom = this.opts.statusBar ? rows - 1 : rows;
-    const top = Math.max(1, bottom - height + 1);
+    const hasBar = !!this.opts.statusBar;
+    // 盒子由：顶边(1) + 输入(1) + 下拉(k) + 底边(1) 组成；底边始终绘制（即便无下拉）。
+    // 有常驻状态栏时最底行 rows 留给状态栏，盒子底边落在 rows-1；否则落在 rows。
+    const bottom = hasBar ? rows - 1 : rows;
+    const top = Math.max(1, bottom - (3 + k) + 1);
     // 清除：从「上一帧盒子顶」与「本帧盒子顶」中较高者清起，避免残留更长的下拉
     const clearFrom = this.boxTop > 0 ? Math.min(top, this.boxTop) : top;
-    this.out.write(`\x1b[${clearFrom};1H\x1b[J`); // 清到屏末（含状态栏行，稍后由 statusBar.render 重写）
-    // 锚定到本帧盒子顶边
-    this.out.write(`\x1b[${top};1H`);
-    // 顶边横线（带底色，整行）
-    this.out.write(paintBoxLine('─'.repeat(width), width) + '\n');
-    // 输入行（整行带输入框底色，撑满终端宽度，与输出区分）
-    this.out.write(paintBoxLine(this.opts.prompt + this.input, width));
-    // 斜杠命令菜单 or 底边横线
-    if (box.length > 0) {
-      this.out.write('\n' + box.join('\n'));
-      // 光标移回输入行，保证下一次按键位置正确
-      this.out.write(`\x1b[${box.length}A\r`);
+    // 清到屏末（含状态栏行，稍后由 statusBar.render 重写）
+    this.out.write(`\x1b[${clearFrom};1H\x1b[J`);
+    // 逐行绝对定位绘制：不依赖 \n 前进，规避不同终端换行/自动折行差异
+    // （这正是旧版「按删除键冒出多个输入框」的根因——\n 在边界处的处理不一致）。
+    // 顶边横线：无底色
+    this.out.write(`\x1b[${top};1H` + '─'.repeat(width));
+    // 输入行：保留输入框底色（仅这一行有底色），与上方输出区分
+    this.out.write(`\x1b[${top + 1};1H` + paintBoxLine(this.opts.prompt + this.input, width));
+    if (k > 0) {
+      for (let i = 0; i < k; i++) {
+        this.out.write(`\x1b[${top + 2 + i};1H` + dropdown[i]);
+      }
+      this.out.write(`\x1b[${top + 2 + k};1H` + '─'.repeat(width)); // 底边：无底色
     } else {
-      this.out.write('\n' + paintBoxLine('─'.repeat(width), width));
-      // 光标移回输入行
-      this.out.write('\x1b[1A\r');
+      this.out.write(`\x1b[${top + 2};1H` + '─'.repeat(width)); // 底边：无底色
     }
+    // 光标定位到输入行行首（保持原行为：光标停在输入行左侧）
+    this.out.write(`\x1b[${top + 1};1H`);
     // 输入框盒子绘制完成，顺带刷新最底状态栏（保存/恢复光标，不影响输入光标位置）
     this.boxTop = top;
     this.opts.statusBar?.render();
