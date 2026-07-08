@@ -79,6 +79,9 @@ export class LineEditor {
   /** 当前屏幕底部是否绘制着整个输入框盒子（顶边/输入/底边）。
    *  仅当为 true 时 draw/hide/commit 才向上回退清屏，避免擦到上方历史输出。 */
   private boxOnScreen = false;
+  /** 当前盒子顶边所在的物理行号（1-indexed）；-1 表示盒子不在屏上。
+   *  用于 hide/commit 精准清掉整盒、以及 draw 重绘时清掉可能残留的更长下拉。 */
+  private boxTop = -1;
 
   // —— 历史导航 ——
   private histIndex = -1;
@@ -155,9 +158,11 @@ export class LineEditor {
   hide(): void {
     if (!this.tty) return;
     if (this.boxOnScreen) {
-      // 上移 1 行到顶边，清掉整个输入框（顶边/输入/底边/菜单）
-      this.out.write('\x1b[1A\r\x1b[J');
+      // 从盒子顶边清到屏末，清掉整个输入框（顶边/输入/底边/菜单）
+      const clearFrom = this.boxTop > 0 ? this.boxTop : 1;
+      this.out.write(`\x1b[${clearFrom};1H\x1b[J`);
       this.boxOnScreen = false;
+      this.boxTop = -1;
     }
     // 盒子消失，但最底状态栏仍应保留（刷新它）
     this.opts.statusBar?.render();
@@ -211,19 +216,25 @@ export class LineEditor {
   private draw(): void {
     if (!this.tty) return;
     const width = this.out.columns ?? 80;
-    if (this.boxOnScreen) {
-      // 上移 1 行到顶边（输入框占 3 行：顶边/输入/底边，光标停在中间输入行），清到屏末
-      this.out.write('\x1b[1A\r\x1b[J');
-    } else {
-      // 首次 / 上一轮已清掉：只清当前行，不向上清（避免擦到上方历史输出）
-      this.out.write('\r\x1b[K');
-    }
+    const box = this.computeDropdown(width);
+    const rows = this.out.rows ?? 24;
+    // 盒子高度：顶边(1) + 输入(1) + 下拉(k) + 底边(1)
+    const height = 3 + box.length;
+    // 有常驻状态栏时，最底行 rows 留给状态栏，盒子底边落在 rows-1；否则落在 rows。
+    // 这样盒子永远锚定在底部、绝不与状态栏重叠，也不受滚动区约束（彻底规避旧版
+    // 「滚动区让 \n 变成整段滚动 → 输入框塌缩/出现多个盒子」的问题）。
+    const bottom = this.opts.statusBar ? rows - 1 : rows;
+    const top = Math.max(1, bottom - height + 1);
+    // 清除：从「上一帧盒子顶」与「本帧盒子顶」中较高者清起，避免残留更长的下拉
+    const clearFrom = this.boxTop > 0 ? Math.min(top, this.boxTop) : top;
+    this.out.write(`\x1b[${clearFrom};1H\x1b[J`); // 清到屏末（含状态栏行，稍后由 statusBar.render 重写）
+    // 锚定到本帧盒子顶边
+    this.out.write(`\x1b[${top};1H`);
     // 顶边横线（带底色，整行）
     this.out.write(paintBoxLine('─'.repeat(width), width) + '\n');
     // 输入行（整行带输入框底色，撑满终端宽度，与输出区分）
     this.out.write(paintBoxLine(this.opts.prompt + this.input, width));
     // 斜杠命令菜单 or 底边横线
-    const box = this.computeDropdown(width);
     if (box.length > 0) {
       this.out.write('\n' + box.join('\n'));
       // 光标移回输入行，保证下一次按键位置正确
@@ -234,6 +245,7 @@ export class LineEditor {
       this.out.write('\x1b[1A\r');
     }
     // 输入框盒子绘制完成，顺带刷新最底状态栏（保存/恢复光标，不影响输入光标位置）
+    this.boxTop = top;
     this.opts.statusBar?.render();
     this.boxOnScreen = true;
   }
@@ -310,6 +322,7 @@ export class LineEditor {
     if (this.state !== 'input') return;
     this.out.write('\x1b[2J\x1b[H');
     this.boxOnScreen = false; // 整屏已清，下一帧按首次绘制（不向上回退）
+    this.boxTop = -1;
     this.draw();
   }
 
@@ -494,8 +507,10 @@ export class LineEditor {
     if (this.tty) {
       // 清掉整个输入框盒子（提交后输入框不再需要边框，输入会作为永久行留在上方）
       if (this.boxOnScreen) {
-        this.out.write('\x1b[1A\r\x1b[J');
+        const clearFrom = this.boxTop > 0 ? this.boxTop : 1;
+        this.out.write(`\x1b[${clearFrom};1H\x1b[J`);
         this.boxOnScreen = false;
+        this.boxTop = -1;
       }
       // 把输入回显为永久行（整行带输入框底色，撑满终端宽度；多行粘贴逐行刷底色）
       const width = this.out.columns ?? 80;

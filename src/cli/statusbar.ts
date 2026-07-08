@@ -15,10 +15,11 @@ import { ui } from './theme';
  *   - 模式：正常(绿) / 规划(琥珀)
  *
  * 与输入框盒子 / 生成动画的共存（关键，避免重蹈 StatusLine 覆写事故）：
- *   - 用终端「滚动区」把最后一行隔离出来：设置 `ESC[1;(rows-1)r`，
- *     所有正常输出 / 输入框盒子 / 生成动画都只在 1..rows-1 内滚动，绝不会触及第 rows 行。
  *   - StatusBar 始终用绝对定位 `ESC[rows;1H` 写最底行，与上方内容彻底解耦。
  *   - 每次重绘前 `ESC[s` 保存光标、写完后 `ESC[u` 恢复，绝不干扰输入光标位置。
+ *   - 输入框盒子（line-editor）与生成动画（status）也都用绝对定位把自己锚定在
+ *     `rows-1` 及上方，天然把最底行留给本状态栏，无需设置滚动区（设置滚动区反而
+ *     会让依赖 \n 前进的输入框盒子在底部触发整段滚动、塌缩成多个盒子）。
  *   - 非 TTY（管道 / 测试）完全禁用，不输出任何内容。
  */
 
@@ -54,8 +55,6 @@ export class StatusBar {
   private state: StatusBarState | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly tty: boolean;
-  /** 是否已设置滚动区（退出时需复位） */
-  private scrollRegionSet = false;
 
   constructor(opts: StatusBarOpts = {}) {
     this.out = opts.out ?? process.stdout;
@@ -67,22 +66,10 @@ export class StatusBar {
     return (this.out as OutputSink & { rows?: number }).rows ?? 24;
   }
 
-  /** 设置滚动区为 1..rows-1，把最底一行留给状态栏；终端过矮则跳过避免非法序列 */
-  private setupScrollRegion(): void {
-    if (!this.tty || !this.enabled) return;
-    const r = this.rows();
-    if (r < 4) return;
-    this.out.write(`\x1b[1;${r - 1}r`);
-    // 光标移到滚动区底部，使首次绘制的输入框盒子天然落在最底
-    this.out.write(`\x1b[${r - 1};1H`);
-    this.scrollRegionSet = true;
-  }
-
-  /** 启动：记录初始状态、设置滚动区、启动每秒刷新 */
+  /** 启动：记录初始状态、启动每秒刷新 */
   start(state: StatusBarState): void {
     this.state = state;
     if (!this.enabled || !this.tty) return;
-    this.setupScrollRegion();
     if (this.timer) clearInterval(this.timer);
     this.timer = setInterval(() => this.render(), 1000);
     if (typeof this.timer.unref === 'function') this.timer.unref();
@@ -145,13 +132,9 @@ export class StatusBar {
     this.out.write('\x1b[u'); // 恢复光标
   }
 
-  /** 退出时：复位滚动区、清掉状态栏所在行 */
+  /** 退出时：清掉状态栏所在行 */
   release(): void {
     this.stop();
-    if (this.scrollRegionSet && this.tty) {
-      this.out.write('\x1b[r'); // 复位滚动区为全文
-      this.scrollRegionSet = false;
-    }
     if (this.tty) {
       const r = this.rows();
       this.out.write(`\x1b[${r};1H\x1b[K`);

@@ -229,12 +229,12 @@ describe('StatusBar 单元', () => {
     return new VT(rows, cols);
   }
 
-  it('启动设置滚动区 1..rows-1 并把状态栏写到最底行', () => {
+  it('启动不设置滚动区，用绝对定位把状态栏写到最底行', () => {
     const vt = newVT();
     const sb = new StatusBar({ out: makeOut(vt), enabled: true });
     sb.start({ model: 'agnes-2.0-flash', branch: 'main', mode: 'normal', costText: '¥0', showCtx: true, ctxPct: 12, startedAt: Date.now() });
-    expect(vt.text).toContain('\x1b[1;9r'); // 滚动区 1..9
-    expect(vt.text).toContain('\x1b[10;1H'); // 状态栏在最底行 10
+    expect(vt.text).not.toContain('\x1b[1;9r'); // 不再设置滚动区（避免干扰输入框盒子）
+    expect(vt.text).toContain('\x1b[10;1H'); // 状态栏在最底行 10（绝对定位）
     expect(stripAnsi(vt.line(10))).toContain('agnes-2.0-flash');
     expect(stripAnsi(vt.line(10))).toContain('main');
     expect(stripAnsi(vt.line(10))).toContain('12% ctx');
@@ -255,12 +255,12 @@ describe('StatusBar 单元', () => {
     // 光标恢复回原来位置（save 时与 restore 后一致）—— 这里只验证序列存在即可
   });
 
-  it('release 复位滚动区并清最底行', () => {
+  it('release 清最底行（不再复位滚动区）', () => {
     const vt = newVT();
     const sb = new StatusBar({ out: makeOut(vt), enabled: true });
     sb.start({ model: 'm', branch: 'b', mode: 'normal', costText: '¥0', showCtx: false, startedAt: Date.now() });
     sb.release();
-    expect(vt.text).toContain('\x1b[r'); // 复位滚动区
+    expect(vt.text).not.toContain('\x1b[r'); // 不再使用滚动区，故不复位
     expect(stripAnsi(vt.line(10))).toBe(''); // 最底行被清空
   });
 
@@ -380,6 +380,42 @@ describe('LineEditor + StatusBar 集成（伪 TTY）', () => {
     const committed = [vt.line(6), vt.line(7), vt.line(8)].map(stripAnsi).join(' ');
     expect(committed).toContain('> hello');
     expect(stripAnsi(vt.line(10))).toContain('agnes'); // 状态栏未被覆写
+
+    editor.exit();
+    await startP;
+  });
+
+  it('多次按键与退格只产生一个输入框盒子，不出现重复/塌缩', async () => {
+    vi.useFakeTimers();
+    const { vt, stdin } = setup();
+    const sb = new StatusBar({ enabled: true });
+    sb.start({ model: 'agnes-2.0-flash', branch: 'main', mode: 'normal', costText: '¥0', showCtx: true, ctxPct: 0, startedAt: Date.now() });
+    const submitted: string[] = [];
+    const editor = new LineEditor({
+      prompt: '> ',
+      history: [],
+      commands: [{ name: 'help', description: '查看帮助' }],
+      onSubmit: (l) => submitted.push(l),
+      onInterrupt: () => {},
+      statusBar: sb,
+    });
+    const startP = editor.start();
+
+    // 输入 hello，再退格 3 次 → hel
+    for (const ch of 'hello') stdin.emitData(Buffer.from(ch));
+    for (let i = 0; i < 3; i++) stdin.emitData(Buffer.from('\b'));
+
+    // 只有 1 个输入框盒子：顶边横线只应出现在第 7 行、底边横线只应出现在第 9 行，
+    // 上方第 1..6 行不应有任何盒子横线或输入提示，证明没有重复/塌缩的输入框。
+    const above = [1, 2, 3, 4, 5, 6].map((r) => stripAnsi(vt.line(r)));
+    for (const l of above) {
+      expect(l).not.toContain('─'); // 无残留盒子横线
+      expect(l).not.toContain('> '); // 无残留输入提示
+    }
+    expect(stripAnsi(vt.line(7))).toContain('─'); // 顶边横线
+    expect(stripAnsi(vt.line(8))).toContain('> hel'); // 输入行含退格后的文本
+    expect(stripAnsi(vt.line(9))).toContain('─'); // 底边横线
+    expect(stripAnsi(vt.line(10))).toContain('agnes'); // 状态栏完好且唯一
 
     editor.exit();
     await startP;
