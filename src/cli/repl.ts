@@ -18,6 +18,7 @@ import { StreamRenderer } from './renderer';
 import { HistoryStore } from './history';
 import { COMMANDS } from './commands';
 import { printSplash } from './splash';
+import { ui } from './theme';
 
 /** 多行粘贴判定的 debounce 窗口：窗口内连续到达的非 slash 行视为同一次粘贴 */
 const PASTE_DEBOUNCE_MS = 12;
@@ -38,8 +39,15 @@ function makeResolver(editor: LineEditor, permission: PermissionManager): Resolv
           return 'allow' as Decision;
         }
         if (a === 'y' || a === 'yes') return 'allow' as Decision;
-        return 'deny' as Decision;
-      });
+    return 'deny' as Decision;
+  });
+}
+
+/** 助手回复前的细分隔线（淡灰，跟随终端宽度，封顶 80） */
+function printDivider(): void {
+  const cols = process.stdout.columns ?? 80;
+  const width = Math.max(24, Math.min(cols, 80));
+  process.stdout.write('\n' + ui.muted('─'.repeat(width)) + '\n');
 }
 
 export async function runOnce(
@@ -56,7 +64,7 @@ export async function runOnce(
   autoContextEnabled?: boolean,
   planMode?: boolean,
 ): Promise<void> {
-  const renderer = new StreamRenderer(chalk.green);
+  const renderer = new StreamRenderer(ui.assistant);
   const sysCtx = { cwd: process.cwd(), skillsMenu: skillLoader?.menuText() ?? undefined };
   const sys = planMode ? buildPlanSystemPrompt(sysCtx) : buildAgentSystemPrompt(sysCtx);
   const history: ChatMessage[] = [
@@ -126,7 +134,7 @@ export async function startRepl(
   // historySize>0 启用 readline 内部历史（↑/↓ 可用），初始用历史文件 seed；
   // 用户输入由 readline 自动记录，我们额外通过 HistoryStore 落盘（去重 + 限长）。
   // 输入编辑器：TTY 下用 raw mode 自绘（含斜杠命令下拉菜单），非 TTY 回退 readline。
-  const promptStr = chalk.blue('你 › ');
+  const promptStr = ui.prompt;
   const editor = new LineEditor({
     prompt: promptStr,
     history: histLines,
@@ -205,7 +213,7 @@ export async function startRepl(
   }
 
   async function runTurn(): Promise<void> {
-    const r = new StreamRenderer(chalk.green);
+    const r = new StreamRenderer(ui.assistant);
     tracker.beginTurn();
     // Phase 16：自动上下文注入（记忆 + 知识库），作为临时系统消息进入本轮模型调用
     const ac = await autoCtxForTurn();
@@ -234,7 +242,7 @@ export async function startRepl(
 
   /** 规划模式的一轮：只读探测 + 产出计划，结束后进入「待批准」状态（Phase 15） */
   async function runPlan(): Promise<void> {
-    const r = new StreamRenderer(chalk.green);
+    const r = new StreamRenderer(ui.assistant);
     tracker.beginTurn();
     // Phase 16：规划阶段同样自动注入上下文，帮助模型理解既有记忆/知识
     const ac = await autoCtxForTurn();
@@ -500,7 +508,7 @@ export async function startRepl(
         const text = rest.join(' ').trim();
         if (text) {
           history.push({ role: 'user', content: text });
-          process.stdout.write(chalk.green('\n助手 › '));
+          printDivider();
           await runTurn();
         } else {
           console_.log(chalk.yellow('用法: /prompt <你的问题>'));
@@ -537,7 +545,7 @@ export async function startRepl(
         setMode('plan');
         planCheckpoint = history.length; // 记录规划前位置，便于 /discard 回滚
         history.push({ role: 'user', content: task });
-        process.stdout.write(chalk.green('\n规划中 › '));
+        console_.log(ui.muted('\n⚙ 规划中…'));
         awaitingApproval = false;
         await runPlan();
         return 'continue';
@@ -577,12 +585,12 @@ export async function startRepl(
     if (awaitingApproval) {
       // 计划待批准时，普通输入 = 对计划的补充修订：保留已生成计划，重新规划
       history.push({ role: 'user', content: input });
-      process.stdout.write(chalk.green('\n修订规划中 › '));
+      console_.log(ui.muted('\n⚙ 修订规划中…'));
       await runPlan();
       return 'continue';
     }
     history.push({ role: 'user', content: input });
-    process.stdout.write(chalk.green('\n助手 › '));
+    printDivider();
     await runTurn();
     return 'continue';
   }

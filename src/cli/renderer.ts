@@ -20,7 +20,7 @@ export class StreamRenderer {
   private inStatus = false;
 
   constructor(
-    private readonly color: (s: string) => string = chalk.white,
+    private readonly color: (s: string) => string = (s) => s,
     private readonly out: OutputSink = process.stdout,
   ) {}
 

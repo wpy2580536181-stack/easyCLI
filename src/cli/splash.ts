@@ -12,6 +12,7 @@
 import chalk from 'chalk';
 import { createRequire } from 'node:module';
 import { gatherContext } from '../core/prompts/context';
+import { ui } from './theme';
 
 const require = createRequire(import.meta.url);
 let pkg: { name?: string; version?: string };
@@ -45,7 +46,7 @@ export function printSplash(opts: SplashOptions = {}): void {
     chalk.gray('> ') +
       chalk.cyan(`${name}@${version}`) +
       chalk.white(' ') +
-      chalk.green(name) +
+      ui.primary(name) +
       chalk.white(' ') +
       chalk.white(cwd),
   );
@@ -55,7 +56,7 @@ export function printSplash(opts: SplashOptions = {}): void {
   console.log(chalk.gray(`> ${cmd}`));
 
   // ── 第 3 行：装饰横幅（色块 + 品牌 + 版本）────────────────────────────────────
-  const block = chalk.bgGreen('    ');
+  const block = chalk.bgCyan('    ');
   console.log(
     '\n' +
       block +
@@ -74,7 +75,7 @@ export function printSplash(opts: SplashOptions = {}): void {
     info.push(chalk.gray('📦 模型: ') + chalk.cyan(opts.modelId));
   }
   if (ctx.gitBranch) {
-    info.push(chalk.gray('🌿 分支: ') + chalk.green(ctx.gitBranch));
+    info.push(chalk.gray('🌿 分支: ') + ui.primary(ctx.gitBranch));
   }
   if (info.length) console.log(info.join('   '));
 }
