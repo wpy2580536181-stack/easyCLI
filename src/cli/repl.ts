@@ -17,6 +17,7 @@ import { formatSnapshot, formatTokens, formatUSD, type CostTracker, type Tracker
 import { StreamRenderer } from './renderer';
 import { HistoryStore } from './history';
 import { completeLine, SLASH_COMMANDS } from './completer';
+import { printSplash } from './splash';
 
 /** 多行粘贴判定的 debounce 窗口：窗口内连续到达的非 slash 行视为同一次粘贴 */
 const PASTE_DEBOUNCE_MS = 12;
@@ -108,10 +109,8 @@ export async function startRepl(
   resume?: boolean,
 ): Promise<void> {
   const console_ = console;
-  console_.log(
-    chalk.bold.green('agent-cli') +
-      chalk.gray(`  (${model.id})  —  输入 /help 查看命令，Ctrl+C 中断当前生成`),
-  );
+  // 启动欢迎面板（Splash）：显示项目信息 + 运行信息（模型 / git 分支）
+  printSplash({ modelId: model.id });
   if (!config.llm.apiKey) {
     console_.log(
       chalk.yellow('⚠ 未检测到 API Key，请设置 AGENTCLI_API_KEY（或 OPENAI_API_KEY）后再对话。'),
