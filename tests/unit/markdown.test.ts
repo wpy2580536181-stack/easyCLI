@@ -34,7 +34,7 @@ describe('renderMarkdown', () => {
   it('标题去掉 # 井号', () => {
     const out = renderMarkdown('### 核心目标', 80);
     expect(out.join('\n')).not.toContain('#');
-    expect(strip(out[0])).toContain('核心目标');
+    expect(strip(out[0] ?? '')).toContain('核心目标');
   });
 
   it('无序列表用 • 且去掉 -, 有序列表用数字', () => {
@@ -42,8 +42,8 @@ describe('renderMarkdown', () => {
     expect(a.join('\n')).toContain('•');
     expect(a.join('\n')).not.toContain('- ');
     const b = renderMarkdown('1. 第一步\n2. 第二步', 80);
-    expect(strip(b[0])).toContain('1.');
-    expect(strip(b[1])).toContain('2.');
+    expect(strip(b[0] ?? '')).toContain('1.');
+    expect(strip(b[1] ?? '')).toContain('2.');
   });
 
   it('代码块渲染 λ 语言头，且不残留 ```', () => {

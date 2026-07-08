@@ -178,9 +178,9 @@ export class StatusLine {
     const sec = this.elapsedSec();
     const glyph = SPIN[this.frame % SPIN.length];
     if (this.mode === 'stream') {
-      return chalk.gray(`${glyph} ${this.label} (${sec}s · ↓ ${this.estTokens} tokens)`);
+      return `${chalk.cyan(glyph)} ${chalk.bold.gray(this.label)} ${chalk.gray(`(${sec}s · ↓ ${this.estTokens} tokens)`)}`;
     }
-    return chalk.gray(`${glyph} ${this.label} (${sec}s)`);
+    return `${chalk.cyan(glyph)} ${chalk.bold.gray(this.label)} ${chalk.gray(`(${sec}s)`)}`;
   }
 
   /** 计算流式正文应当显示的屏显行（Markdown 模式实时渲染，否则纯文本按宽度折行） */

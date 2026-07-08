@@ -17,6 +17,7 @@
 import readline from 'node:readline';
 import chalk from 'chalk';
 import type { CommandMeta } from './commands';
+import { ui } from './theme';
 
 /** 多行粘贴判定的 debounce 窗口（与 repl 保持一致） */
 const PASTE_DEBOUNCE_MS = 12;
@@ -184,14 +185,14 @@ export class LineEditor {
       this.out.write('\x1b[1A');
       this.prevBoxRows = 0;
     }
-    // 3) 画提示符 + 当前输入
-    this.out.write(this.opts.prompt + this.input);
+    // 3) 画提示符 + 当前输入（带输入框底色，与输出区分）
+    this.out.write(ui.inputBg(this.opts.prompt + this.input));
     // 4) 画斜杠命令菜单
     const box = this.computeDropdown(width);
     if (box.length > 0) {
       this.out.write('\n' + box.join('\n'));
       // 把光标移回提示行输入末尾，保证下一次按键位置正确
-      this.out.write(`\x1b[${box.length}A\r` + this.opts.prompt + this.input);
+      this.out.write(`\x1b[${box.length}A\r` + ui.inputBg(this.opts.prompt + this.input));
       this.prevBoxRows = box.length;
     }
   }
@@ -454,8 +455,8 @@ export class LineEditor {
         this.out.write('\x1b[1B\x1b[J\x1b[1A');
         this.prevBoxRows = 0;
       }
-      // 把输入回显为永久的一行
-      this.out.write(this.opts.prompt + line + '\n');
+      // 把输入回显为永久的一行（带输入框底色，与输出区分）
+      this.out.write(ui.inputBg(this.opts.prompt + line) + '\n');
       this.state = 'hidden';
     }
     this.opts.onSubmit(line);

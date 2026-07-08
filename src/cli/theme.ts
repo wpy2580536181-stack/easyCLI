@@ -21,6 +21,8 @@ export const ui = {
   accent: chalk.yellow,
   /** 用户输入提示符（青色箭头，去掉「你」字） */
   prompt: chalk.cyan('❯ '),
+  /** 输入框底色：比背景稍亮/稍暗，用于区分输入行（类 Claude Code 的输入框高亮） */
+  inputBg: (s: string) => chalk.bgBlackBright(s),
   /** AI 输出正文：不强制颜色，跟随终端默认前景色（深色/浅色终端均清晰） */
   assistant: (s: string): string => s,
   /** 成功（仅点缀用，如保存成功勾选） */
