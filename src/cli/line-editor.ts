@@ -408,10 +408,7 @@ export class LineEditor {
         const typed = this.input.slice(1).trim().toLowerCase();
         // 唯一匹配，或已精确输全名 → 直接执行
         if (m.length === 1 || typed === sel.name) {
-          const line = '/' + sel.name;
-          this.input = '';
-          this.selIndex = 0;
-          this.opts.onSubmit(line);
+          this.commit('/' + sel.name);
           return;
         }
         // 否则把高亮项填回输入框，继续编辑（如补子命令）
@@ -421,10 +418,7 @@ export class LineEditor {
         return;
       }
       // 无匹配：原样提交（handleSlash 会报未知命令）
-      const line = this.input;
-      this.input = '';
-      this.selIndex = 0;
-      this.opts.onSubmit(line);
+      this.commit(this.input);
       return;
     }
     // 普通文本：进入多行粘贴缓冲（短窗内到达的后续行视为同一次粘贴）
@@ -444,6 +438,26 @@ export class LineEditor {
       this.draw();
       return;
     }
-    this.opts.onSubmit(combined);
+    this.commit(combined);
+  }
+
+  /**
+   * 提交一行：TTY 下把「提示符 + 输入」作为永久行写出（像 Claude Code 的「❯ 你的问题」），
+   * 避免回车后输入行被清空而「消失」；随后交给调用方处理。
+   * 非 TTY（readline 回退）由 readline 自己回显，无需处理。
+   */
+  private commit(line: string): void {
+    if (this.tty) {
+      // 清掉当前输入行与可能残留的菜单
+      this.out.write('\r\x1b[K');
+      if (this.prevBoxRows > 0) {
+        this.out.write('\x1b[1B\x1b[J\x1b[1A');
+        this.prevBoxRows = 0;
+      }
+      // 把输入回显为永久的一行
+      this.out.write(this.opts.prompt + line + '\n');
+      this.state = 'hidden';
+    }
+    this.opts.onSubmit(line);
   }
 }

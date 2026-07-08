@@ -15,6 +15,7 @@ import { runAgent } from '../core/agent';
 import { buildAgentSystemPrompt, buildPlanSystemPrompt, type AgentMode } from '../core/prompts';
 import { formatSnapshot, formatTokens, formatUSD, type CostTracker, type TrackerSnapshot } from '../core/observability';
 import { StreamRenderer } from './renderer';
+import { StatusLine } from './status';
 import { HistoryStore } from './history';
 import { COMMANDS } from './commands';
 import { printSplash } from './splash';
@@ -64,7 +65,7 @@ export async function runOnce(
   autoContextEnabled?: boolean,
   planMode?: boolean,
 ): Promise<void> {
-  const renderer = new StreamRenderer(ui.assistant);
+  const status = new StatusLine({ color: ui.assistant });
   const sysCtx = { cwd: process.cwd(), skillsMenu: skillLoader?.menuText() ?? undefined };
   const sys = planMode ? buildPlanSystemPrompt(sysCtx) : buildAgentSystemPrompt(sysCtx);
   const history: ChatMessage[] = [
@@ -76,27 +77,27 @@ export async function runOnce(
   let autoContext: string | undefined;
   if (autoContextEnabled ?? true) {
     const ac = await buildAutoContext(prompt, { memory, ragStore });
-    if (ac.text) {
-      autoContext = ac.text;
-      renderer.status(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
-    }
+    if (ac.text) autoContext = ac.text;
   }
   // 非交互模式无 HITL 提示：默认只读工具放行，写/危险操作被拒（安全默认）
-  await runAgent(history, {
-    model,
-    tools,
-    permission,
-    bus,
-    compress,
-    cwd: process.cwd(),
-    planMode,
-    autoContext,
-    onText: (c) => renderer.push(c),
-    onToolCall: (call) => renderer.status(`🔧 调用工具 ${call.name}`),
-    onToolResult: (call, res) =>
-      renderer.status(`${res.ok ? '✓' : '✗'} ${call.name} 返回 ${String(res.output).length} 字符`),
-  });
-  renderer.newline();
+  status.begin('思考中…');
+  try {
+    await runAgent(history, {
+      model,
+      tools,
+      permission,
+      bus,
+      compress,
+      cwd: process.cwd(),
+      planMode,
+      autoContext,
+      onText: (c) => status.pushText(c),
+      onToolCall: (call) => status.toolStart(call.name),
+      onToolResult: (call, res) => status.toolDone(call.name, res.ok),
+    });
+  } finally {
+    status.stop();
+  }
   // Phase 14：打印本次会话总成本（单次模式，单轮即累计）
   console.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
 }
@@ -213,28 +214,34 @@ export async function startRepl(
   }
 
   async function runTurn(): Promise<void> {
-    const r = new StreamRenderer(ui.assistant);
+    const status = new StatusLine({ color: ui.assistant });
     tracker.beginTurn();
     // Phase 16：自动上下文注入（记忆 + 知识库），作为临时系统消息进入本轮模型调用
     const ac = await autoCtxForTurn();
+    status.begin('思考中…');
     if (ac && ac.text) {
-      r.status(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
+      status.setLabel(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
     }
-    await runAgent(history, {
-      model,
-      tools,
-      permission,
-      bus,
-      compress,
-      signal: abort.signal,
-      cwd: process.cwd(),
-      autoContext: ac?.text,
-      onText: (c) => r.push(c),
-      onToolCall: (call) => r.status(`🔧 调用工具 ${call.name}`),
-      onToolResult: (call, res) => r.status(`${res.ok ? '✓' : '✗'} ${call.name}`),
-      onCompact: (info) => r.status(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
-    });
-    r.newline();
+    try {
+      await runAgent(history, {
+        model,
+        tools,
+        permission,
+        bus,
+        compress,
+        signal: abort.signal,
+        cwd: process.cwd(),
+        autoContext: ac?.text,
+        // 状态行动画：流式正文 + 实时 tokens/秒数；工具调用时显示工具名
+        onText: (c) => status.pushText(c),
+        onToolCall: (call) => status.toolStart(call.name),
+        onToolResult: (call, res) => status.toolDone(call.name, res.ok),
+        onCompact: (info) => status.setLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
+      });
+    } finally {
+      // 无论正常结束还是被 Ctrl+C 中断，都清掉状态行动画，避免残留半行
+      status.stop();
+    }
     void persistAutosave();
     // Phase 14：每轮结束展示本轮 + 累计成本
     console_.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
@@ -242,31 +249,35 @@ export async function startRepl(
 
   /** 规划模式的一轮：只读探测 + 产出计划，结束后进入「待批准」状态（Phase 15） */
   async function runPlan(): Promise<void> {
-    const r = new StreamRenderer(ui.assistant);
+    const status = new StatusLine({ color: ui.assistant });
     tracker.beginTurn();
     // Phase 16：规划阶段同样自动注入上下文，帮助模型理解既有记忆/知识
     const ac = await autoCtxForTurn();
+    status.begin('规划中…');
     if (ac && ac.text) {
-      r.status(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
+      status.setLabel(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
     }
-    await runAgent(history, {
-      model,
-      tools,
-      permission,
-      bus,
-      compress,
-      signal: abort.signal,
-      cwd: process.cwd(),
-      planMode: true,
-      autoContext: ac?.text,
-      onText: (c) => r.push(c),
-      onToolCall: (call) => r.status(`🔍 规划探测 ${call.name}`),
-      onToolResult: (call, res) => r.status(`${res.ok ? '✓' : '✗'} ${call.name}`),
-      onBatch: (info) =>
-        r.status(`⚡ 并行探测 ${info.readCount} 个只读工具（峰值并发 ${info.maxConcurrency}）`),
-      onCompact: (info) => r.status(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
-    });
-    r.newline();
+    try {
+      await runAgent(history, {
+        model,
+        tools,
+        permission,
+        bus,
+        compress,
+        signal: abort.signal,
+        cwd: process.cwd(),
+        planMode: true,
+        autoContext: ac?.text,
+        onText: (c) => status.pushText(c),
+        onToolCall: (call) => status.setLabel(`🔍 规划探测 ${call.name}`),
+        onToolResult: (call, res) => status.setLabel(`${res.ok ? '✓' : '✗'} ${call.name}`),
+        onBatch: (info) =>
+          status.setLabel(`⚡ 并行探测 ${info.readCount} 个只读工具（峰值并发 ${info.maxConcurrency}）`),
+        onCompact: (info) => status.setLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
+      });
+    } finally {
+      status.stop();
+    }
     void persistAutosave();
     console_.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
     awaitingApproval = true;
