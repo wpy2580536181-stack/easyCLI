@@ -73,7 +73,9 @@ export class LineEditor {
   // —— TTY 输入缓冲 ——
   private input = '';
   private selIndex = 0;
-  private prevBoxRows = 0;
+  /** 当前屏幕底部是否绘制着整个输入框盒子（顶边/输入/底边）。
+   *  仅当为 true 时 draw/hide/commit 才向上回退清屏，避免擦到上方历史输出。 */
+  private boxOnScreen = false;
 
   // —— 历史导航 ——
   private histIndex = -1;
@@ -146,13 +148,13 @@ export class LineEditor {
 
   // ===================== 公开接口（供 REPL 调用） =====================
 
-  /** 模型生成前：清掉输入行与菜单，让输出从干净处开始 */
+  /** 模型生成前：清掉整个输入框盒子，让输出从干净处开始 */
   hide(): void {
     if (!this.tty) return;
-    this.out.write('\r\x1b[K');
-    if (this.prevBoxRows > 0) {
-      this.out.write('\x1b[1B\x1b[J\x1b[1A');
-      this.prevBoxRows = 0;
+    if (this.boxOnScreen) {
+      // 上移 1 行到顶边，清掉整个输入框（顶边/输入/底边/菜单）
+      this.out.write('\x1b[1A\r\x1b[J');
+      this.boxOnScreen = false;
     }
     this.state = 'hidden';
   }
@@ -204,24 +206,29 @@ export class LineEditor {
   private draw(): void {
     if (!this.tty) return;
     const width = this.out.columns ?? 80;
-    // 1) 清掉当前提示行
-    this.out.write('\r\x1b[K');
-    // 2) 清掉上一轮画的菜单（如果有）
-    if (this.prevBoxRows > 0) {
-      this.out.write('\x1b[1B\x1b[J');
-      this.out.write('\x1b[1A');
-      this.prevBoxRows = 0;
+    if (this.boxOnScreen) {
+      // 上移 1 行到顶边（输入框占 3 行：顶边/输入/底边，光标停在中间输入行），清到屏末
+      this.out.write('\x1b[1A\r\x1b[J');
+    } else {
+      // 首次 / 上一轮已清掉：只清当前行，不向上清（避免擦到上方历史输出）
+      this.out.write('\r\x1b[K');
     }
-    // 3) 画提示符 + 当前输入（整行带输入框底色，撑满终端宽度，与输出区分）
+    // 顶边横线（带底色，整行）
+    this.out.write(paintBoxLine('─'.repeat(width), width) + '\n');
+    // 输入行（整行带输入框底色，撑满终端宽度，与输出区分）
     this.out.write(paintBoxLine(this.opts.prompt + this.input, width));
-    // 4) 画斜杠命令菜单
+    // 斜杠命令菜单 or 底边横线
     const box = this.computeDropdown(width);
     if (box.length > 0) {
       this.out.write('\n' + box.join('\n'));
-      // 把光标移回提示行输入末尾，保证下一次按键位置正确
-      this.out.write(`\x1b[${box.length}A\r` + paintBoxLine(this.opts.prompt + this.input, width));
-      this.prevBoxRows = box.length;
+      // 光标移回输入行，保证下一次按键位置正确
+      this.out.write(`\x1b[${box.length}A\r`);
+    } else {
+      this.out.write('\n' + paintBoxLine('─'.repeat(width), width));
+      // 光标移回输入行
+      this.out.write('\x1b[1A\r');
     }
+    this.boxOnScreen = true;
   }
 
   private filtered(): CommandMeta[] {
@@ -294,6 +301,7 @@ export class LineEditor {
   private handleCtrlL(): void {
     if (this.state !== 'input') return;
     this.out.write('\x1b[2J\x1b[H');
+    this.boxOnScreen = false; // 整屏已清，下一帧按首次绘制（不向上回退）
     this.draw();
   }
 
@@ -476,11 +484,10 @@ export class LineEditor {
    */
   private commit(line: string): void {
     if (this.tty) {
-      // 清掉当前输入行与可能残留的菜单
-      this.out.write('\r\x1b[K');
-      if (this.prevBoxRows > 0) {
-        this.out.write('\x1b[1B\x1b[J\x1b[1A');
-        this.prevBoxRows = 0;
+      // 清掉整个输入框盒子（提交后输入框不再需要边框，输入会作为永久行留在上方）
+      if (this.boxOnScreen) {
+        this.out.write('\x1b[1A\r\x1b[J');
+        this.boxOnScreen = false;
       }
       // 把输入回显为永久行（整行带输入框底色，撑满终端宽度；多行粘贴逐行刷底色）
       const width = this.out.columns ?? 80;
