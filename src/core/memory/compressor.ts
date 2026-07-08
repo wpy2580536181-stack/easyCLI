@@ -1,4 +1,5 @@
-import type { ChatMessage } from '../chatmodel/types';
+import type { ChatMessage, ChatModel } from '../chatmodel/types';
+import { compressorSystemPrompt } from '../prompts';
 
 /**
  * 上下文压缩器（Phase 4，决策 7 + §8.1 的 4 级渐进压缩）。
@@ -149,4 +150,17 @@ export async function compressHistory(
   // 无摘要器兜底：激进折叠（含助手长文本）
   const aggressive = middle.map((t) => t.map((m) => aggressiveFold(m, opts.maxToolOutputChars)));
   return [...system, ...aggressive.flat(), ...recent.flat()];
+}
+
+/** 默认摘要器：用模型把一段对话文本压成中文摘要（供手动 /compact 命令使用） */
+export function createDefaultSummarizer(model: ChatModel): Summarizer {
+  return async (text: string) => {
+    const r = await model.complete({
+      messages: [
+        { role: 'system', content: compressorSystemPrompt() },
+        { role: 'user', content: text },
+      ],
+    });
+    return r.content ?? '';
+  };
 }

@@ -5,7 +5,7 @@ import { type AppConfig, saveUserConfig, appConfigToUserConfig, maskSecret, CONF
 import type { ToolRegistry } from '../core/tools/registry';
 import type { PermissionManager, Decision, Resolver } from '../core/security/permission';
 import type { EventBus } from '../core/events/bus';
-import { compressHistory, type CompressOptions } from '../core/memory/compressor';
+import { compressHistory, createDefaultSummarizer, type CompressOptions, estimateHistoryTokens } from '../core/memory/compressor';
 import { MemoryStore } from '../core/memory/store';
 import { RagStore } from '../core/rag/store';
 import { buildAutoContext, lastUserText, type AutoContextResult } from '../core/context';
@@ -367,6 +367,22 @@ export async function startRepl(
           extras.push(`压缩 ${s.compressions} 次 / 省 ~${formatTokens(s.tokensSavedByCompact)} tok`);
         if (s.retrievals) extras.push(`检索 ${s.retrievals} 次`);
         if (extras.length) console_.log(chalk.gray(`  事件     : ${extras.join(' · ')}`));
+        return 'continue';
+      }
+      case 'compact': {
+        const before = estimateHistoryTokens(history);
+        console_.log(chalk.gray(`上下文 ${before} token，开始压缩…`));
+        const summarizer = createDefaultSummarizer(model);
+        const compressOpts = compress ?? {
+          budgetTokens: 8000,
+          keepRecentTurns: 4,
+          maxToolOutputChars: 1500,
+        };
+        const compressed = await compressHistory(history, { ...compressOpts, summarizer });
+        const after = estimateHistoryTokens(compressed);
+        history.length = 0;
+        history.push(...compressed);
+        console_.log(chalk.gray(`压缩完成：${before} → ${after} token（省 ~${formatTokens(before - after)} token）`));
         return 'continue';
       }
       case 'perm':

@@ -26,6 +26,7 @@ export const COMMANDS: readonly CommandMeta[] = [
   { name: 'skills', description: '列出已加载技能' },
   { name: 'skill', description: '查看某技能的完整指令（/skill <name>）' },
   { name: 'perm', description: '显示当前权限允许/拒绝列表' },
+  { name: 'compact', description: '手动压缩上下文（裁剪/折叠/摘要）' },
   { name: 'config', description: '查看当前生效配置（/config save 持久化）' },
   { name: 'save', description: '保存当前会话（/save [名称]）' },
   { name: 'load', description: '载入已保存会话（/load [名称]）' },
