@@ -6,7 +6,10 @@ export type AgentEventType =
   | 'turn'
   | 'compact'
   | 'token'
-  | 'tool:batch';
+  | 'tool:batch'
+  | 'agent:spawn'
+  | 'agent:done'
+  | 'agent:error';
 
 export interface AgentEvent {
   type: AgentEventType;
@@ -18,6 +21,7 @@ type Handler = (e: AgentEvent) => void;
 /**
  * 极简事件总线：解耦「Agent 循环」与「审计/可观测性」。
  * 循环只负责 emit，审计日志、未来监控都作为独立订阅者挂上，不推翻结构。
+ * Phase 17 起新增 agent:spawn / agent:done / agent:error，用于 Multi-Agent 子 Agent 运行态可观测。
  */
 export class EventBus {
   private readonly handlers = new Map<AgentEventType, Handler[]>();

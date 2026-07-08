@@ -265,6 +265,54 @@ export async function startRepl(
         );
   }
 
+  /** Phase 17：Multi-Agent —— 把任务拆给 Planner → 并发 Worker（各自隔离 worktree）→ Reviewer */
+  async function runMultiAgentCommand(task: string): Promise<void> {
+    const { runMultiAgent } = await import('../core/multiagent');
+    const r = new StreamRenderer(chalk.cyan);
+    console_.log(chalk.bold.cyan('\n⚙️ Multi-Agent 启动'));
+    let spawns = 0;
+    const res = await runMultiAgent({
+      task,
+      model,
+      tools,
+      permission,
+      bus,
+      compress,
+      cwd: process.cwd(),
+      hooks: {
+        onAgentSpawn: (info) => {
+          spawns++;
+          console_.log(chalk.gray(`  ▸ ${info.label} 启动`));
+        },
+        onAgentDone: (info) =>
+          console_.log(chalk.gray(`  ✓ ${info.label} 完成（${info.ok ? '成功' : '失败'}）`)),
+        onText: (role, id, chunk) => {
+          if (role === 'worker' && id) r.push(chunk);
+        },
+      },
+    });
+    r.newline();
+    if (res.plan.subtasks.length > 0) {
+      console_.log(chalk.bold('\n📋 计划'));
+      console_.log(chalk.gray(`  目标：${res.plan.goal || task}`));
+      for (const s of res.plan.subtasks) {
+        console_.log(chalk.gray(`  · [${s.id}] ${s.title}`));
+      }
+    }
+    console_.log(chalk.bold('\n🛠 Worker 结果（各自在隔离 worktree 中运行）'));
+    for (const w of res.workers) {
+      console_.log(
+        chalk[w.ok ? 'green' : 'red'](`  [${w.subtask.id}] ${w.subtask.title} — ${w.ok ? '成功' : '失败'}`),
+      );
+      console_.log(chalk.gray(`    工作目录：${w.cwd}`));
+      if (w.output.trim()) console_.log(chalk.gray(`    产出：${w.output.trim().slice(0, 400)}`));
+      if (w.error) console_.log(chalk.red(`    错误：${w.error}`));
+    }
+    console_.log(chalk.bold('\n🔍 Reviewer 结论'));
+    console_.log(res.review || '（无）');
+    void spawns;
+  }
+
   async function handleSlash(cmd: string): Promise<'exit' | 'continue'> {
     const [name, ...rest] = cmd.slice(1).split(/\s+/);
     switch (name) {
@@ -466,6 +514,16 @@ export async function startRepl(
         );
         return 'continue';
       }
+      case 'agent': {
+        // Phase 17：Multi-Agent —— 把任务拆给 Planner → 并发 Worker（隔离 worktree）→ Reviewer
+        const task = rest.join(' ').trim();
+        if (!task) {
+          console_.log(chalk.yellow('用法: /agent <任务描述>  启动多 Agent 协作（规划+并发执行+评审）'));
+          return 'continue';
+        }
+        await runMultiAgentCommand(task);
+        return 'continue';
+      }
       case 'plan': {
         // Phase 15：进入规划模式，生成执行计划待批准
         const task = rest.join(' ').trim();
@@ -631,6 +689,7 @@ function printHelp(): void {
       '  /approve           批准当前计划并进入执行',
       '  /discard           放弃当前计划并回滚',
       '  /autoctx           开关每轮自动注入记忆/知识库上下文（Phase 16）',
+      '  /agent <任务>      多 Agent 协作：规划 + 并发 Worker（隔离 worktree）+ 评审（Phase 17）',
       '  /rag               知识库：/rag search <q> | ingest <路径> | reindex | status',
       '  /skills            列出已加载技能',
       '  /skill <name>      查看某技能的完整指令',
