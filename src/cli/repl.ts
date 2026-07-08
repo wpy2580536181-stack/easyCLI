@@ -6,7 +6,9 @@ import type { ToolRegistry } from '../core/tools/registry';
 import type { PermissionManager, Decision, Resolver } from '../core/security/permission';
 import type { EventBus } from '../core/events/bus';
 import { compressHistory, type CompressOptions } from '../core/memory/compressor';
+import { MemoryStore } from '../core/memory/store';
 import { RagStore } from '../core/rag/store';
+import { buildAutoContext, lastUserText, type AutoContextResult } from '../core/context';
 import { SkillLoader } from '../core/skill';
 import { SessionStore, extractConversation, withSystem, AUTOSAVE_NAME } from '../core/session/store';
 import { runAgent } from '../core/agent';
@@ -50,6 +52,8 @@ export async function runOnce(
   compress?: CompressOptions,
   ragStore?: RagStore | null,
   skillLoader?: SkillLoader | null,
+  memory?: MemoryStore | null,
+  autoContextEnabled?: boolean,
   planMode?: boolean,
 ): Promise<void> {
   const renderer = new StreamRenderer(chalk.green);
@@ -60,6 +64,15 @@ export async function runOnce(
     { role: 'user', content: prompt },
   ];
   if (planMode) console.log(chalk.bold.yellow('（规划模式：仅生成计划，不执行）'));
+  // Phase 16：单次模式也自动注入上下文（基于 prompt 检索记忆/知识库）
+  let autoContext: string | undefined;
+  if (autoContextEnabled ?? true) {
+    const ac = await buildAutoContext(prompt, { memory, ragStore });
+    if (ac.text) {
+      autoContext = ac.text;
+      renderer.status(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
+    }
+  }
   // 非交互模式无 HITL 提示：默认只读工具放行，写/危险操作被拒（安全默认）
   await runAgent(history, {
     model,
@@ -69,6 +82,7 @@ export async function runOnce(
     compress,
     cwd: process.cwd(),
     planMode,
+    autoContext,
     onText: (c) => renderer.push(c),
     onToolCall: (call) => renderer.status(`🔧 调用工具 ${call.name}`),
     onToolResult: (call, res) =>
@@ -89,6 +103,8 @@ export async function startRepl(
   compress?: CompressOptions,
   ragStore?: RagStore | null,
   skillLoader?: SkillLoader | null,
+  memory?: MemoryStore | null,
+  autoContextEnabled?: boolean,
   resume?: boolean,
 ): Promise<void> {
   const console_ = console;
@@ -137,6 +153,8 @@ export async function startRepl(
   let normalSys = buildAgentSystemPrompt(sysCtx);
   let awaitingApproval = false;
   let planCheckpoint = 0;
+  // Phase 16：自动上下文注入开关（默认开；可用 /autoctx 切换）
+  let autoCtxEnabled = autoContextEnabled ?? true;
 
   /** 切换运行模式：替换 system 消息内容（normal <-> plan），其余 history 不动 */
   function setMode(m: AgentMode): void {
@@ -174,10 +192,24 @@ export async function startRepl(
     }
   }
 
-  function runTurn(): Promise<void> {
+  /** Phase 16：根据最新用户输入，自动检索记忆/知识库拼出本轮要注入的上下文 */
+  async function autoCtxForTurn(): Promise<AutoContextResult | undefined> {
+    if (!autoCtxEnabled) return undefined;
+    const q = lastUserText(history);
+    if (!q) return undefined;
+    const res = await buildAutoContext(q, { memory, ragStore });
+    return res.text ? res : undefined;
+  }
+
+  async function runTurn(): Promise<void> {
     const r = new StreamRenderer(chalk.green);
     tracker.beginTurn();
-    return runAgent(history, {
+    // Phase 16：自动上下文注入（记忆 + 知识库），作为临时系统消息进入本轮模型调用
+    const ac = await autoCtxForTurn();
+    if (ac && ac.text) {
+      r.status(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
+    }
+    await runAgent(history, {
       model,
       tools,
       permission,
@@ -185,24 +217,28 @@ export async function startRepl(
       compress,
       signal: abort.signal,
       cwd: process.cwd(),
+      autoContext: ac?.text,
       onText: (c) => r.push(c),
       onToolCall: (call) => r.status(`🔧 调用工具 ${call.name}`),
       onToolResult: (call, res) => r.status(`${res.ok ? '✓' : '✗'} ${call.name}`),
       onCompact: (info) => r.status(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
-    })
-      .then(() => r.newline())
-      .then(() => {
-        void persistAutosave();
-        // Phase 14：每轮结束展示本轮 + 累计成本
-        console_.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
-      });
+    });
+    r.newline();
+    void persistAutosave();
+    // Phase 14：每轮结束展示本轮 + 累计成本
+    console_.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
   }
 
   /** 规划模式的一轮：只读探测 + 产出计划，结束后进入「待批准」状态（Phase 15） */
   async function runPlan(): Promise<void> {
     const r = new StreamRenderer(chalk.green);
     tracker.beginTurn();
-    return runAgent(history, {
+    // Phase 16：规划阶段同样自动注入上下文，帮助模型理解既有记忆/知识
+    const ac = await autoCtxForTurn();
+    if (ac && ac.text) {
+      r.status(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
+    }
+    await runAgent(history, {
       model,
       tools,
       permission,
@@ -211,23 +247,22 @@ export async function startRepl(
       signal: abort.signal,
       cwd: process.cwd(),
       planMode: true,
+      autoContext: ac?.text,
       onText: (c) => r.push(c),
       onToolCall: (call) => r.status(`🔍 规划探测 ${call.name}`),
       onToolResult: (call, res) => r.status(`${res.ok ? '✓' : '✗'} ${call.name}`),
       onBatch: (info) =>
         r.status(`⚡ 并行探测 ${info.readCount} 个只读工具（峰值并发 ${info.maxConcurrency}）`),
       onCompact: (info) => r.status(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
-    })
-      .then(() => r.newline())
-      .then(() => {
-        void persistAutosave();
-        console_.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
-        awaitingApproval = true;
-        console_.log(chalk.bold.yellow('\n⬆ 以上是模型生成的执行计划。'));
-        console_.log(
-          chalk.gray('   /approve 执行  ·  /discard 放弃  ·  直接输入补充让模型修订'),
+    });
+    r.newline();
+    void persistAutosave();
+    console_.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
+    awaitingApproval = true;
+    console_.log(chalk.bold.yellow('\n⬆ 以上是模型生成的执行计划。'));
+    console_.log(
+      chalk.gray('   /approve 执行  ·  /discard 放弃  ·  直接输入补充让模型修订'),
         );
-      });
   }
 
   async function handleSlash(cmd: string): Promise<'exit' | 'continue'> {
@@ -421,6 +456,16 @@ export async function startRepl(
         }
         return 'continue';
       }
+      case 'autoctx': {
+        // Phase 16：开关「每轮自动注入记忆/知识库上下文」
+        autoCtxEnabled = !autoCtxEnabled;
+        console_.log(
+          autoCtxEnabled
+            ? chalk.gray('已开启自动上下文注入（每轮自动检索记忆/知识库）')
+            : chalk.gray('已关闭自动上下文注入'),
+        );
+        return 'continue';
+      }
       case 'plan': {
         // Phase 15：进入规划模式，生成执行计划待批准
         const task = rest.join(' ').trim();
@@ -585,6 +630,7 @@ function printHelp(): void {
       '  /plan <任务>       进入规划模式，只读探测并生成执行计划（Phase 15）',
       '  /approve           批准当前计划并进入执行',
       '  /discard           放弃当前计划并回滚',
+      '  /autoctx           开关每轮自动注入记忆/知识库上下文（Phase 16）',
       '  /rag               知识库：/rag search <q> | ingest <路径> | reindex | status',
       '  /skills            列出已加载技能',
       '  /skill <name>      查看某技能的完整指令',

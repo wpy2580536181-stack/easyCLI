@@ -48,6 +48,12 @@ export interface AgentOptions extends AgentHooks {
    * 配合 plan 系统提示即可「先只读探测、产出计划、待批准再执行」，与 ReAct 共用同一引擎。
    */
   planMode?: boolean;
+  /**
+   * 自动上下文（Phase 16）：一段由记忆库/知识库检索得到的文本，
+   * 会在**每轮模型调用前**作为临时系统消息注入（不写入 history，下一轮重新检索）。
+   * 为空/不提供则不注入。
+   */
+  autoContext?: string;
 }
 
 /** 默认摘要器：用当前模型把中间历史压成中文摘要（无工具，纯文本总结） */
@@ -142,6 +148,12 @@ export async function runAgent(
       }
     } catch {
       messages = history; // 压缩失败则退回原文，保证主流程不中断
+    }
+
+    // Phase 16：自动上下文——在每轮模型调用前，把检索到的记忆/知识库作为**临时**系统消息注入。
+    // 不写入 history，故下一轮会重新检索、不污染持久对话；缺省/空则不注入。
+    if (opts.autoContext) {
+      messages = [{ role: 'system', content: opts.autoContext }, ...messages];
     }
 
     try {
