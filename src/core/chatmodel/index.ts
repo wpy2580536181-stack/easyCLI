@@ -43,6 +43,7 @@ function buildModel(config: AppConfig): ChatModel {
         baseURL: config.llm.baseURL,
         apiKey: config.llm.apiKey,
         model: config.llm.model,
+        stream: config.llm.stream,
       });
     case 'anthropic':
       return new AnthropicAdapter({

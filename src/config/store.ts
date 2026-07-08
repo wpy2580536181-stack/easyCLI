@@ -25,6 +25,8 @@ export interface UserConfig {
   baseURL?: string;
   apiKey?: string;
   model?: string;
+  /** 是否流式输出（false 用于不支持 SSE 的网关）；默认 true，不写即流式 */
+  stream?: boolean;
   mcpServers?: McpServerSpec[];
   /** 文件里用数组存，加载时 join(',') 成与 CLI/env 一致的逗号串 */
   ragPaths?: string[];
@@ -46,6 +48,7 @@ const userConfigSchema = z.object({
   baseURL: z.string().optional(),
   apiKey: z.string().optional(),
   model: z.string().optional(),
+  stream: z.boolean().optional(),
   mcpServers: z.array(mcpServerSchema).optional(),
   ragPaths: z.array(z.string()).optional(),
   fallback: z

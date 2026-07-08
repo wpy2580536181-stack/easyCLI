@@ -1,5 +1,5 @@
-import readline from 'node:readline';
 import chalk from 'chalk';
+import { LineEditor } from './line-editor';
 import type { ChatMessage, ChatModel } from '../core/chatmodel';
 import { type AppConfig, saveUserConfig, appConfigToUserConfig, maskSecret, CONFIG_PATH } from '../config';
 import type { ToolRegistry } from '../core/tools/registry';
@@ -16,31 +16,30 @@ import { buildAgentSystemPrompt, buildPlanSystemPrompt, type AgentMode } from '.
 import { formatSnapshot, formatTokens, formatUSD, type CostTracker, type TrackerSnapshot } from '../core/observability';
 import { StreamRenderer } from './renderer';
 import { HistoryStore } from './history';
-import { completeLine, SLASH_COMMANDS } from './completer';
+import { COMMANDS } from './commands';
 import { printSplash } from './splash';
 
 /** 多行粘贴判定的 debounce 窗口：窗口内连续到达的非 slash 行视为同一次粘贴 */
 const PASTE_DEBOUNCE_MS = 12;
 
 /** 构造 HITL 审批器：交互式询问用户是否放行（y/n/a），a 表示持久预批准 */
-function makeResolver(rl: readline.Interface, permission: PermissionManager): Resolver {
+function makeResolver(editor: LineEditor, permission: PermissionManager): Resolver {
   return (tool: string, detail: string): Promise<Decision> =>
-    new Promise<Decision>((resolve) => {
-      const q = chalk.yellow(
-        `⚠ 允许执行 ${tool}${detail ? ' › ' + detail : ''} ? [y=允许 / n=拒绝 / a=总是允许] `,
-      );
-      rl.question(q, (ans) => {
+    editor
+      .ask(
+        chalk.yellow(
+          `⚠ 允许执行 ${tool}${detail ? ' › ' + detail : ''} ? [y=允许 / n=拒绝 / a=总是允许] `,
+        ),
+      )
+      .then((ans) => {
         const a = ans.trim().toLowerCase();
         if (a === 'a' || a === 'always') {
           permission.addAllow(tool);
-          resolve('allow');
-        } else if (a === 'y' || a === 'yes') {
-          resolve('allow');
-        } else {
-          resolve('deny');
+          return 'allow' as Decision;
         }
+        if (a === 'y' || a === 'yes') return 'allow' as Decision;
+        return 'deny' as Decision;
       });
-    });
 }
 
 export async function runOnce(
@@ -126,16 +125,19 @@ export async function startRepl(
   // Phase 10：跨会话命令历史。
   // historySize>0 启用 readline 内部历史（↑/↓ 可用），初始用历史文件 seed；
   // 用户输入由 readline 自动记录，我们额外通过 HistoryStore 落盘（去重 + 限长）。
-  // completer：Tab 补全（slash 命令名 / 历史句子）。
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: chalk.blue('你 › '),
+  // 输入编辑器：TTY 下用 raw mode 自绘（含斜杠命令下拉菜单），非 TTY 回退 readline。
+  const promptStr = chalk.blue('你 › ');
+  const editor = new LineEditor({
+    prompt: promptStr,
     history: histLines,
-    historySize: 2000,
-    completer: (line: string) => {
-      const { hits, line: src } = completeLine(line, SLASH_COMMANDS, histLines);
-      return [hits, src] as [string[], string];
+    commands: COMMANDS,
+    onSubmit: (line: string) => {
+      recordHistory(line);
+      dispatch(line);
+    },
+    onInterrupt: () => {
+      if (busy) abort.abort();
+      else editor.exit();
     },
   });
   // 规划模式（Phase 15）需要「切换系统提示」：把正常/规划两套系统提示都准备好，
@@ -175,8 +177,10 @@ export async function startRepl(
     }
   }
   const abort = new AbortController();
-  rl.on('SIGINT', () => abort.abort());
-  const resolver = makeResolver(rl, permission);
+  // Ctrl+C：由 LineEditor 捕获后回调 onInterrupt —— 模型生成中（busy）先取消当前轮，
+  // 空闲时直接退出（editor.exit() → 触发 startRepl 的 Promise resolve → main 清理后退出）。
+  // 注：全局 process.on('SIGINT')（main.ts）只负责关 MCP，不会终止进程。
+  const resolver = makeResolver(editor, permission);
   // 把交互式 HITL 提示器注入权限管理器，执行器在 ask 决策时回调它
   permission.setResolver(resolver);
   let busy = false;
@@ -583,13 +587,8 @@ export async function startRepl(
     return 'continue';
   }
 
-  // ---- Phase 10：输入处理（多行粘贴缓冲 + 命令历史 + 跨会话队列） ----
-  // busy/pending：模型生成期间到达的输入不丢弃，排队在本轮结束后顺序处理（沿用 Phase 9 修正）。
-  // lineBuf/flushTimer：连续到达的「非 slash」行（通常是一次粘贴）合并为一条消息，
-  //   避免 readline 把多行粘贴拆成 N 条输入；slash 命令则原子逐条处理，保证可管道化、可逐条执行。
+  // ---- 输入处理：模型生成期间到达的输入不丢弃，排队在本轮结束后顺序处理 ----
   const pending: string[] = [];
-  const lineBuf: string[] = [];
-  let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** 真正的「取一条输入去执行」入口：busy 时排队，否则立即跑 */
   function dispatch(input: string): void {
@@ -609,25 +608,13 @@ export async function startRepl(
         }
       } finally {
         busy = false;
-        if (!exited) rl.prompt();
+        if (exited) editor.exit(); // /exit、/quit：退出（resolve startRepl）
+        else editor.show(); // 回到输入态
       }
     })();
   }
 
-  /** 多行缓冲窗口到点：把累积的行合并成一条输入送出 */
-  function flushLines(): void {
-    flushTimer = null;
-    const combined = lineBuf.join('\n');
-    lineBuf.length = 0;
-    if (!combined.trim()) {
-      rl.prompt();
-      return;
-    }
-    recordHistory(combined);
-    dispatch(combined);
-  }
-
-  /** 记一条命令到跨会话历史（去重 + 落盘 + 同步本地历史供 Tab 补全） */
+  /** 记一条命令到跨会话历史（去重 + 落盘 + 同步本地历史供 ↑↓ 翻历史） */
   function recordHistory(line: string): void {
     const t = line.trim();
     if (!t) return;
@@ -638,72 +625,20 @@ export async function startRepl(
     }
   }
 
-  rl.on('line', (line) => {
-    const input = line.trim();
-    if (!input) {
-      // 空行：若正处于多行粘贴缓冲中，归并入缓冲（代码粘贴常含空行）；否则忽略
-      if (lineBuf.length) {
-        lineBuf.push('');
-        if (flushTimer) clearTimeout(flushTimer);
-        flushTimer = setTimeout(flushLines, PASTE_DEBOUNCE_MS);
-      } else {
-        rl.prompt();
-      }
-      return;
-    }
-    if (input.startsWith('/')) {
-      // slash 命令：原子处理，不进入多行缓冲（保证可管道化、可逐条执行）。
-      // 但若缓冲里还有未触发的多行文本（如「多行提示 + /exit」），先把它作为一条消息送出，
-      // 再处理 slash——否则直接清定时器会丢弃前面的输入。
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = null;
-      }
-      if (lineBuf.length) {
-        flushLines(); // 清空缓冲并 dispatch 合并文本（可能进入 busy，slash 随后排队）
-      }
-      recordHistory(input);
-      dispatch(input);
-      return;
-    }
-    // 普通文本：进入多行缓冲，短窗内到达的后续行视为同一次粘贴
-    lineBuf.push(line);
-    if (flushTimer) clearTimeout(flushTimer);
-    flushTimer = setTimeout(flushLines, PASTE_DEBOUNCE_MS);
-  });
-
-  rl.prompt();
+  // startRepl 在 REPL 真正关闭（/exit、Ctrl+C 空闲、Ctrl+D）时才 resolve，
+  // 这样 main 里的 await shutdownMcp() 会在退出时执行，正确清理 MCP 子进程等资源。
+  return editor.start();
 }
 
 function printHelp(): void {
-  console.log(
-    [
-      chalk.bold('可用命令：'),
-      '  /help              显示本帮助',
-      '  /clear             清空对话上下文（保留系统提示）',
-      '  /model             显示当前模型',
-      '  /tools             显示已注册工具',
-      '  /cost              显示本次会话的用量与成本（Phase 14）',
-      '  /plan <任务>       进入规划模式，只读探测并生成执行计划（Phase 15）',
-      '  /approve           批准当前计划并进入执行',
-      '  /discard           放弃当前计划并回滚',
-      '  /autoctx           开关每轮自动注入记忆/知识库上下文（Phase 16）',
-      '  /agent <任务>      多 Agent 协作：规划 + 并发 Worker（隔离 worktree）+ 评审（Phase 17）',
-      '  /rag               知识库：/rag search <q> | ingest <路径> | reindex | status',
-      '  /skills            列出已加载技能',
-      '  /skill <name>      查看某技能的完整指令',
-      '  /perm              显示当前权限允许/拒绝列表',
-      '  /config            查看当前生效配置（密钥打码）；/config save 持久化',
-      '  /save [名称]       保存当前会话（默认名 default）',
-      '  /load [名称]       载入已保存会话（默认名 default）',
-      '  /sessions          列出所有已保存会话',
-      '  /session <名称>    预览某会话内容',
-      '  /rm <名称>         删除某会话',
-      '  /prompt <文本>     单次提问（不进入多轮）',
-      '  /exit, /quit       退出',
-      '',
-      chalk.gray('交互提示：Tab 补全命令 · ↑↓ 翻历史（跨会话持久）· 直接粘贴多行代码作为「一条消息」'),
-      chalk.gray('模型可自主调用 read_file / write_file / edit_file / list_dir / glob / grep / bash 完成多步任务。'),
-    ].join('\n'),
+  const lines = [chalk.bold('可用命令：')];
+  for (const c of COMMANDS) {
+    lines.push(`  /${c.name.padEnd(10)} ${c.description}`);
+  }
+  lines.push(
+    '',
+    chalk.gray('交互提示：输入 / 弹出命令菜单，↑↓ 选择、Tab/Enter 填充 · ↑↓ 翻历史（跨会话持久）· 直接粘贴多行代码作为「一条消息」'),
+    chalk.gray('模型可自主调用 read_file / write_file / edit_file / list_dir / glob / grep / bash 完成多步任务。'),
   );
+  console.log(lines.join('\n'));
 }

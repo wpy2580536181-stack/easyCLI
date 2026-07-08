@@ -38,6 +38,7 @@ program
   .option('--model <model>', '模型名（如 deepseek-chat）')
   .option('--base-url <url>', 'API base url')
   .option('--api-key <key>', 'API key')
+  .option('--no-stream', '关闭流式输出（部分不支持 SSE 的网关如 agnes 需开启）')
   .option('--mcp <json>', 'MCP 服务器规格（JSON 数组），如 \'[{"command":"node","args":["srv.mjs"]}]\'')
   .option('--rag <paths>', 'RAG 语料路径（文件或目录，逗号分隔）')
   .option('--embedder <json>', 'RAG 嵌入器配置 JSON，如 \'{"type":"api","baseURL":"...","apiKey":"...","model":"text-embedding-3-small"}\'（默认手写 TF-IDF）')
@@ -86,6 +87,7 @@ program
         model: opts.model,
         baseURL: opts.baseURL,
         apiKey: opts.apiKey,
+        stream: opts.stream === false ? false : undefined,
         mcp: opts.mcp,
         rag: opts.rag,
         embedder: opts.embedder,

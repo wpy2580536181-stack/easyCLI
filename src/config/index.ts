@@ -15,6 +15,8 @@ export interface LlmConfig {
   baseURL: string;
   apiKey: string;
   model: string;
+  /** 是否流式输出；false 用于不支持 SSE 的网关（如 agnes）。默认 true */
+  stream?: boolean;
 }
 
 /** fallback 模型配置（决策 10：主模型失败自动切换备用） */
@@ -43,6 +45,8 @@ export interface ConfigOverrides {
   baseURL?: string;
   apiKey?: string;
   model?: string;
+  /** 关闭流式输出（部分网关不支持 SSE）。CLI --no-stream 传入 */
+  stream?: boolean;
   /** CLI 直接传入的 MCP 规格（JSON 字符串数组），优先级高于 env */
   mcp?: string;
   /** CLI 直接传入的 RAG 语料路径（逗号分隔），优先级高于 env */
@@ -120,15 +124,30 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
     file?.model,
   );
 
-  // apiKey 有两个 env 候选（AGENTCLI_API_KEY 优先于 OPENAI_API_KEY）。
-  // cands = [CLI, AGENTCLI_API_KEY, OPENAI_API_KEY, 文件]，def = ''。整层 env 位于文件之上。
+  // apiKey 候选优先级（高 → 低）：
+  //   CLI 旗标 > AGENTCLI_API_KEY（项目专属，显式覆盖）> 配置文件(config.json) >
+  //   OPENAI_API_KEY（通用全局变量，常被其它工具设给 ChatGPT 等）> 默认('')。
+  // 关键点：通用 OPENAI_API_KEY 置于「文件之下」，避免全局变量静默覆盖本项目的 config.json；
+  //   只有项目专属的 AGENTCLI_API_KEY 才允许覆盖文件。baseURL/model 同理只有 AGENTCLI_* 能覆盖文件，无通用全局变量冲突。
   const apiKey = firstNonEmpty(
     '',
     overrides.apiKey,
     process.env.AGENTCLI_API_KEY,
-    process.env.OPENAI_API_KEY,
     file?.apiKey,
+    process.env.OPENAI_API_KEY,
   );
+
+  // stream：布尔开关，优先级 CLI > 环境变量(AGENTCLI_STREAM=false) > 文件 > 默认 true。
+  // 用字符串比较统一处理（env 只能是字符串），非 'false'/'0' 均视为 true。
+  const streamRaw =
+    overrides.stream !== undefined
+      ? String(overrides.stream)
+      : process.env.AGENTCLI_STREAM !== undefined
+        ? process.env.AGENTCLI_STREAM
+        : file?.stream !== undefined
+          ? String(file.stream)
+          : 'true';
+  const stream = streamRaw === 'false' || streamRaw === '0' ? false : true;
 
   // MCP/RAG：CLI > 环境变量 > 文件 > 默认([] / '')
   const mcpFromCli = overrides.mcp ? parseMcpServers(overrides.mcp) : null;
@@ -164,7 +183,7 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
 
   return {
     provider,
-    llm: { baseURL, apiKey, model },
+    llm: { baseURL, apiKey, model, stream },
     mcpServers,
     ragPath,
     fallback: fallbackFinal,
@@ -182,6 +201,8 @@ export function appConfigToUserConfig(cfg: AppConfig): UserConfig {
   if (cfg.llm.baseURL) out.baseURL = cfg.llm.baseURL;
   if (cfg.llm.apiKey) out.apiKey = cfg.llm.apiKey;
   if (cfg.llm.model) out.model = cfg.llm.model;
+  // 仅在显式关闭流式时落盘，避免把默认 true 写进文件造成冗余
+  if (cfg.llm.stream === false) out.stream = false;
   if (cfg.mcpServers.length) out.mcpServers = cfg.mcpServers;
   if (cfg.ragPath) out.ragPaths = cfg.ragPath.split(',').map((s) => s.trim()).filter(Boolean);
   if (cfg.fallback && cfg.fallback.model) out.fallback = cfg.fallback;

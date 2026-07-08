@@ -14,6 +14,12 @@ export interface OpenAIConfig {
   model: string;
   /** 透传到请求体的额外字段（如 DeepSeek 的 enable_thinking） */
   extraBody?: Record<string, unknown>;
+  /**
+   * 是否使用 SSE 流式输出（默认 true）。
+   * 部分 OpenAI 兼容网关（如 agnes）不支持流式，开启 stream:true 时服务端不推送任何数据并一直保持连接，
+   * 导致调用挂起。设为 false 时走一次性 JSON POST，拿到完整结果后通过 onText 回吐。
+   */
+  stream?: boolean;
 }
 
 interface StreamToolCall {
@@ -54,6 +60,45 @@ export class OpenAICompatibleAdapter implements ChatModel {
       stream_options: { include_usage: true },
       ...this.config.extraBody,
     };
+
+    // 非流式模式：部分网关不支持 SSE，开启 stream:true 会一直挂起。
+    // 此时走普通 JSON POST，拿到完整结果后通过 onText 一次性回吐（渲染管线不变）。
+    if (this.config.stream === false) {
+      const nonStreamBody: Record<string, unknown> = { ...body, stream: false };
+      delete (nonStreamBody as Record<string, unknown>).stream_options;
+      const res = await fetch(`${this.config.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${this.config.apiKey}`,
+        },
+        body: JSON.stringify(nonStreamBody),
+        signal: opts.signal,
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`OpenAI 请求失败 ${res.status}: ${text}`);
+      }
+      const json = (await res.json().catch(() => null)) as any;
+      const msg = json?.choices?.[0]?.message;
+      const text = typeof msg?.content === 'string' ? msg.content : '';
+      if (text) opts.onText?.(text);
+      const usage = json?.usage
+        ? {
+            promptTokens: Number(json.usage.prompt_tokens ?? 0),
+            completionTokens: Number(json.usage.completion_tokens ?? 0),
+            totalTokens: Number(json.usage.total_tokens ?? 0),
+          }
+        : undefined;
+      const toolCalls: ToolCall[] = Array.isArray(msg?.tool_calls)
+        ? msg.tool_calls.map((tc: any) => ({
+            id: tc?.id ?? '',
+            name: tc?.function?.name ?? '',
+            arguments: parseToolCallArgs(tc?.function?.arguments),
+          }))
+        : [];
+      return { content: text, toolCalls, raw: undefined, ...(usage ? { usage } : {}) };
+    }
 
     const res = await fetch(`${this.config.baseURL}/chat/completions`, {
       method: 'POST',
@@ -161,6 +206,16 @@ export class OpenAICompatibleAdapter implements ChatModel {
       raw: undefined,
       ...(usage ? { usage } : {}),
     };
+  }
+}
+
+/** 解析工具调用参数 JSON 字符串（非流式一次性返回时复用） */
+function parseToolCallArgs(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== 'string' || !raw.trim()) return {};
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {};
   }
 }
 
