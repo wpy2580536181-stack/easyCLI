@@ -334,6 +334,28 @@ describe('StatusLine + StatusBar 集成（伪 TTY）', () => {
     expect(bodyAfter).toContain('这是模型回复的第一行');
   });
 
+  it('userTurn 末尾空行作为与回复的留白：用户输入行与回复之间无横向分隔线', () => {
+    vi.useFakeTimers();
+    const vt = new VT(24, 200);
+    const sb = new StatusBar({ out: makeOut(vt), enabled: true });
+    sb.start({ model: 'agnes', branch: 'main', mode: 'normal', costText: '¥0', showCtx: true, ctxPct: 5, startedAt: Date.now() });
+    const statusLine = new StatusLine({ out: makeOut(vt), color: ui.assistant, markdown: renderMarkdown, statusBar: sb });
+    // 模拟 buildUserTurn 的输出：用户输入行（带输入框底色） + 一个空行，无分隔横线
+    statusLine.setUserTurn(['❯ 你好', '']);
+    statusLine.begin('思考中…');
+    statusLine.pushText('你好！我是 Agnes。有什么可以帮助你的吗？');
+    vi.advanceTimersByTime(200);
+
+    const committedRow = [1, 2, 3, 4, 5, 6, 7, 8].find((r) => stripAnsi(vt.line(r)).includes('你好'))!;
+    expect(committedRow).toBeGreaterThan(0); // 提交的用户输入行存在
+    // 用户行正下方应是一空行（留白），且该空行不含任何横向分隔线 ─
+    expect(stripAnsi(vt.line(committedRow + 1))).toBe('');
+    expect(stripAnsi(vt.line(committedRow + 1))).not.toContain('─');
+    // 回复出现在空行之后（用户行 → 空行 → 回复），整体 userTurn 与回复间无分隔横线
+    const replyRow = [1, 2, 3, 4, 5, 6, 7, 8].find((r) => stripAnsi(vt.line(r)).includes('Agnes'))!;
+    expect(replyRow).toBe(committedRow + 2);
+  });
+
   it('长回复从顶行滚动，绝不上吞已提交的用户输入框', () => {
     vi.useFakeTimers();
     const vt = new VT(24, 200);

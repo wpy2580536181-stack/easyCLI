@@ -48,21 +48,12 @@ function makeResolver(editor: LineEditor, permission: PermissionManager): Resolv
   });
 }
 
-/** 助手回复前的细分隔线（淡灰，跟随终端宽度，封顶 80） */
-function printDivider(): void {
-  const cols = process.stdout.columns ?? 80;
-  const width = Math.max(24, Math.min(cols, 80));
-  process.stdout.write('\n' + ui.muted('─'.repeat(width)) + '\n');
-}
-
 /**
  * 把一条已提交的用户输入渲染成 transcript 的「本轮用户输入段」：提示符 + 输入（带
- * 输入框底色，与提交瞬间一致）+ 一条细分隔线，作为下一轮状态行动画的 userTurn。
+ * 输入框底色，与提交瞬间一致），其后跟一个空行作为与 AI 回复之间的留白（不再画分隔横线）。
  */
 function buildUserTurn(input: string, prompt: string): string[] {
-  const cols = process.stdout.columns ?? 80;
-  const dividerWidth = Math.max(24, Math.min(cols, 80));
-  return [paintInputBox(prompt + input, cols), ui.muted('─'.repeat(dividerWidth))];
+  return [paintInputBox(prompt + input, process.stdout.columns ?? 80), ''];
 }
 
 export async function runOnce(
