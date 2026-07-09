@@ -5,7 +5,9 @@ import chalk from 'chalk';
  *
  * 把模型回复里的常见 Markdown 语法渲染成终端里好看的效果：
  *   标题(# ~ ######)、粗体(**)、斜体(*)、行内代码(`)、代码块(```)、有序/无序列表、
- *   引用(>)、分隔线(---/***)、链接([t](url))、删除线(~~)。
+ *   引用(>)、分隔线(---/***)、链接([t](url))、删除线(~~)、
+ *   GFM 表格(| a | b | + 分隔行)、任务列表(- [ ] / - [x])、图片(![alt](url) 退化为 alt)、
+ *   裸 URL 自动链接(http/https)、反斜杠转义(\* \_ 等不触发样式)。
  *
  * 设计要点：
  *   - 按「显示宽度」折行（CJK/全角按 2 列），避免中文被从字中间截断；
@@ -152,13 +154,48 @@ function wrapStyled(text: string, width: number, indent = 0): string[] {
   return lines;
 }
 
-/** 行内样式：`**粗**`、`*斜*`、`` `代码` ``、`[文字](url)`、`~~删除~~` */
+/** 行内样式：`**粗**`、`*斜*`、`` `代码` ``、`[文字](url)`、`~~删除~~`、转义、`![alt](url)`、裸 URL */
 function inline(text: string): string {
   let out = '';
   let i = 0;
   const n = text.length;
+  // 需要被反斜杠转义的字面字符（避免被当成 Markdown 语法渲染）
+  const ESCAPE = '\\`*_{}[]()#+-.!~>|';
   while (i < n) {
     const c = text[i];
+    // 转义：\X -> 字面 X（如 \* 显示为星号，不被当斜体/粗体）
+    if (c === '\\' && i + 1 < n && ESCAPE.includes(text[i + 1] ?? '')) {
+      out += text[i + 1] ?? '';
+      i += 2;
+      continue;
+    }
+    // 图片 ![alt](url)：终端无法显示图片，渲染为 alt 文本（灰）
+    if (c === '!' && text[i + 1] === '[') {
+      const m = /^!\[([^\]]*)\]\(([^)]+)\)/.exec(text.slice(i));
+      if (m) {
+        out += chalk.gray(m[1] ?? '');
+        i += m[0].length;
+        continue;
+      }
+    }
+    // 链接 [文字](url)
+    if (c === '[') {
+      const m = /^\[([^\]]*)\]\(([^)]+)\)/.exec(text.slice(i));
+      if (m) {
+        out += chalk.cyan.underline(inline(m[1] ?? ''));
+        i += m[0].length;
+        continue;
+      }
+    }
+    // 裸 URL 自动链接（http/https）
+    if (c === 'h' && (text.startsWith('https://', i) || text.startsWith('http://', i))) {
+      const m = /^(https?:\/\/[^\s)]+)/.exec(text.slice(i));
+      if (m) {
+        out += chalk.cyan.underline(m[1] ?? '');
+        i += (m[1] ?? '').length;
+        continue;
+      }
+    }
     // 行内代码
     if (c === '`') {
       const end = text.indexOf('`', i + 1);
@@ -195,15 +232,6 @@ function inline(text: string): string {
         continue;
       }
     }
-    // 链接 [文字](url)
-    if (c === '[') {
-      const m = /^\[([^\]]*)\]\(([^)]+)\)/.exec(text.slice(i));
-      if (m) {
-        out += chalk.cyan.underline(inline(m[1] ?? ''));
-        i += m[0].length;
-        continue;
-      }
-    }
     out += c;
     i++;
   }
@@ -237,16 +265,143 @@ function renderList(
   const out: string[] = [];
   for (const it of items) {
     const base = Math.floor(it.indent / 2) * 2;
-    const marker = it.ordered ? `${it.num}.` : '•';
+    // 任务列表：- [ ] / - [x] / - [X]
+    const cb = /^\[([ xX])\]\s+(.*)$/.exec(it.text);
+    let marker = it.ordered ? `${it.num}.` : '•';
+    let text = it.text;
+    if (cb) {
+      const checked = cb[1] !== ' ';
+      marker = checked ? '☑' : '☐';
+      text = cb[2] ?? '';
+    }
     const mw = dispWidth(marker);
     const contIndent = base + mw + 1;
-    const wrapped = wrapStyled(inline(it.text), Math.max(1, width - contIndent));
+    const wrapped = wrapStyled(inline(text), Math.max(1, width - contIndent));
     wrapped.forEach((ln, idx) => {
       const pad = ' '.repeat(idx === 0 ? base : contIndent);
       const prefix = idx === 0 ? chalk.cyan(marker) + ' ' : '';
       out.push(pad + prefix + ln);
     });
   }
+  return out;
+}
+
+// ===================== 表格 =====================
+
+/** 解析一行表格为单元格数组（容忍首尾的 |）；不是表格行返回 null */
+function parseTableRow(line: string): string[] | null {
+  const t = line.trim();
+  if (!t.includes('|')) return null;
+  let inner = t;
+  if (inner.startsWith('|')) inner = inner.slice(1);
+  if (inner.endsWith('|')) inner = inner.slice(0, -1);
+  if (inner.length === 0) return null;
+  return inner.split('|').map((c) => c.trim());
+}
+
+/** 表格分隔行：每个单元格都是 `:?-+:?` 形式 */
+function isTableSep(line: string): boolean {
+  const cells = parseTableRow(line);
+  if (!cells || cells.length === 0) return false;
+  return cells.every((c) => /^:?-+:?$/.test(c.trim()));
+}
+
+/** 是否像一行表格（≥2 列） */
+function isTableRow(line: string): boolean {
+  const cells = parseTableRow(line);
+  return !!cells && cells.length >= 2;
+}
+
+type Align = 'l' | 'c' | 'r';
+
+/**
+ * 把 GFM 表格渲染成终端 ASCII 表格（┌─┬─┐ 风格），支持对齐与单元格内折行。
+ * @param rows 原始表格行（含可能的分隔行）
+ */
+function renderTable(rows: string[], width: number): string[] {
+  const grid = rows.map((r) => parseTableRow(r) ?? []);
+  const cols = Math.max(...grid.map((r) => r.length));
+  grid.forEach((r) => {
+    while (r.length < cols) r.push('');
+  });
+
+  // 对齐方式取自分隔行（第 2 行若为分隔）
+  const aligns: Align[] = new Array(cols).fill('l');
+  let sepIdx = -1;
+  if (grid.length >= 2 && isTableSep(rows[1] ?? '')) {
+    sepIdx = 1;
+    const sep = grid[1] ?? [];
+    for (let c = 0; c < cols; c++) {
+      const cell = (sep[c] ?? '').trim();
+      if (cell.startsWith(':') && cell.endsWith(':')) aligns[c] = 'c';
+      else if (cell.endsWith(':')) aligns[c] = 'r';
+      else if (cell.startsWith(':')) aligns[c] = 'l';
+    }
+  }
+
+  // 内容行（去掉分隔行）
+  const body = grid.filter((_, i) => i !== sepIdx);
+
+  // 每列最大内容显示宽度（含表头）
+  const colW: number[] = new Array(cols).fill(0);
+  for (let c = 0; c < cols; c++) {
+    let max = 0;
+    for (const row of body) max = Math.max(max, dispWidth(row[c] ?? ''));
+    colW[c] = max;
+  }
+
+  // 总宽 = 边框(cols+1) + 每列(内容+左右各1空格)
+  const avail = Math.max(cols * 3 + 1, width);
+  let scale = 1;
+  const contentTotal = colW.reduce((a, b) => a + b + 2, 0);
+  if (cols + 1 + contentTotal > avail) {
+    // 等比缩小内容区，至少保留 3 列宽
+    const room = avail - (cols + 1);
+    const sum = colW.reduce((a, b) => a + b, 0);
+    scale = sum > 0 ? Math.max(0.1, (room - cols * 2) / sum) : 1;
+  }
+  for (let c = 0; c < cols; c++) colW[c] = Math.max(3, Math.floor((colW[c] ?? 0) * scale));
+
+  const out: string[] = [];
+  const top = '┌' + colW.map((w) => '─'.repeat(w + 2)).join('┬') + '┐';
+  const mid = '├' + colW.map((w) => '─'.repeat(w + 2)).join('┼') + '┤';
+  const bot = '└' + colW.map((w) => '─'.repeat(w + 2)).join('┴') + '┘';
+
+  const drawRow = (cells: string[], header: boolean) => {
+    const cellLines: string[][] = cells.map((cell, c) => {
+      const wlines = wrapStyled(inline(cell), colW[c] ?? 0);
+      return wlines.length ? wlines : [''];
+    });
+    const n = Math.max(1, ...cellLines.map((l) => l.length));
+    for (let r = 0; r < n; r++) {
+      let line = '';
+      for (let c = 0; c < cols; c++) {
+        const content = cellLines[c]?.[r] ?? '';
+        const cw = dispWidth(stripAnsi(content));
+        // 内容区总宽 = 内容最大宽 + 2（单元格内左右各留 1 空格，与边框 ─ 宽度一致）
+        const pad = Math.max(0, (colW[c] ?? 0) - cw) + 2;
+        const al = aligns[c] ?? 'l';
+        let left = 1;
+        let right = pad - 1;
+        if (al === 'r') {
+          left = pad - 1;
+          right = 1;
+        } else if (al === 'c') {
+          left = Math.floor(pad / 2);
+          right = pad - left;
+        }
+        line += '│' + ' '.repeat(Math.max(0, left)) + content + ' '.repeat(Math.max(0, right));
+      }
+      line += '│';
+      out.push(header ? chalk.bold(line) : line);
+    }
+  };
+
+  out.push(top);
+  if (body.length) drawRow(body[0] ?? [], true);
+  if (sepIdx >= 0) out.push(mid);
+  for (let r = 1; r < body.length; r++) drawRow(body[r] ?? [], false);
+  out.push(bot);
   return out;
 }
 
@@ -307,6 +462,17 @@ export function renderMarkdown(src: string, width: number): string[] {
       for (const l of renderMarkdown(quote.join('\n'), w - 2)) {
         out.push(chalk.gray('│ ') + chalk.gray(l));
       }
+      continue;
+    }
+
+    // 表格（GFM：当前行像表格行且以 | 起始，或与分隔行相邻）
+    if (isTableRow(line) && (/^\s*\|/.test(line) || isTableSep(line))) {
+      const tableLines: string[] = [];
+      while (i < lines.length && isTableRow(lines[i] ?? '')) {
+        tableLines.push(lines[i] ?? '');
+        i++;
+      }
+      out.push(...renderTable(tableLines, w));
       continue;
     }
 

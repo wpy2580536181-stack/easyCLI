@@ -89,4 +89,74 @@ describe('renderMarkdown', () => {
     const out = renderMarkdown(src, 40);
     expect(out.join('\n')).not.toContain('**');
   });
+
+  it('GFM 表格渲染为对齐的 ASCII 表格（含边框，不残留 |）', () => {
+    const src = '| 模块 | 功能 |\n|------|------|\n| agent/ | ReAct 主逻辑 |\n| mcp/ | 客户端/服务端 |';
+    const out = renderMarkdown(src, 60);
+    const j = out.join('\n');
+    expect(j).toContain('┌');
+    expect(j).toContain('├');
+    expect(j).toContain('└');
+    // 表头/分隔/正文至少 3 行 + 上下边框
+    expect(out.length).toBeGreaterThanOrEqual(5);
+    // 原始管道符应被拆成单元格，不应再出现裸 | 作为分隔残留
+    expect(j).not.toMatch(/\| 模块 \| 功能 \|/);
+  });
+
+  it('表格支持对齐语法（:--- / :---: / ---:）', () => {
+    const src = '| 左 | 中 | 右 |\n|:--|:-:|--:|\n| a | b | c |';
+    const out = renderMarkdown(src, 40);
+    // 至少能正常渲染出表格（不报错、有边框）
+    expect(out.join('\n')).toContain('┌');
+    expect(out.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('窄终端下表格自动等比缩小内容区，不超出可用宽度', () => {
+    const src = '| 模块 | 功能说明 |\n|------|----------|\n| agent/ | ReAct 循环、Agent 主逻辑与工具调度 |\n| memory/ | 上下文压缩与长期记忆存储 |';
+    const out = renderMarkdown(src, 50);
+    for (const ln of out) {
+      expect(dispWidth(ln)).toBeLessThanOrEqual(50);
+    }
+    expect(out.join('\n')).toContain('┌');
+  });
+
+  it('任务列表渲染 ☑/☐ 并去掉 [ ] 标记', () => {
+    const out = renderMarkdown('- [x] 已完成\n- [ ] 待办', 60);
+    const j = out.join('\n');
+    expect(j).toContain('☑');
+    expect(j).toContain('☐');
+    expect(j).not.toContain('[x]');
+    expect(j).not.toContain('[ ]');
+  });
+
+  it('转义字符显示字面量，不触发样式', () => {
+    const out = renderMarkdown('字面星号 \\*不是斜体\\*，反斜杠 \\\\ 在', 60);
+    const j = out.join('\n');
+    // 转义后 * 当作字面量保留，不应被渲染成斜体（即不应有斜体 ANSI 码）
+    expect(j).toContain('*不是斜体*');
+    expect(j).toContain('\\');
+    expect(j).not.toContain('\x1b[3m'); // 无 italic 样式码
+  });
+
+  it('裸 URL 自动链接（青色下划线），不残留 http 明文冗余', () => {
+    const out = renderMarkdown('详见 https://example.com 站点', 60);
+    const j = out.join('\n');
+    expect(j).toContain('https://example.com');
+    expect(j).toContain('详见');
+  });
+
+  it('图片语法退化为 alt 文本', () => {
+    const out = renderMarkdown('![架构图](https://img.x.com/a.png) 如上', 60);
+    const j = out.join('\n');
+    expect(j).toContain('架构图');
+    expect(j).not.toContain('https://img.x.com/a.png');
+  });
+
+  it('表格不应被误判为普通段落（不出现空格拼接的乱行）', () => {
+    const src = '## 模块\n| 模块 | 功能 |\n|------|------|\n| agent/ | ReAct |\n| mcp/ | 协议 |';
+    const out = renderMarkdown(src, 60);
+    const j = out.join('\n');
+    // 表头与正文行不应被合并成一行用空格拼接
+    expect(j).not.toContain('| 模块 | 功能 | |------|------|');
+  });
 });
