@@ -545,6 +545,53 @@ describe('LineEditor + StatusBar 集成（伪 TTY）', () => {
     await startP;
   });
 
+  it('方向键 ←/→/Home/End 移动光标，且可在中间插入字符', async () => {
+    vi.useFakeTimers();
+    const { vt, stdin } = setup();
+    const sb = new StatusBar({ enabled: true });
+    sb.start({ model: 'agnes-2.0-flash', branch: 'main', mode: 'normal', costText: '¥0', showCtx: true, ctxPct: 0, startedAt: Date.now() });
+    const submitted: string[] = [];
+    const editor = new LineEditor({
+      prompt: '> ',
+      history: [],
+      commands: [{ name: 'help', description: '查看帮助' }],
+      onSubmit: (l) => submitted.push(l),
+      onInterrupt: () => {},
+      statusBar: sb,
+    });
+    const startP = editor.start();
+
+    for (const ch of 'hello') stdin.emitData(Buffer.from(ch));
+    // 光标在行尾：col = displayWidth('> ' + 'hello') + 1 = 7 + 1 = 8
+    expect(vt.cur.col).toBe(8);
+
+    // 左移一次 → 7
+    stdin.emitData(Buffer.from('\x1b[D'));
+    expect(vt.cur.col).toBe(7);
+    // 再左移两次 → 5
+    stdin.emitData(Buffer.from('\x1b[D'));
+    stdin.emitData(Buffer.from('\x1b[D'));
+    expect(vt.cur.col).toBe(5);
+    // 右移一次 → 6
+    stdin.emitData(Buffer.from('\x1b[C'));
+    expect(vt.cur.col).toBe(6);
+    // Home → col = displayWidth('> ') + 1 = 3
+    stdin.emitData(Buffer.from('\x1b[H'));
+    expect(vt.cur.col).toBe(3);
+    // End → 8
+    stdin.emitData(Buffer.from('\x1b[F'));
+    expect(vt.cur.col).toBe(8);
+
+    // 中间插入：End 后 cursor=5（行尾），左移两次到 cursor=3，输入 X 应插在中间
+    stdin.emitData(Buffer.from('\x1b[D'));
+    stdin.emitData(Buffer.from('\x1b[D'));
+    stdin.emitData(Buffer.from('X'));
+    expect(stripAnsi(vt.line(8))).toContain('> helXlo'); // 插入到 'hel' 与 'lo' 之间
+
+    editor.exit();
+    await startP;
+  });
+
   it('多次按键与退格只产生一个输入框盒子，不出现重复/塌缩', async () => {
     vi.useFakeTimers();
     const { vt, stdin } = setup();

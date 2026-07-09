@@ -84,6 +84,8 @@ export class LineEditor {
   // —— TTY 输入缓冲 ——
   private input = '';
   private selIndex = 0;
+  /** 光标在 input 字符串中的字符索引（UTF-16）；0..input.length。用于 ←/→/Home/End 移动。 */
+  private cursor = 0;
   /** 当前屏幕底部是否绘制着整个输入框盒子（顶边/输入/底边）。
    *  仅当为 true 时 draw/hide/commit 才向上回退清屏，避免擦到上方历史输出。 */
   private boxOnScreen = false;
@@ -257,7 +259,7 @@ export class LineEditor {
     }
     // 输入框盒子绘制完成，刷新最底状态栏
     this.boxTop = top;
-    const caretCol = Math.min(width, displayWidth(this.opts.prompt + this.input) + 1);
+    const caretCol = Math.min(width, displayWidth(this.opts.prompt + this.input.slice(0, this.cursor)) + 1);
     // 让状态栏重绘后把光标送回输入行、且停在已输入文本之后（部分终端忽略 ESC[s/u）
     this.opts.statusBar?.setCaret(top + 1, caretCol);
     this.opts.statusBar?.render();
@@ -350,6 +352,7 @@ export class LineEditor {
     const sel = m[this.selIndex];
     if (!sel) return;
     this.input = '/' + sel.name + ' ';
+    this.cursor = this.input.length;
     this.selIndex = 0;
     this.draw();
   }
@@ -359,6 +362,7 @@ export class LineEditor {
       // 单独 Esc：清空输入（关闭菜单）
       if (this.state === 'input') {
         this.input = '';
+        this.cursor = 0;
         this.selIndex = 0;
         this.draw();
       }
@@ -368,8 +372,40 @@ export class LineEditor {
       const c = buf[2];
       if (c === 0x41) return this.handleUp();
       if (c === 0x42) return this.handleDown();
-      // 0x43 右 / 0x44 左 / 0x48 Home / 0x46 End / 0x33 Delete —— 暂忽略
+      if (c === 0x43) return this.handleRight(); // → 右移光标
+      if (c === 0x44) return this.handleLeft();  // ← 左移光标
+      if (c === 0x48) return this.handleHome();  // Home 行首
+      if (c === 0x46) return this.handleEnd();   // End 行尾
+      // 0x33 Delete（删除光标后字符）暂忽略
     }
+  }
+
+  private handleLeft(): void {
+    if (this.state !== 'input') return;
+    if (this.cursor > 0) {
+      this.cursor--;
+      this.draw();
+    }
+  }
+
+  private handleRight(): void {
+    if (this.state !== 'input') return;
+    if (this.cursor < this.input.length) {
+      this.cursor++;
+      this.draw();
+    }
+  }
+
+  private handleHome(): void {
+    if (this.state !== 'input') return;
+    this.cursor = 0;
+    this.draw();
+  }
+
+  private handleEnd(): void {
+    if (this.state !== 'input') return;
+    this.cursor = this.input.length;
+    this.draw();
   }
 
   private handleUp(): void {
@@ -420,6 +456,7 @@ export class LineEditor {
       }
     }
     this.selIndex = 0;
+    this.cursor = this.input.length; // 历史回填后光标移到行尾
     this.draw();
   }
 
@@ -433,7 +470,11 @@ export class LineEditor {
       this.queued = this.queued.slice(0, -1);
       return;
     }
-    this.input = this.input.slice(0, -1);
+    // 删除光标前字符（← 移动后可删中间字符）
+    if (this.cursor > 0) {
+      this.input = this.input.slice(0, this.cursor - 1) + this.input.slice(this.cursor);
+      this.cursor--;
+    }
     this.selIndex = 0;
     this.draw();
   }
@@ -448,7 +489,9 @@ export class LineEditor {
       this.queued += s; // 忙时排队，结束后由 dispatch 顺序处理
       return;
     }
-    this.input += s;
+    // 在光标处插入（支持 ←/→ 移动后于中间插入字符）
+    this.input = this.input.slice(0, this.cursor) + s + this.input.slice(this.cursor);
+    this.cursor += s.length;
     this.selIndex = 0;
     this.draw();
   }
@@ -539,6 +582,9 @@ export class LineEditor {
       // 兜底：光标移到提交行下一行，模型输出将从此处开始，避免落到状态栏
       this.out.write(`\x1b[${afterRow};1H`);
     }
+    // 提交后清空输入与光标，下一轮 show() 时输入框干净
+    this.input = '';
+    this.cursor = 0;
     this.opts.onSubmit(line);
   }
 }
