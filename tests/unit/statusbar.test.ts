@@ -222,6 +222,13 @@ function makeStdin() {
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
+/** 测试用：单字符显示宽度（CJK/全角按 2，其余按 1），与 line-editor.displayWidth 一致 */
+const dispWidth = (s: string): number => {
+  let w = 0;
+  for (const ch of s) w += ch.charCodeAt(0) > 0x2e80 ? 2 : 1;
+  return w;
+};
+
 // ───────────────────────── 单元测试 ─────────────────────────
 
 describe('StatusBar 单元', () => {
@@ -242,17 +249,20 @@ describe('StatusBar 单元', () => {
     expect(stripAnsi(vt.line(10))).toContain('正常');
   });
 
-  it('update 用保存/恢复光标（\x1b[s...\x1b[u）刷新最底行，不移动光标', () => {
+  it('update 刷新最底行并把光标送回 setCaret 维护的活动位置（不依赖 ESC[s/u）', () => {
     const vt = newVT();
     const sb = new StatusBar({ out: makeOut(vt), enabled: true });
     sb.start({ model: 'm', branch: 'b', mode: 'normal', costText: '¥0', showCtx: false, startedAt: Date.now() });
+    // 调用方（输入框/动画）在各自定位光标后维护 caret
+    sb.setCaret(5, 3);
     const before = vt.text.length;
     sb.update({ costText: '¥0.5' });
     const seg = vt.text.slice(before);
-    expect(seg).toContain('\x1b[s');
-    expect(seg).toContain('\x1b[u');
+    expect(seg).not.toContain('\x1b[s'); // 不再使用保存/恢复序列（部分终端忽略）
+    expect(seg).not.toContain('\x1b[u');
+    expect(seg).toContain('\x1b[10;1H'); // 状态栏绝对定位在最底行
+    expect(seg).toContain('\x1b[5;3H'); // 光标被显式送回活动位置 (5,3)
     expect(stripAnsi(vt.line(10))).toContain('¥0.5');
-    // 光标恢复回原来位置（save 时与 restore 后一致）—— 这里只验证序列存在即可
   });
 
   it('release 清最底行（不再复位滚动区）', () => {
@@ -454,6 +464,42 @@ describe('LineEditor + StatusBar 集成（伪 TTY）', () => {
     expect(stripAnsi(vt.line(8))).toContain('>'); // 输入行（空，无 /）
     expect(stripAnsi(vt.line(8))).not.toContain('/'); // '/' 已被删除
     expect(stripAnsi(vt.line(10))).toContain('agnes'); // 状态栏完好且唯一
+
+    editor.exit();
+    await startP;
+  });
+
+  it('draw 后光标停在输入框内（输入行、已输入文本之后），且状态栏刷新不抢走光标', async () => {
+    vi.useFakeTimers();
+    const { vt, stdin } = setup();
+    const sb = new StatusBar({ enabled: true });
+    sb.start({ model: 'agnes-2.0-flash', branch: 'main', mode: 'normal', costText: '¥0', showCtx: true, ctxPct: 0, startedAt: Date.now() });
+    const editor = new LineEditor({
+      prompt: '> ',
+      history: [],
+      commands: [{ name: 'help', description: '查看帮助' }],
+      onSubmit: () => {},
+      onInterrupt: () => {},
+      statusBar: sb,
+    });
+    const startP = editor.start();
+    for (const ch of 'hello') stdin.emitData(Buffer.from(ch));
+
+    // 输入框盒子：输入行在第 8 行；'> hello' 显示宽度 7 → 光标列应为 8
+    const caretCol = dispWidth('> hello') + 1;
+    expect(vt.cur.row).toBe(8); // 输入行（非状态栏行 10）
+    expect(vt.cur.col).toBe(caretCol); // 停在已输入文本之后
+    expect(vt.cur.row).not.toBe(10); // 绝不应落在状态栏行
+
+    // 模拟成本刷新（refreshStatus → update → render）：光标仍应停在输入框内
+    sb.update({ costText: '¥0.01' });
+    expect(vt.cur.row).toBe(8);
+    expect(vt.cur.col).toBe(caretCol);
+
+    // 退格删除一个字符 → 'hell'：光标列应随已输入文本缩短（停在 '> hell' 之后）
+    stdin.emitData(Buffer.from([0x7f]));
+    expect(vt.cur.row).toBe(8);
+    expect(vt.cur.col).toBe(dispWidth('> hell') + 1); // = 7
 
     editor.exit();
     await startP;

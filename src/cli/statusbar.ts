@@ -16,7 +16,8 @@ import { ui } from './theme';
  *
  * 与输入框盒子 / 生成动画的共存（关键，避免重蹈 StatusLine 覆写事故）：
  *   - StatusBar 始终用绝对定位 `ESC[rows;1H` 写最底行，与上方内容彻底解耦。
- *   - 每次重绘前 `ESC[s` 保存光标、写完后 `ESC[u` 恢复，绝不干扰输入光标位置。
+ *   - 重绘后用 `setCaret` 维护的光标位置显式移回活动区域（输入框/动画行），
+ *     不依赖 ESC[s/u 保存/恢复序列（部分终端会忽略该序列，导致光标落到状态栏）。
  *   - 输入框盒子（line-editor）与生成动画（status）也都用绝对定位把自己锚定在
  *     `rows-1` 及上方，天然把最底行留给本状态栏，无需设置滚动区（设置滚动区反而
  *     会让依赖 \n 前进的输入框盒子在底部触发整段滚动、塌缩成多个盒子）。
@@ -55,6 +56,12 @@ export class StatusBar {
   private state: StatusBarState | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly tty: boolean;
+  /**
+   * 重绘状态栏后「光标应回到的位置」。由调用方（输入框 LineEditor / 生成动画
+   * StatusLine）在各自定位光标后调用 setCaret 维护。这样即便终端忽略
+   * ESC[s/ESC[u 保存/恢复序列，也能把光标精确送回活动区域，而不是落在最底状态栏。
+   */
+  private caret = { row: 1, col: 1 };
 
   constructor(opts: StatusBarOpts = {}) {
     this.out = opts.out ?? process.stdout;
@@ -64,6 +71,18 @@ export class StatusBar {
 
   private rows(): number {
     return (this.out as OutputSink & { rows?: number }).rows ?? 24;
+  }
+
+  private cols(): number {
+    return (this.out as OutputSink & { columns?: number }).columns ?? 80;
+  }
+
+  /**
+   * 设定状态栏重绘后光标应回到的行/列。由调用方在定位完自身光标后调用，
+   * 使 render() 能精确把光标送回活动区域（参见 caret 字段说明）。
+   */
+  setCaret(row: number, col: number): void {
+    this.caret = { row, col };
   }
 
   /** 启动：记录初始状态、启动每秒刷新 */
@@ -123,13 +142,15 @@ export class StatusBar {
     return segs.join(chalk.gray(' · '));
   }
 
-  /** 把状态栏写到屏幕最底行的绝对位置（保存/恢复光标，不影响输入光标） */
+  /** 把状态栏写到屏幕最底行的绝对位置，并把光标移回调用方维护的活动位置 */
   render(): void {
     if (!this.enabled || !this.tty || !this.state) return;
     const r = this.rows();
-    this.out.write('\x1b[s'); // 保存光标
+    const c = Math.max(1, Math.min(this.cols(), this.caret.col));
+    const rr = Math.max(1, Math.min(r, this.caret.row));
     this.out.write(`\x1b[${r};1H\x1b[K` + this.build());
-    this.out.write('\x1b[u'); // 恢复光标
+    // 显式把光标移回活动区域（不依赖 ESC[s/u，兼容忽略该序列的终端）
+    this.out.write(`\x1b[${rr};${c}H`);
   }
 
   /** 退出时：清掉状态栏所在行 */

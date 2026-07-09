@@ -161,6 +161,8 @@ export class StatusLine {
     this.mode = 'idle';
     this.prevLines = 0;
     this.body = '';
+    // 光标回到 footer 行（模型输出将从此处继续）；状态栏位置由 setCaret 维护
+    this.sb?.setCaret(footerRow, 1);
     this.sb?.render();
   }
 
@@ -263,7 +265,9 @@ export class StatusLine {
 
     this.prevLines = total;
     this.dirty = false;
-    // 顺带刷新最底状态栏（保存/恢复光标，不影响本行光标位置）
+    // 顺带刷新最底状态栏，并把光标送回 footer 行末尾（不依赖 ESC[s/u 保存/恢复）
+    const footerCol = displayWidth(footer) + 1;
+    this.sb?.setCaret(footerRow, footerCol);
     this.sb?.render();
   }
 }

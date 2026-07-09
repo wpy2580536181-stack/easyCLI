@@ -157,15 +157,18 @@ export class LineEditor {
   /** 模型生成前：清掉整个输入框盒子，让输出从干净处开始 */
   hide(): void {
     if (!this.tty) return;
+    const clearFrom = this.boxTop > 0 ? this.boxTop : 1;
     if (this.boxOnScreen) {
       // 从盒子顶边清到屏末，清掉整个输入框（顶边/输入/底边/菜单）
-      const clearFrom = this.boxTop > 0 ? this.boxTop : 1;
       this.out.write(`\x1b[${clearFrom};1H\x1b[J`);
       this.boxOnScreen = false;
       this.boxTop = -1;
     }
     // 盒子消失，但最底状态栏仍应保留（刷新它）
+    this.opts.statusBar?.setCaret(clearFrom, 1);
     this.opts.statusBar?.render();
+    // 兜底：光标回到输入框原本所在行，模型输出将从此处继续，避免落到状态栏
+    this.out.write(`\x1b[${clearFrom};1H`);
     this.state = 'hidden';
   }
 
@@ -242,11 +245,14 @@ export class LineEditor {
     } else {
       this.out.write(`\x1b[${top + 2};1H` + '─'.repeat(width)); // 底边：无底色
     }
-    // 光标定位到输入行行首（保持原行为：光标停在输入行左侧）
-    this.out.write(`\x1b[${top + 1};1H`);
-    // 输入框盒子绘制完成，顺带刷新最底状态栏（保存/恢复光标，不影响输入光标位置）
+    // 输入框盒子绘制完成，刷新最底状态栏
     this.boxTop = top;
+    const caretCol = Math.min(width, displayWidth(this.opts.prompt + this.input) + 1);
+    // 让状态栏重绘后把光标送回输入行、且停在已输入文本之后（部分终端忽略 ESC[s/u）
+    this.opts.statusBar?.setCaret(top + 1, caretCol);
     this.opts.statusBar?.render();
+    // 兜底：状态栏禁用时 render 不处理光标；这里直接定位，确保光标一定在输入框内
+    this.out.write(`\x1b[${top + 1};${caretCol}H`);
     this.boxOnScreen = true;
   }
 
@@ -506,8 +512,8 @@ export class LineEditor {
   private commit(line: string): void {
     if (this.tty) {
       // 清掉整个输入框盒子（提交后输入框不再需要边框，输入会作为永久行留在上方）
+      const clearFrom = this.boxTop > 0 ? this.boxTop : 1;
       if (this.boxOnScreen) {
-        const clearFrom = this.boxTop > 0 ? this.boxTop : 1;
         this.out.write(`\x1b[${clearFrom};1H\x1b[J`);
         this.boxOnScreen = false;
         this.boxTop = -1;
@@ -517,7 +523,11 @@ export class LineEditor {
       this.out.write(paintInputBox(this.opts.prompt + line, width) + '\n');
       this.state = 'hidden';
       // 提交后刷新最底状态栏
+      const afterRow = clearFrom + (this.opts.prompt + line).split('\n').length;
+      this.opts.statusBar?.setCaret(afterRow, 1);
       this.opts.statusBar?.render();
+      // 兜底：光标移到提交行下一行，模型输出将从此处开始，避免落到状态栏
+      this.out.write(`\x1b[${afterRow};1H`);
     }
     this.opts.onSubmit(line);
   }
