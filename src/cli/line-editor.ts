@@ -65,6 +65,12 @@ export interface LineEditorOpts {
   onInterrupt: () => void;
   /** 常驻底部状态栏（绘制输入框后顺带刷新它，保持最底行信息） */
   statusBar?: StatusBar | null;
+  /**
+   * 顶部预留行数（splash / transcript 区域），输入框盒子绝不允许向上清进这一区域。
+   * 用于矮终端（或 process.stdout.rows 被报小）下，避免输入框盒子的清屏起点
+   * （rows-3）升进欢迎框、把其底边 ╰─╯ 乃至更多行一起擦掉。默认 0（不预留）。
+   */
+  topReserve?: number;
 }
 
 type State = 'input' | 'hidden' | 'asking';
@@ -159,7 +165,7 @@ export class LineEditor {
   /** 模型生成前：清掉整个输入框盒子，让输出从干净处开始 */
   hide(): void {
     if (!this.tty) return;
-    const clearFrom = this.boxTop > 0 ? this.boxTop : 1;
+    const clearFrom = Math.max(this.opts.topReserve ?? 0, this.boxTop > 0 ? this.boxTop : 1);
     if (this.boxOnScreen) {
       // 从盒子顶边清到屏末，清掉整个输入框（顶边/输入/底边/菜单）
       this.out.write(`\x1b[${clearFrom};1H\x1b[J`);
@@ -229,7 +235,10 @@ export class LineEditor {
     // 有常驻状态栏时最底行 rows 留给状态栏，盒子底边落在 rows-1；否则落在 rows。
     // top 这一行（输入行上方）留空，作为 AI 输出区与输入框之间的分隔留白（clearFrom 已从此行清起）。
     const bottom = hasBar ? rows - 1 : rows;
-    const top = Math.max(1, bottom - (3 + k) + 1);
+    const idealTop = Math.max(1, bottom - (3 + k) + 1);
+    // 顶部预留：输入框盒子绝不向上清进 splash / transcript 区域（矮终端或 rows 被报小时
+    // 避免 rows-3 升进欢迎框、把其底边 ╰─╯ 抹掉）。topReserve 为 0 时退化成原行为。
+    const top = Math.max(this.opts.topReserve ?? 0, idealTop);
     // 清除：从「上一帧盒子顶」与「本帧盒子顶」中较高者清起，避免残留更长的下拉
     const clearFrom = this.boxTop > 0 ? Math.min(top, this.boxTop) : top;
     // 清到屏末（含状态栏行，稍后由 statusBar.render 重写）
@@ -513,7 +522,7 @@ export class LineEditor {
   private commit(line: string): void {
     if (this.tty) {
       // 清掉整个输入框盒子（提交后输入框不再需要边框，输入会作为永久行留在上方）
-      const clearFrom = this.boxTop > 0 ? this.boxTop : 1;
+      const clearFrom = Math.max(this.opts.topReserve ?? 0, this.boxTop > 0 ? this.boxTop : 1);
       if (this.boxOnScreen) {
         this.out.write(`\x1b[${clearFrom};1H\x1b[J`);
         this.boxOnScreen = false;

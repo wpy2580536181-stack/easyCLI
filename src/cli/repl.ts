@@ -213,6 +213,9 @@ export async function startRepl(
       else editor.exit();
     },
     statusBar,
+    // 顶部预留 splash 区域：输入框盒子绝不上侵欢迎框（矮终端 / rows 被报小时，
+    // 避免 rows-3 的清屏起点升进欢迎框、把其底边 ╰─╯ 擦掉）。+1 留一行分隔空白。
+    topReserve: splashLines.length + 1,
   });
   // 规划模式（Phase 15）需要「切换系统提示」：把正常/规划两套系统提示都准备好，
   // 进入/退出规划模式时只替换 history[0].content，不另起引擎。

@@ -632,4 +632,41 @@ describe('LineEditor + StatusBar 集成（伪 TTY）', () => {
     editor.exit();
     await startP;
   });
+
+  it('topReserve：矮终端下输入框盒子绝不向上清进 splash 区域（保留欢迎框底边）', async () => {
+    vi.useFakeTimers();
+    // 自建 6 行矮终端（makeOut 的 rows 是创建时捕获，故直接 new VT(6,...)）。
+    // 无预留时 idealTop = rows-3 = 3，会清掉第 3 行（splash 底边）——这里应被 topReserve 挡住。
+    const vt = new VT(6, 200);
+    Object.defineProperty(process, 'stdout', { value: makeOut(vt), configurable: true });
+    const stdin = makeStdin();
+    Object.defineProperty(process, 'stdin', { value: stdin, configurable: true });
+    const sb = new StatusBar({ enabled: true });
+    sb.start({ model: 'agnes-2.0-flash', branch: 'main', mode: 'normal', costText: '¥0', showCtx: true, ctxPct: 0, startedAt: Date.now() });
+    // 预填「欢迎框」三行（含底边 ╰─╯）到屏幕顶部
+    vt.write('\x1b[1;1H╭── welcome ──╮');
+    vt.write('\x1b[2;1H│ hello box   │');
+    vt.write('\x1b[3;1H╰──── footer ──╯');
+    const editor = new LineEditor({
+      prompt: '> ',
+      history: [],
+      commands: [{ name: 'help', description: '查看帮助' }],
+      onSubmit: () => {},
+      onInterrupt: () => {},
+      statusBar: sb,
+      topReserve: 4, // 预留 3 行 splash + 1 行分隔
+    });
+    const startP = editor.start();
+
+    // 欢迎框三行必须完整保留（不被输入框盒子的清屏起点 rows-3 吃掉）
+    expect(stripAnsi(vt.line(1))).toContain('welcome');
+    expect(stripAnsi(vt.line(2))).toContain('hello box');
+    expect(stripAnsi(vt.line(3))).toContain('footer'); // 底边 ╰─╯ 仍在
+    // 输入框盒子从 topReserve(4) 起，输入行在第 5 行；绝不进入 1..3 的 splash 区域
+    expect(stripAnsi(vt.line(4))).toBe(''); // 分隔留白
+    expect(stripAnsi(vt.line(5))).toContain('>'); // 输入行在预留区之下（行尾空白被 line() 去除）
+
+    editor.exit();
+    await startP;
+  });
 });
