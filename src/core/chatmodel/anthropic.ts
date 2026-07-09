@@ -19,6 +19,7 @@ import type {
   ToolDef,
   ContentBlock,
 } from './types';
+import { classifyFetchError, ModelRequestError } from './errors';
 
 export interface AnthropicConfig {
   apiKey: string;
@@ -62,20 +63,25 @@ export class AnthropicAdapter implements ChatModel {
         : {}),
     };
 
-    const res = await fetch(this.endpoint, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': this.config.apiKey,
-        'anthropic-version': this.config.anthropicVersion ?? '2023-06-01',
-      },
-      body: JSON.stringify(body),
-      signal: opts.signal,
-    });
+    let res: Response;
+    try {
+      res = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': this.config.apiKey,
+          'anthropic-version': this.config.anthropicVersion ?? '2023-06-01',
+        },
+        body: JSON.stringify(body),
+        signal: opts.signal,
+      });
+    } catch (e) {
+      throw classifyFetchError(e, `调用 ${this.config.model}`);
+    }
 
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
-      throw new Error(`Anthropic 请求失败 ${res.status}: ${text}`);
+      throw new ModelRequestError('http', `模型服务返回错误 ${res.status}: ${text}`, res.status);
     }
 
     return this.parseStream(res.body, opts.onText);

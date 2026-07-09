@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import { LineEditor, paintInputBox } from './line-editor';
 import type { ChatMessage, ChatModel } from '../core/chatmodel';
+import { ModelRequestError } from '../core/chatmodel/errors';
 import { type AppConfig, saveUserConfig, appConfigToUserConfig, maskSecret, CONFIG_PATH } from '../config';
 import type { ToolRegistry } from '../core/tools/registry';
 import type { PermissionManager, Decision, Resolver } from '../core/security/permission';
@@ -135,6 +136,32 @@ export async function startRepl(
   resume?: boolean,
 ): Promise<void> {
   const console_ = console;
+
+  /**
+   * 把模型调用抛出的错误翻译成「对用户友好的一行提示」。
+   * 返回空串表示无需提示（如用户主动 Ctrl+C 中断）。
+   * 网络错误会引导检查网络/代理/密钥；HTTP 错误原样回显状态码。
+   */
+  function modelErrorNote(e: unknown): string {
+    if (e instanceof ModelRequestError) {
+      if (e.kind === 'abort') return ''; // 中断不提示
+      if (e.kind === 'network') return `🌐 ${e.message}`;
+      if (e.kind === 'http') return `⚠️ 模型服务返回错误：${e.message}`;
+      return `⚠️ ${e.message}`;
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    return `⚠️ 发生未知错误：${msg}`;
+  }
+
+  // 某轮模型调用失败的兜底展示：把友好提示写进状态行正文 + 并入 transcript，
+  // 然后正常返回（不抛出），从而不会冒泡成「未处理异常」冲垮整个 REPL 进程。
+  function showTurnError(statusLine: StatusLine, e: unknown): void {
+    const note = modelErrorNote(e);
+    if (!note) return;
+    statusLine.pushText('\n' + chalk.red(note));
+    transcript.push(chalk.gray(note));
+  }
+
   // 启动欢迎面板（Splash）：显示项目信息 + 运行信息（模型 / git 分支）。
   // 把 splash 行收集进 transcript，供 StatusLine 作为「历史正文」从顶行重绘，
   // 避免首轮渲染时清屏把欢迎面板吞掉。
@@ -298,6 +325,10 @@ export async function startRepl(
         onToolResult: (call, res) => status.toolDone(call.name, res.ok),
         onCompact: (info) => status.setLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
       });
+    } catch (e) {
+      // 模型调用失败（多为网络/密钥问题）：友好提示后正常返回，不冲垮 REPL。
+      showTurnError(status, e);
+      return;
     } finally {
       // 无论正常结束还是被 Ctrl+C 中断，都清掉状态行动画，避免残留半行
       status.stop();
@@ -344,6 +375,9 @@ export async function startRepl(
           status.setLabel(`⚡ 并行探测 ${info.readCount} 个只读工具（峰值并发 ${info.maxConcurrency}）`),
         onCompact: (info) => status.setLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
       });
+    } catch (e) {
+      showTurnError(status, e);
+      return;
     } finally {
       status.stop();
     }
@@ -716,6 +750,11 @@ export async function startRepl(
           const next = pending.shift()!;
           exited = (await processInput(next)) === 'exit';
         }
+      } catch (e) {
+        // 最后防线：理论上 runTurn/runPlan 已就地消化模型错误，这里兜底任何意外异常，
+        // 打印一行友好提示后回到输入态，绝不把整个 REPL 进程打崩。
+        const msg = e instanceof Error ? e.message : String(e);
+        console_.error(chalk.red(`⚠️ 处理输入时出错：${msg}`));
       } finally {
         busy = false;
         refreshStatus({ showCtx: true }); // 一轮结束：刷新成本/ctx/模式，恢复显示 ctx%

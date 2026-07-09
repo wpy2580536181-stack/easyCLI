@@ -30,6 +30,24 @@ import { runFirstRunSetup } from './setup';
 
 const program = new Command();
 
+// 进程级兜底（Phase 18）：任何漏网的未处理异常 / Promise 拒绝，不再吐出 Node 内部原始堆栈
+// 后退出（之前一次 `fetch failed` 就直接 ELIFECYCLE exit 1），而是给一行友好提示。
+// - uncaughtException：属致命错误，提示后退出（保留原 exit 1 行为，但信息可读）。
+// - unhandledRejection：理论上 REPL 已在 dispatch 处就地捕获模型错误，这里只做最后防线，
+//   打印提示但不主动退出，避免误伤仍在运行的交互会话。
+function friendlyCrash(label: string, err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(`\n💥 ${label}：${msg}`);
+  console.error('   若提示网络相关，请检查本机网络 / 代理；其余情况可附日志向维护者反馈。');
+}
+process.on('uncaughtException', (err) => {
+  friendlyCrash('程序异常', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+  friendlyCrash('未处理的异步错误', err);
+});
+
 program
   .name('agent-cli')
   .description('从零手搓的仿 Claude Code 命令行 Agent CLI')

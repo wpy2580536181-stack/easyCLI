@@ -6,6 +6,7 @@ import type {
   ToolCall,
   ToolDef,
 } from './types';
+import { classifyFetchError, ModelRequestError } from './errors';
 
 export interface OpenAIConfig {
   /** 例如 https://api.deepseek.com/v1 */
@@ -66,18 +67,23 @@ export class OpenAICompatibleAdapter implements ChatModel {
     if (this.config.stream === false) {
       const nonStreamBody: Record<string, unknown> = { ...body, stream: false };
       delete (nonStreamBody as Record<string, unknown>).stream_options;
-      const res = await fetch(`${this.config.baseURL}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${this.config.apiKey}`,
-        },
-        body: JSON.stringify(nonStreamBody),
-        signal: opts.signal,
-      });
+      let res: Response;
+      try {
+        res = await fetch(`${this.config.baseURL}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${this.config.apiKey}`,
+          },
+          body: JSON.stringify(nonStreamBody),
+          signal: opts.signal,
+        });
+      } catch (e) {
+        throw classifyFetchError(e, `调用 ${this.config.model}`);
+      }
       if (!res.ok) {
         const text = await res.text().catch(() => '');
-        throw new Error(`OpenAI 请求失败 ${res.status}: ${text}`);
+        throw new ModelRequestError('http', `模型服务返回错误 ${res.status}: ${text}`, res.status);
       }
       const json = (await res.json().catch(() => null)) as any;
       const msg = json?.choices?.[0]?.message;
@@ -100,19 +106,24 @@ export class OpenAICompatibleAdapter implements ChatModel {
       return { content: text, toolCalls, raw: undefined, ...(usage ? { usage } : {}) };
     }
 
-    const res = await fetch(`${this.config.baseURL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${this.config.apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: opts.signal,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${this.config.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${this.config.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: opts.signal,
+      });
+    } catch (e) {
+      throw classifyFetchError(e, `调用 ${this.config.model}`);
+    }
 
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
-      throw new Error(`OpenAI 请求失败 ${res.status}: ${text}`);
+      throw new ModelRequestError('http', `模型服务返回错误 ${res.status}: ${text}`, res.status);
     }
 
     return this.parseStream(res.body, opts.onText);
