@@ -321,8 +321,8 @@ describe('StatusLine + StatusBar 集成（伪 TTY）', () => {
     expect(stripAnsi(vt.line(10))).toContain('agnes'); // 状态栏完好
     expect(stripAnsi(vt.line(10))).toContain('main');
 
-    // 回复正文应落在上方（第 7、8 行附近），且没被清掉
-    const body = [vt.line(7), vt.line(8)].map(stripAnsi).join(' ');
+    // 回复正文从顶行（transcript 模型）渲染，落在上方区域，且没被清掉
+    const body = [1, 2, 3, 4, 5, 6, 7, 8].map((r) => stripAnsi(vt.line(r))).join(' ');
     expect(body).toContain('这是模型回复的第一行');
     expect(body).toContain('这是第二行');
 
@@ -330,8 +330,47 @@ describe('StatusLine + StatusBar 集成（伪 TTY）', () => {
     // 停止后 footer 行（第 9 行）被清空，但回复正文与状态栏保留
     expect(stripAnsi(vt.line(9))).toBe('');
     expect(stripAnsi(vt.line(10))).toContain('agnes'); // 状态栏仍在
-    const bodyAfter = [vt.line(7), vt.line(8)].map(stripAnsi).join(' ');
+    const bodyAfter = [1, 2, 3, 4, 5, 6, 7, 8].map((r) => stripAnsi(vt.line(r))).join(' ');
     expect(bodyAfter).toContain('这是模型回复的第一行');
+  });
+
+  it('长回复从顶行滚动，绝不上吞已提交的用户输入框', () => {
+    vi.useFakeTimers();
+    const vt = new VT(24, 200);
+    const sb = new StatusBar({ out: makeOut(vt), enabled: true });
+    sb.start({ model: 'agnes', branch: 'main', mode: 'normal', costText: '¥0', showCtx: true, ctxPct: 5, startedAt: Date.now() });
+    const statusLine = new StatusLine({ out: makeOut(vt), color: ui.assistant, markdown: renderMarkdown, statusBar: sb });
+    // 历史正文 + 本轮已提交的用户输入（带输入框底色的一行）
+    statusLine.setHeader(['欢迎面板第 1 行', '欢迎面板第 2 行']);
+    statusLine.setUserTurn(['> 这是已提交的用户输入（输入框底色行）']);
+
+    statusLine.begin('思考中…');
+    // 一段中等长度回复，确保它出现在已提交输入框「下方」而非覆盖它
+    statusLine.pushText('回复第 1 行\n回复第 2 行\n回复第 3 行');
+    vi.advanceTimersByTime(200);
+
+    // 已提交的用户输入框必须仍然存在（未被回复正文吞掉）
+    const upper = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((r) => stripAnsi(vt.line(r))).join('\n');
+    const committedRow = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].find((r) => stripAnsi(vt.line(r)).includes('这是已提交的用户输入'))!;
+    expect(committedRow).toBeGreaterThan(0); // 提交行确实存在
+    expect(upper).toContain('回复第 1 行');
+    expect(upper).toContain('回复第 2 行');
+    expect(upper).toContain('回复第 3 行');
+    // 回复应出现在提交行「之后」（上方内容完整，回复在下方追加，而非覆盖）
+    const firstReplyRow = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].find((r) => stripAnsi(vt.line(r)).includes('回复第 1 行'))!;
+    expect(firstReplyRow).toBeGreaterThan(committedRow);
+
+    // footer 在 rows-1、状态栏在 rows，均完好
+    expect(stripAnsi(vt.line(23))).toMatch(/思考中|生成回复中|✢|✣|✤|✥/);
+    expect(stripAnsi(vt.line(24))).toContain('agnes');
+
+    statusLine.stop();
+    // 停止后提交行与回复仍保留，footer 行清空
+    expect(stripAnsi(vt.line(23))).toBe('');
+    expect(stripAnsi(vt.line(24))).toContain('agnes');
+    const after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((r) => stripAnsi(vt.line(r))).join('\n');
+    expect(after).toContain('这是已提交的用户输入');
+    expect(after).toContain('回复第 1 行');
   });
 });
 

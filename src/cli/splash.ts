@@ -32,17 +32,21 @@ export interface SplashOptions {
 }
 
 /**
- * 渲染并打印启动欢迎面板。
+ * 渲染并打印启动欢迎面板。返回打印出来的「屏显行」数组，供调用方（REPL）收集进
+ * transcript，作为状态行动画从顶行重绘时的「历史正文」——否则首轮渲染清屏会把
+ * 欢迎面板吞掉。
  */
-export function printSplash(opts: SplashOptions = {}): void {
+export function printSplash(opts: SplashOptions = {}): string[] {
   const name = pkg.name ?? 'agent-cli';
   const version = pkg.version ?? '0.0.0';
   const cwd = opts.cwd ?? process.cwd();
   const isDev = opts.isDev ?? true;
   const ctx = gatherContext(cwd); // 复用动态上下文采集，取 git 分支（失败静默降级）
 
+  const lines: string[] = [];
+
   // ── 第 1 行：项目标识 + 工作目录 ─────────────────────────────────────────────
-  console.log(
+  lines.push(
     chalk.gray('> ') +
       chalk.cyan(`${name}@${version}`) +
       chalk.white(' ') +
@@ -53,21 +57,13 @@ export function printSplash(opts: SplashOptions = {}): void {
 
   // ── 第 2 行：运行方式 ────────────────────────────────────────────────────────
   const cmd = isDev ? 'tsx src/cli/main.ts' : 'node dist/cli/main.js';
-  console.log(chalk.gray(`> ${cmd}`));
+  lines.push(chalk.gray(`> ${cmd}`));
 
   // ── 第 3 行：装饰横幅（色块 + 品牌 + 版本）────────────────────────────────────
   const block = chalk.bgCyan('    ');
-  console.log(
-    '\n' +
-      block +
-      '  ' +
-      chalk.bold.white('easyCLI') +
-      ' ' +
-      chalk.yellow('⚡') +
-      ' ' +
-      chalk.gray(`v${version}`) +
-      '\n',
-  );
+  const banner = '\n' + block + '  ' + chalk.bold.white('easyCLI') + ' ' + chalk.yellow('⚡') + ' ' + chalk.gray(`v${version}`) + '\n';
+  // banner 含前导/尾随换行 → 实际打印出 3 个视觉行：空行、横幅内容、空行
+  for (const l of banner.split('\n')) lines.push(l);
 
   // ── 第 4 行：运行信息（模型 / git 分支）─────────────────────────────────────
   const info: string[] = [];
@@ -77,5 +73,8 @@ export function printSplash(opts: SplashOptions = {}): void {
   if (ctx.gitBranch) {
     info.push(chalk.gray('🌿 分支: ') + ui.primary(ctx.gitBranch));
   }
-  if (info.length) console.log(info.join('   '));
+  if (info.length) lines.push(info.join('   '));
+
+  lines.forEach((l) => console.log(l));
+  return lines;
 }

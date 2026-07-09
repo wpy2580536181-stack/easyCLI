@@ -11,11 +11,12 @@ import type { StatusBar } from './statusbar';
  *   - 思考 / 调工具时显示「(Ns)」；流式输出时额外显示「↓ N tokens」实时增长；
  *   - 状态行恒为屏幕最后一行，流式正文（body）写在其上方。
  *
- * 渲染模型（关键，避免旧版「光标错位导致整屏乱跳」的 bug）：
- *   - 每次 render() 都把「上一次自己画的区域」整体清掉再重画，靠记录上一次占用
- *     的行数 prevLines 精准回到区域顶部（绝不越界到上方已写好的输入行 / 分隔线 /
- *     欢迎面板），因此不会再把历史内容层层覆盖。
- *   - stop() 只擦掉最底部状态行、保留上方正文（那才是模型回复，必须留下）。
+ * 渲染模型（关键，避免「AI 输出向上吞掉已提交输入框 / 历史」的事故）：
+ *   - 每轮把「历史(header) + 本轮用户输入(userTurn) + 流式正文(body)」拼成完整
+ *     transcript，从顶行（1;1H）统一重绘；footer（思考/工具/流式动画）固定在
+ *     footerRow，正文超长时从顶部裁剪（早期内容滚出屏幕，与真实终端滚动一致）。
+ *   - 因此正文再长也只会「向下滚动」，绝不会向上覆盖已提交的用户输入框或欢迎面板。
+ *   - stop() 保留整段正文、只移除 footer 行动画行，由下方输入框盒子接管。
  *
  * 非 TTY（管道 / 测试）退化为「直接写正文文本」，不画任何动画，保证可解析输出。
  */
@@ -67,6 +68,17 @@ export class StatusLine {
   private prevLines = 0;
   /** 流式模式下是否有新正文到达、需要重绘 */
   private dirty = false;
+  /**
+   * 本轮之前的「历史正文」行（含欢迎面板 splash、历史上各轮的用户输入与模型回复），
+   * 每行已是带 ANSI 样式的「屏显行」。render 时与本轮 userTurn + body 拼接成完整
+   * transcript 一起从顶行重绘——这样本轮回复再长也只是「从顶部滚动」，绝不会向上
+   * 吞掉已提交的用户输入框或上方历史（这正是早期 bottom-anchor 重绘的事故根因）。
+   */
+  private header: string[] = [];
+  /** 本轮已提交的用户输入行（带输入框底色），作为 transcript 中 body 之前的一段 */
+  private userTurn: string[] = [];
+  /** 最近一次渲染出的 body 行（已套样式），供调用方在回合结束后并入 transcript */
+  private lastBodyLines: string[] = [];
 
   constructor(opts: StatusLineOpts = {}) {
     this.color = opts.color ?? ((s) => s);
@@ -75,6 +87,21 @@ export class StatusLine {
     this.tty = !!process.stdout.isTTY;
     this.md = opts.markdown ?? null;
     this.sb = opts.statusBar ?? null;
+  }
+
+  /** 设置「历史正文」行（本轮之前的所有内容，调用 begin 前设置） */
+  setHeader(lines: string[]): void {
+    this.header = lines;
+  }
+
+  /** 设置本轮已提交的用户输入行（调用 begin 前设置） */
+  setUserTurn(lines: string[]): void {
+    this.userTurn = lines;
+  }
+
+  /** 取最近一次渲染出的 body 行（已套样式），供回合结束后并入 transcript */
+  getBodyLines(): string[] {
+    return this.lastBodyLines;
   }
 
   /** 开新一轮：显示「思考中…」并启动动画 */
@@ -148,22 +175,30 @@ export class StatusLine {
       this.out.write('\n');
       this.mode = 'idle';
       this.body = '';
+      this.lastBodyLines = [];
       return;
     }
-    // footer 落在哪一行：有状态栏时让出最底行（rows-1），否则为最底行（rows）
-    const sink = this.out as OutputSink & { rows?: number };
+    // 终帧：保留全部正文（header + userTurn + body），仅移除动画状态行（footer 行留空），
+    // 下方由输入框盒子接管。正文从顶行统一重绘，绝不向上吞掉已提交的用户输入。
+    const sink = this.out as OutputSink & { columns?: number; rows?: number };
+    const width = sink.columns ?? process.stdout.columns ?? 80;
     const rows = sink.rows ?? 24;
     const footerRow = this.sb ? rows - 1 : rows;
-    // 只清 footer 行本身（保留上方已渲染的模型回复），不再额外换行扰动状态栏
-    if (this.prevLines > 0) {
-      this.out.write(`\x1b[${footerRow};1H\x1b[K`);
-    }
+    const bodyAvail = footerRow - 1; // 正文占用 rows 1..footerRow-1
+    const rawBody = this.bodyLines(width);
+    const body = this.md ? rawBody : rawBody.map((l) => this.color(l));
+    this.lastBodyLines = body;
+    const content = [...this.header, ...this.userTurn, ...body];
+    const visible = content.length > bodyAvail ? content.slice(content.length - bodyAvail) : content;
+    this.out.write('\x1b[1;1H\x1b[J');
+    if (visible.length > 0) this.out.write(visible.join('\n'));
+    // footer 行动画行留空（\x1b[J 已清到屏末），正文其下不再画任何东西
+    const caretRow = Math.min(footerRow - 1, 1 + visible.length);
+    this.sb?.setCaret(caretRow, 1);
+    this.sb?.render();
     this.mode = 'idle';
     this.prevLines = 0;
     this.body = '';
-    // 光标回到 footer 行（模型输出将从此处继续）；状态栏位置由 setCaret 维护
-    this.sb?.setCaret(footerRow, 1);
-    this.sb?.render();
   }
 
   // ===================== 内部 =====================
@@ -235,38 +270,37 @@ export class StatusLine {
     return lines;
   }
 
-  /** 整段重绘：绝对定位到区域顶部清屏 → 写 body → 写 footer（footer 在 rows-1，让出最底行） */
+  /**
+   * 整段重绘（transcript 模型）：把「历史(header) + 本轮用户输入(userTurn) + 流式正文(body)」
+   * 拼成完整 transcript，从顶行统一重绘；footer 固定在 footerRow，超长时从顶部裁剪
+   * （早期内容滚出屏幕，与真实终端滚动一致）。这样正文再长也只会「向下滚动」，
+   * 绝不会像旧版那样向上吞掉已提交的用户输入框或上方历史。
+   */
   private render(): void {
     const sink = this.out as OutputSink & { columns?: number; rows?: number };
     const width = sink.columns ?? process.stdout.columns ?? 80;
     const rows = sink.rows ?? process.stdout.rows ?? 24;
-    const bodyLines = this.bodyLines(width);
-    const footer = this.footerLine();
-
     // footer 行：有状态栏时画在 rows-1（最底行留给状态栏），否则画在 rows
     const footerRow = this.sb ? rows - 1 : rows;
-    const total = bodyLines.length + 1; // body 行数 + 1 行 footer
-    // 区域顶部：footer 是区域最后一行，故顶部 = footerRow - total + 1（封顶到第 1 行，
-    // 超长回复时从顶部整体重绘会覆盖历史，与改造前一致；滚动回滚仍可看完整内容）
-    const top = Math.max(1, footerRow - total + 1);
+    const bodyAvail = footerRow - 1; // 正文占用 rows 1..footerRow-1
+    const rawBody = this.bodyLines(width);
+    // Markdown 模式：正文自带样式，不再套 color（避免覆盖）；纯文本模式：套 color
+    const body = this.md ? rawBody : rawBody.map((l) => this.color(l));
+    this.lastBodyLines = body;
+    const content = [...this.header, ...this.userTurn, ...body];
+    // 内容超过可视高度则从顶部裁剪（早期内容滚出屏幕，与真实终端滚动一致）
+    const visible = content.length > bodyAvail ? content.slice(content.length - bodyAvail) : content;
 
-    this.out.write(`\x1b[${top};1H`); // 移到区域顶部
-    this.out.write('\x1b[J'); // 清到屏幕末尾（含 footer 与下方，状态栏会随后由 sb 重绘）
+    // 从顶行清屏并重绘整段 transcript（header + userTurn + body），footer 单独定位到底部
+    this.out.write('\x1b[1;1H\x1b[J');
+    if (visible.length > 0) this.out.write(visible.join('\n'));
+    // 动画状态行（思考 / 工具 / 流式）固定在 footerRow，绝不参与上方内容的滚动
+    this.out.write(`\x1b[${footerRow};1H\x1b[K` + this.footerLine());
 
-    if (bodyLines.length > 0) {
-      // Markdown 模式：正文自带样式，不再套用统一的 color（避免覆盖）；
-      // 纯文本模式：套用 color（如跟随终端前景色）。
-      const text = this.md ? bodyLines.join('\n') : this.color(bodyLines.join('\n'));
-      this.out.write(text);
-      this.out.write('\n');
-    }
-    this.out.write(footer);
-    // 光标停在 footer 行末尾
-
-    this.prevLines = total;
+    this.prevLines = visible.length + 1;
     this.dirty = false;
     // 顺带刷新最底状态栏，并把光标送回 footer 行末尾（不依赖 ESC[s/u 保存/恢复）
-    const footerCol = displayWidth(footer) + 1;
+    const footerCol = displayWidth(this.footerLine()) + 1;
     this.sb?.setCaret(footerRow, footerCol);
     this.sb?.render();
   }

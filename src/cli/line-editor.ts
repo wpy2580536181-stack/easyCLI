@@ -44,8 +44,10 @@ function paintBoxLine(content: string, width: number): string {
 
 /**
  * 把可能含换行的内容逐行刷底色（多行输入 / 粘贴的多行提交都各自撑满整行）。
+ * 导出给 REPL：提交一行时把「提示符 + 输入」渲染成带底色的永久行，作为 transcript
+ * 中本轮 userTurn 的一段（与输入框消失后的渲染保持一致）。
  */
-function paintInputBox(text: string, width: number): string {
+export function paintInputBox(text: string, width: number): string {
   return text.split('\n').map((ln) => paintBoxLine(ln, width)).join('');
 }
 

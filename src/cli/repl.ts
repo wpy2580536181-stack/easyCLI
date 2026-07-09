@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { LineEditor } from './line-editor';
+import { LineEditor, paintInputBox } from './line-editor';
 import type { ChatMessage, ChatModel } from '../core/chatmodel';
 import { type AppConfig, saveUserConfig, appConfigToUserConfig, maskSecret, CONFIG_PATH } from '../config';
 import type { ToolRegistry } from '../core/tools/registry';
@@ -54,6 +54,16 @@ function printDivider(): void {
   process.stdout.write('\n' + ui.muted('─'.repeat(width)) + '\n');
 }
 
+/**
+ * 把一条已提交的用户输入渲染成 transcript 的「本轮用户输入段」：提示符 + 输入（带
+ * 输入框底色，与提交瞬间一致）+ 一条细分隔线，作为下一轮状态行动画的 userTurn。
+ */
+function buildUserTurn(input: string, prompt: string): string[] {
+  const cols = process.stdout.columns ?? 80;
+  const dividerWidth = Math.max(24, Math.min(cols, 80));
+  return [paintInputBox(prompt + input, cols), ui.muted('─'.repeat(dividerWidth))];
+}
+
 export async function runOnce(
   model: ChatModel,
   prompt: string,
@@ -75,7 +85,12 @@ export async function runOnce(
     { role: 'system', content: sys },
     { role: 'user', content: prompt },
   ];
-  if (planMode) console.log(chalk.bold.yellow('（规划模式：仅生成计划，不执行）'));
+  // 单次模式没有欢迎面板/历史，但本轮用户输入（提示符 + prompt）仍作为 userTurn 渲染，
+  // 与 REPL 模式保持一致；规划模式额外把提示行作为 header 顶部。
+  const header: string[] = [];
+  if (planMode) header.push(chalk.bold.yellow('（规划模式：仅生成计划，不执行）'));
+  status.setHeader(header);
+  status.setUserTurn([paintInputBox(ui.prompt + prompt, process.stdout.columns ?? 80)]);
   // Phase 16：单次模式也自动注入上下文（基于 prompt 检索记忆/知识库）
   let autoContext: string | undefined;
   if (autoContextEnabled ?? true) {
@@ -120,12 +135,17 @@ export async function startRepl(
   resume?: boolean,
 ): Promise<void> {
   const console_ = console;
-  // 启动欢迎面板（Splash）：显示项目信息 + 运行信息（模型 / git 分支）
-  printSplash({ modelId: model.id });
+  // 启动欢迎面板（Splash）：显示项目信息 + 运行信息（模型 / git 分支）。
+  // 把 splash 行收集进 transcript，供 StatusLine 作为「历史正文」从顶行重绘，
+  // 避免首轮渲染时清屏把欢迎面板吞掉。
+  const splashLines = printSplash({ modelId: model.id });
+  // transcript：本轮之前所有可见内容（欢迎面板 + 历史上各轮用户输入/回复）的屏显行。
+  // 每轮结束后把「本轮用户输入 + 模型回复」并入，从而多轮对话历史始终可见、可滚动。
+  const transcript: string[] = [...splashLines];
   if (!config.llm.apiKey) {
-    console_.log(
-      chalk.yellow('⚠ 未检测到 API Key，请设置 AGENTCLI_API_KEY（或 OPENAI_API_KEY）后再对话。'),
-    );
+    const warn = chalk.yellow('⚠ 未检测到 API Key，请设置 AGENTCLI_API_KEY（或 OPENAI_API_KEY）后再对话。');
+    console_.log(warn);
+    transcript.push(warn);
   }
 
   // —— 常驻底部状态栏（statusline）：模型 · 分支 · ctx% · ¥成本 · 时长 · 模式 ——
@@ -241,8 +261,11 @@ export async function startRepl(
     statusBar.update({ costText, ctxPct, mode, ...extra });
   }
 
-  async function runTurn(): Promise<void> {
+  async function runTurn(userTurn: string[]): Promise<void> {
     const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown, statusBar });
+    // 把历史正文 + 本轮用户输入交给状态行，从顶行统一重绘（避免向上吞掉已提交输入框）
+    status.setHeader(transcript);
+    status.setUserTurn(userTurn);
     tracker.beginTurn();
     // Phase 16：自动上下文注入（记忆 + 知识库），作为临时系统消息进入本轮模型调用
     const ac = await autoCtxForTurn();
@@ -273,13 +296,17 @@ export async function startRepl(
       status.stop();
     }
     void persistAutosave();
-    // Phase 14：每轮结束展示本轮 + 累计成本
-    console_.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
+    // Phase 14：每轮结束展示本轮 + 累计成本（并入 transcript，下一轮可见）
+    const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
+    transcript.push(...userTurn, ...status.getBodyLines(), costLine);
+    if (transcript.length > 4000) transcript.splice(0, transcript.length - 4000);
   }
 
   /** 规划模式的一轮：只读探测 + 产出计划，结束后进入「待批准」状态（Phase 15） */
-  async function runPlan(): Promise<void> {
+  async function runPlan(userTurn: string[]): Promise<void> {
     const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown, statusBar });
+    status.setHeader(transcript);
+    status.setUserTurn(userTurn);
     tracker.beginTurn();
     // Phase 16：规划阶段同样自动注入上下文，帮助模型理解既有记忆/知识
     const ac = await autoCtxForTurn();
@@ -309,12 +336,16 @@ export async function startRepl(
       status.stop();
     }
     void persistAutosave();
-    console_.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
-    awaitingApproval = true;
-    console_.log(chalk.bold.yellow('\n⬆ 以上是模型生成的执行计划。'));
-    console_.log(
+    const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
+    // 计划批注（空行 + 提示）并入 transcript，下一轮可见
+    const notes = [
+      '',
+      chalk.bold.yellow('⬆ 以上是模型生成的执行计划。'),
       chalk.gray('   /approve 执行  ·  /discard 放弃  ·  直接输入补充让模型修订'),
-        );
+    ];
+    transcript.push(...userTurn, ...status.getBodyLines(), costLine, ...notes);
+    if (transcript.length > 4000) transcript.splice(0, transcript.length - 4000);
+    awaitingApproval = true;
   }
 
   /** Phase 17：Multi-Agent —— 把任务拆给 Planner → 并发 Worker（各自隔离 worktree）→ Reviewer */
@@ -565,8 +596,7 @@ export async function startRepl(
         const text = rest.join(' ').trim();
         if (text) {
           history.push({ role: 'user', content: text });
-          printDivider();
-          await runTurn();
+          await runTurn(buildUserTurn(text, promptStr));
         } else {
           console_.log(chalk.yellow('用法: /prompt <你的问题>'));
         }
@@ -603,9 +633,9 @@ export async function startRepl(
         statusBar.update({ mode }); // 状态栏模式切换为「规划」
         planCheckpoint = history.length; // 记录规划前位置，便于 /discard 回滚
         history.push({ role: 'user', content: task });
-        console_.log(ui.muted('\n⚙ 规划中…'));
+        console_.log(ui.muted('⚙ 规划中…'));
         awaitingApproval = false;
-        await runPlan();
+        await runPlan(buildUserTurn(task, promptStr));
         return 'continue';
       }
       case 'approve': {
@@ -642,16 +672,16 @@ export async function startRepl(
   /** 处理一条输入：slash 走命令，普通文本入 history 并跑一轮（Phase 15：待批准时普通输入视为修订计划） */
   async function processInput(input: string): Promise<'exit' | 'continue'> {
     if (input.startsWith('/')) return handleSlash(input);
+    const userTurn = buildUserTurn(input, promptStr);
     if (awaitingApproval) {
       // 计划待批准时，普通输入 = 对计划的补充修订：保留已生成计划，重新规划
       history.push({ role: 'user', content: input });
-      console_.log(ui.muted('\n⚙ 修订规划中…'));
-      await runPlan();
+      console_.log(ui.muted('⚙ 修订规划中…'));
+      await runPlan(userTurn);
       return 'continue';
     }
     history.push({ role: 'user', content: input });
-    printDivider();
-    await runTurn();
+    await runTurn(userTurn);
     return 'continue';
   }
 
