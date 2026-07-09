@@ -13,10 +13,12 @@ import type { StatusBar } from './statusbar';
  *
  * 渲染模型（关键，避免「AI 输出向上吞掉已提交输入框 / 历史」的事故）：
  *   - 每轮把「历史(header) + 本轮用户输入(userTurn) + 流式正文(body)」拼成完整
- *     transcript，从顶行（1;1H）统一重绘；footer（思考/工具/流式动画）固定在
- *     footerRow，正文超长时从顶部裁剪（早期内容滚出屏幕，与真实终端滚动一致）。
+ *     transcript，从顶行（1;1H）统一重绘；footer（思考/工具/流式动画）紧贴正文
+ *     最后一行下方（绝不固定在底部留一大段空白），正文超长时从顶部裁剪（早期内容
+ *     滚出屏幕，与真实终端滚动一致）。
  *   - 因此正文再长也只会「向下滚动」，绝不会向上覆盖已提交的用户输入框或欢迎面板。
- *   - stop() 保留整段正文、只移除 footer 行动画行，由下方输入框盒子接管。
+ *   - footer 受 reservedBottom 限制不进入输入框盒子区域；stop() 保留整段正文、
+ *     只移除 footer 行动画行，由下方输入框盒子接管。
  *
  * 非 TTY（管道 / 测试）退化为「直接写正文文本」，不画任何动画，保证可解析输出。
  */
@@ -303,7 +305,7 @@ export class StatusLine {
   private render(): void {
     const sink = this.out as OutputSink & { columns?: number; rows?: number };
     const width = sink.columns ?? process.stdout.columns ?? 80;
-    const { footerRow, bodyAvail } = this.layout();
+    const { footerRow: footerCap, bodyAvail } = this.layout();
     const rawBody = this.bodyLines(width);
     // Markdown 模式：正文自带样式，不再套 color（避免覆盖）；纯文本模式：套 color
     const body = this.md ? rawBody : rawBody.map((l) => this.color(l));
@@ -312,11 +314,15 @@ export class StatusLine {
     // 内容超过可视高度则从顶部裁剪（早期内容滚出屏幕，与真实终端滚动一致）
     const visible = content.length > bodyAvail ? content.slice(content.length - bodyAvail) : content;
 
-    // 从顶行清屏并重绘整段 transcript（header + userTurn + body），footer 单独定位到底部
+    // 从顶行清屏并重绘整段 transcript（header + userTurn + body）
     this.out.write('\x1b[1;1H\x1b[J');
     if (visible.length > 0) this.out.write(visible.join('\n'));
-    // 动画状态行（思考 / 工具 / 流式）固定在 footerRow（输入框盒子之上方一行），
-    // 绝不参与上方内容的滚动，也不与下方输入框盒子重叠
+    // 动画状态行（思考 / 工具 / 流式）的位置：
+    //  - 交互模式（reservedBottom>0，有输入框）：紧贴正文最后一行下方（visible.length+1），
+    //    让「思考中…」始终贴着 AI 输出；同时受 footerCap 限制不进入输入框盒子区域。
+    //  - 非交互模式（one-shot / 管道）：仍钉在底部 footerCap（与 Claude Code 一致）。
+    const footerRow =
+      this.reserved > 0 ? Math.min(visible.length + 1, footerCap) : footerCap;
     this.out.write(`\x1b[${footerRow};1H\x1b[K` + this.footerLine());
 
     this.prevLines = visible.length + 1;

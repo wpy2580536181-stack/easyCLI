@@ -402,8 +402,10 @@ describe('StatusLine + StatusBar 集成（伪 TTY）', () => {
     expect(replyRegion).toContain('回复第 1 行');
     expect(replyRegion).toContain('回复第 2 行');
     expect(replyRegion).toContain('回复第 3 行');
-    // footer 钉在 rows-4（第 20 行），而非 rows-1
-    expect(stripAnsi(vt.line(20))).toMatch(/思考中|生成回复中|✢|✣|✤|✥/);
+    // footer 紧贴正文（Markdown 把连续 3 行合并为 1 段，故可见内容 = 用户问题1行
+    // + 回复1行 = 2 行，footer 落在第 3 行），而非钉在底部——
+    // 「思考中…」应贴着 AI 输出；同时受 reservedBottom 限制绝不进入盒子区。
+    expect(stripAnsi(vt.line(3))).toMatch(/思考中|生成回复中|✢|✣|✤|✥/);
     // 输入框盒子区（rows-3..rows-1 = 21~23 行）在生成期间必须留空，
     // 这样生成结束后输入框盒子画上去时不会覆盖任何回复内容
     expect(stripAnsi(vt.line(21))).toBe('');
@@ -423,6 +425,39 @@ describe('StatusLine + StatusBar 集成（伪 TTY）', () => {
       .map((r) => stripAnsi(vt.line(r)))
       .join('\n');
     expect(afterReply).toContain('回复第 1 行');
+    expect(stripAnsi(vt.line(24))).toContain('agnes');
+  });
+
+  it('reservedBottom:4 时超长回复 footer 受 cap 限制钉在 rows-4、不进入盒子区', () => {
+    vi.useFakeTimers();
+    const vt = new VT(24, 200);
+    const sb = new StatusBar({ out: makeOut(vt), enabled: true });
+    sb.start({ model: 'agnes', branch: 'main', mode: 'normal', costText: '¥0', showCtx: true, ctxPct: 5, startedAt: Date.now() });
+    const statusLine = new StatusLine({
+      out: makeOut(vt),
+      color: ui.assistant,
+      markdown: renderMarkdown,
+      statusBar: sb,
+      reservedBottom: 4,
+    });
+    statusLine.setHeader([]);
+    statusLine.setUserTurn(['> 用户的问题']);
+    // 30 段超长回复（每段间用空行分隔，Markdown 渲染为独立块）：footer 应被 cap 在
+    // rows-4（20），绝不进入盒子区 rows-3..rows-1
+    const longBody = Array.from({ length: 30 }, (_, i) => `回复第 ${i + 1} 行`).join('\n\n');
+    statusLine.begin('思考中…');
+    statusLine.pushText(longBody);
+    vi.advanceTimersByTime(200);
+
+    // footer 被 cap 在 rows-4（20），而不是跟随超长正文滚到下方
+    expect(stripAnsi(vt.line(20))).toMatch(/思考中|生成回复中|✢|✣|✤|✥/);
+    // 盒子区 rows-3..rows-1（21~23）仍然留空
+    expect(stripAnsi(vt.line(21))).toBe('');
+    expect(stripAnsi(vt.line(22))).toBe('');
+    expect(stripAnsi(vt.line(23))).toBe('');
+    // 回复从顶部滚动裁剪，最新的回复出现在接近 footer 的上方区域
+    const tailRegion = [16, 17, 18, 19].map((r) => stripAnsi(vt.line(r))).join('\n');
+    expect(tailRegion).toContain('回复第 30 行');
     expect(stripAnsi(vt.line(24))).toContain('agnes');
   });
 });
@@ -470,8 +505,8 @@ describe('LineEditor + StatusBar 集成（伪 TTY）', () => {
     for (const ch of 'hello') stdin.emitData(Buffer.from(ch));
     // 状态栏在第 10 行
     expect(stripAnsi(vt.line(10))).toContain('agnes');
-    // 输入框底部横线在第 9 行、输入行在第 8 行
-    expect(stripAnsi(vt.line(9))).toContain('─');
+    // 输入框：顶边横线在第 7 行、输入行在第 8 行、第 9 行（底边）留空（底边横线已移除）
+    expect(stripAnsi(vt.line(9))).not.toContain('─'); // 底边横线已移除，第 9 行留空
     expect(stripAnsi(vt.line(8))).toContain('> hello');
 
     // 回车提交（普通文本走「多行粘贴」debounce，需推进定时器才真正 commit）
@@ -507,7 +542,7 @@ describe('LineEditor + StatusBar 集成（伪 TTY）', () => {
     for (const ch of 'hello') stdin.emitData(Buffer.from(ch));
     for (let i = 0; i < 3; i++) stdin.emitData(Buffer.from('\b'));
 
-    // 只有 1 个输入框盒子：顶边横线只应出现在第 7 行、底边横线只应出现在第 9 行，
+    // 只有 1 个输入框盒子：顶边横线只应出现在第 7 行，第 9 行（底边）应留空无横线，
     // 上方第 1..6 行不应有任何盒子横线或输入提示，证明没有重复/塌缩的输入框。
     const above = [1, 2, 3, 4, 5, 6].map((r) => stripAnsi(vt.line(r)));
     for (const l of above) {
@@ -516,7 +551,7 @@ describe('LineEditor + StatusBar 集成（伪 TTY）', () => {
     }
     expect(stripAnsi(vt.line(7))).toContain('─'); // 顶边横线
     expect(stripAnsi(vt.line(8))).toContain('> hel'); // 输入行含退格后的文本
-    expect(stripAnsi(vt.line(9))).toContain('─'); // 底边横线
+    expect(stripAnsi(vt.line(9))).not.toContain('─'); // 底边横线已移除，第 9 行留空
     expect(stripAnsi(vt.line(10))).toContain('agnes'); // 状态栏完好且唯一
 
     editor.exit();

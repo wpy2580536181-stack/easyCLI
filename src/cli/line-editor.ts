@@ -235,17 +235,17 @@ export class LineEditor {
     this.out.write(`\x1b[${clearFrom};1H\x1b[J`);
     // 逐行绝对定位绘制：不依赖 \n 前进，规避不同终端换行/自动折行差异
     // （这正是旧版「按删除键冒出多个输入框」的根因——\n 在边界处的处理不一致）。
-    // 顶边横线：无底色
+    // 顶边横线：无底色（仅保留上沿，作为与上方 AI 输出的分隔）
     this.out.write(`\x1b[${top};1H` + '─'.repeat(width));
     // 输入行：保留输入框底色（仅这一行有底色），与上方输出区分
     this.out.write(`\x1b[${top + 1};1H` + paintBoxLine(this.opts.prompt + this.input, width));
+    // 注意：不再绘制底边横线（用户要求去掉输入框下方的横线）。
+    // 底边那一行（top+2）保持空白，作为输入框与最底状态栏之间的留白。
     if (k > 0) {
       for (let i = 0; i < k; i++) {
         this.out.write(`\x1b[${top + 2 + i};1H` + dropdown[i]);
       }
-      this.out.write(`\x1b[${top + 2 + k};1H` + '─'.repeat(width)); // 底边：无底色
-    } else {
-      this.out.write(`\x1b[${top + 2};1H` + '─'.repeat(width)); // 底边：无底色
+      // 下拉菜单也不画底边横线，保持与无下拉时一致的开放外观
     }
     // 输入框盒子绘制完成，刷新最底状态栏
     this.boxTop = top;
