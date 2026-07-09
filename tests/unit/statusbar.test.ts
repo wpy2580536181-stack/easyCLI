@@ -372,6 +372,59 @@ describe('StatusLine + StatusBar 集成（伪 TTY）', () => {
     expect(after).toContain('这是已提交的用户输入');
     expect(after).toContain('回复第 1 行');
   });
+
+  it('reservedBottom:4 时 footer 钉在 rows-4，盒子区 rows-3..rows-1 留空，用户问题不被吞', () => {
+    vi.useFakeTimers();
+    const vt = new VT(24, 200);
+    const sb = new StatusBar({ out: makeOut(vt), enabled: true });
+    sb.start({ model: 'agnes', branch: 'main', mode: 'normal', costText: '¥0', showCtx: true, ctxPct: 5, startedAt: Date.now() });
+    // 新模型：header 不含欢迎面板（只在启动空闲显示一次），避免长回复时吞掉用户问题
+    const statusLine = new StatusLine({
+      out: makeOut(vt),
+      color: ui.assistant,
+      markdown: renderMarkdown,
+      statusBar: sb,
+      reservedBottom: 4, // 为输入框预留底部 4 行（盒子 3 行 + footer 1 行）
+    });
+    statusLine.setHeader([]);
+    statusLine.setUserTurn(['> 这是用户的问题']);
+
+    statusLine.begin('思考中…');
+    statusLine.pushText('回复第 1 行\n回复第 2 行\n回复第 3 行');
+    vi.advanceTimersByTime(200);
+
+    // 用户的问题必须保留在第 1 行（绝不被回复吞掉）
+    expect(stripAnsi(vt.line(1))).toContain('这是用户的问题');
+    // 回复正文出现在问题之后（Markdown 渲染可能加段落间距，故在 rows 2..19 范围内查找）
+    const replyRegion = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+      .map((r) => stripAnsi(vt.line(r)))
+      .join('\n');
+    expect(replyRegion).toContain('回复第 1 行');
+    expect(replyRegion).toContain('回复第 2 行');
+    expect(replyRegion).toContain('回复第 3 行');
+    // footer 钉在 rows-4（第 20 行），而非 rows-1
+    expect(stripAnsi(vt.line(20))).toMatch(/思考中|生成回复中|✢|✣|✤|✥/);
+    // 输入框盒子区（rows-3..rows-1 = 21~23 行）在生成期间必须留空，
+    // 这样生成结束后输入框盒子画上去时不会覆盖任何回复内容
+    expect(stripAnsi(vt.line(21))).toBe('');
+    expect(stripAnsi(vt.line(22))).toBe('');
+    expect(stripAnsi(vt.line(23))).toBe('');
+    // 状态栏仍在最底行
+    expect(stripAnsi(vt.line(24))).toContain('agnes');
+
+    statusLine.stop();
+    // 停止后 footer 行（20）清空，盒子区仍留空，问题+回复保留
+    expect(stripAnsi(vt.line(20))).toBe('');
+    expect(stripAnsi(vt.line(21))).toBe('');
+    expect(stripAnsi(vt.line(22))).toBe('');
+    expect(stripAnsi(vt.line(23))).toBe('');
+    expect(stripAnsi(vt.line(1))).toContain('这是用户的问题');
+    const afterReply = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+      .map((r) => stripAnsi(vt.line(r)))
+      .join('\n');
+    expect(afterReply).toContain('回复第 1 行');
+    expect(stripAnsi(vt.line(24))).toContain('agnes');
+  });
 });
 
 // ───────────────────────── LineEditor + StatusBar 集成（真输入框盒子） ─────────────────────────

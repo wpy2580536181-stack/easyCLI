@@ -42,6 +42,13 @@ export interface StatusLineOpts {
    * 最底行留给 StatusBar；每次重绘末尾顺带刷新 StatusBar。
    */
   statusBar?: StatusBar | null;
+  /**
+   * 底部为输入框预留的行数（含输入框上沿与动画 footer 共占的行）。footer 会钉在
+   * 「最底行 - reservedBottom」这一行，transcript 只画在该行之上，从而输入框盒子
+   * 出现时绝不会覆盖/吞掉上方正文。典型值 = 输入框高度(3: 上沿+输入行+下沿) + 1
+   * （footer 所占的那一行）。非交互（无输入框）时传 0 或不传，footer 落在 rows-1。
+   */
+  reservedBottom?: number;
 }
 
 type Mode = 'idle' | 'thinking' | 'tool' | 'stream';
@@ -55,6 +62,8 @@ export class StatusLine {
   private readonly md: ((md: string, width: number) => string[]) | null;
   /** 可选的常驻状态栏（footer 让出最底行） */
   private readonly sb: StatusBar | null;
+  /** 底部为输入框预留的行数（footer 钉在其上方一行，transcript 只画在盒子之上） */
+  private readonly reserved: number;
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private frame = 0;
@@ -87,6 +96,7 @@ export class StatusLine {
     this.tty = !!process.stdout.isTTY;
     this.md = opts.markdown ?? null;
     this.sb = opts.statusBar ?? null;
+    this.reserved = opts.reservedBottom ?? 0;
   }
 
   /** 设置「历史正文」行（本轮之前的所有内容，调用 begin 前设置） */
@@ -179,12 +189,10 @@ export class StatusLine {
       return;
     }
     // 终帧：保留全部正文（header + userTurn + body），仅移除动画状态行（footer 行留空），
-    // 下方由输入框盒子接管。正文从顶行统一重绘，绝不向上吞掉已提交的用户输入。
+    // 其下方由输入框盒子接管。正文从顶行统一重绘，绝不向上吞掉已提交的用户输入。
     const sink = this.out as OutputSink & { columns?: number; rows?: number };
     const width = sink.columns ?? process.stdout.columns ?? 80;
-    const rows = sink.rows ?? 24;
-    const footerRow = this.sb ? rows - 1 : rows;
-    const bodyAvail = footerRow - 1; // 正文占用 rows 1..footerRow-1
+    const { footerRow, bodyAvail } = this.layout();
     const rawBody = this.bodyLines(width);
     const body = this.md ? rawBody : rawBody.map((l) => this.color(l));
     this.lastBodyLines = body;
@@ -192,7 +200,7 @@ export class StatusLine {
     const visible = content.length > bodyAvail ? content.slice(content.length - bodyAvail) : content;
     this.out.write('\x1b[1;1H\x1b[J');
     if (visible.length > 0) this.out.write(visible.join('\n'));
-    // footer 行动画行留空（\x1b[J 已清到屏末），正文其下不再画任何东西
+    // footer 行动画行留空（\x1b[J 已清到屏末），其下方留给输入框盒子，正文不被覆盖
     const caretRow = Math.min(footerRow - 1, 1 + visible.length);
     this.sb?.setCaret(caretRow, 1);
     this.sb?.render();
@@ -202,6 +210,22 @@ export class StatusLine {
   }
 
   // ===================== 内部 =====================
+
+  /**
+   * 计算 footer 行号与正文可用行数。
+   * - reservedBottom>0：footer 钉在「最底行 - reservedBottom」一行，其下方留给输入框盒子；
+   *   transcript 只画在 footer 之上，盒子出现时绝不覆盖正文。
+   * - 否则（无输入框）：有状态栏则 footer 让出最底行（rows-1），否则落 rows。
+   */
+  private layout(): { footerRow: number; bodyAvail: number } {
+    const sink = this.out as OutputSink & { columns?: number; rows?: number };
+    const rows = sink.rows ?? process.stdout.rows ?? 24;
+    let footerRow: number;
+    if (this.reserved > 0) footerRow = rows - this.reserved;
+    else if (this.sb) footerRow = rows - 1;
+    else footerRow = rows;
+    return { footerRow, bodyAvail: footerRow - 1 };
+  }
 
   private startTimer(): void {
     if (this.timer) return;
@@ -279,10 +303,7 @@ export class StatusLine {
   private render(): void {
     const sink = this.out as OutputSink & { columns?: number; rows?: number };
     const width = sink.columns ?? process.stdout.columns ?? 80;
-    const rows = sink.rows ?? process.stdout.rows ?? 24;
-    // footer 行：有状态栏时画在 rows-1（最底行留给状态栏），否则画在 rows
-    const footerRow = this.sb ? rows - 1 : rows;
-    const bodyAvail = footerRow - 1; // 正文占用 rows 1..footerRow-1
+    const { footerRow, bodyAvail } = this.layout();
     const rawBody = this.bodyLines(width);
     // Markdown 模式：正文自带样式，不再套 color（避免覆盖）；纯文本模式：套 color
     const body = this.md ? rawBody : rawBody.map((l) => this.color(l));
@@ -294,7 +315,8 @@ export class StatusLine {
     // 从顶行清屏并重绘整段 transcript（header + userTurn + body），footer 单独定位到底部
     this.out.write('\x1b[1;1H\x1b[J');
     if (visible.length > 0) this.out.write(visible.join('\n'));
-    // 动画状态行（思考 / 工具 / 流式）固定在 footerRow，绝不参与上方内容的滚动
+    // 动画状态行（思考 / 工具 / 流式）固定在 footerRow（输入框盒子之上方一行），
+    // 绝不参与上方内容的滚动，也不与下方输入框盒子重叠
     this.out.write(`\x1b[${footerRow};1H\x1b[K` + this.footerLine());
 
     this.prevLines = visible.length + 1;

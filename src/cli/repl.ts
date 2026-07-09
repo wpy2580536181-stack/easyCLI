@@ -138,14 +138,14 @@ export async function startRepl(
   // 启动欢迎面板（Splash）：显示项目信息 + 运行信息（模型 / git 分支）。
   // 把 splash 行收集进 transcript，供 StatusLine 作为「历史正文」从顶行重绘，
   // 避免首轮渲染时清屏把欢迎面板吞掉。
-  const splashLines = printSplash({ modelId: model.id });
-  // transcript：本轮之前所有可见内容（欢迎面板 + 历史上各轮用户输入/回复）的屏显行。
-  // 每轮结束后把「本轮用户输入 + 模型回复」并入，从而多轮对话历史始终可见、可滚动。
-  const transcript: string[] = [...splashLines];
+  // 欢迎面板只在启动空闲时显示一次（printSplash 打印到屏幕）；不塞进每轮 transcript，
+  // 否则它会被反复算进 header、白白吃掉大量行，导致长回复时把用户问题与答案开头吞掉。
+  printSplash({ modelId: model.id });
+  // transcript：仅「对话正文」（历史上各轮用户输入/回复）的屏显行，不含欢迎面板。
+  const transcript: string[] = [];
   if (!config.llm.apiKey) {
     const warn = chalk.yellow('⚠ 未检测到 API Key，请设置 AGENTCLI_API_KEY（或 OPENAI_API_KEY）后再对话。');
     console_.log(warn);
-    transcript.push(warn);
   }
 
   // —— 常驻底部状态栏（statusline）：模型 · 分支 · ctx% · ¥成本 · 时长 · 模式 ——
@@ -262,7 +262,14 @@ export async function startRepl(
   }
 
   async function runTurn(userTurn: string[]): Promise<void> {
-    const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown, statusBar });
+    const status = new StatusLine({
+      color: ui.assistant,
+      markdown: renderMarkdown,
+      statusBar,
+      // 为输入框预留底部 4 行（上沿+输入行+下沿 共 3 行 + footer 1 行），footer 钉在
+      // 盒子上方一行，transcript 只画在盒子之上，空闲时输入框绝不覆盖回复内容。
+      reservedBottom: 4,
+    });
     // 把历史正文 + 本轮用户输入交给状态行，从顶行统一重绘（避免向上吞掉已提交输入框）
     status.setHeader(transcript);
     status.setUserTurn(userTurn);
@@ -304,7 +311,12 @@ export async function startRepl(
 
   /** 规划模式的一轮：只读探测 + 产出计划，结束后进入「待批准」状态（Phase 15） */
   async function runPlan(userTurn: string[]): Promise<void> {
-    const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown, statusBar });
+    const status = new StatusLine({
+      color: ui.assistant,
+      markdown: renderMarkdown,
+      statusBar,
+      reservedBottom: 4,
+    });
     status.setHeader(transcript);
     status.setUserTurn(userTurn);
     tracker.beginTurn();
