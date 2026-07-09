@@ -505,7 +505,8 @@ describe('LineEditor + StatusBar 集成（伪 TTY）', () => {
     for (const ch of 'hello') stdin.emitData(Buffer.from(ch));
     // 状态栏在第 10 行
     expect(stripAnsi(vt.line(10))).toContain('agnes');
-    // 输入框：顶边横线在第 7 行、输入行在第 8 行、第 9 行（底边）留空（底边横线已移除）
+    // 输入框：第 7 行为空（顶边横线已移除）、输入行在第 8 行、第 9 行（底边）留空（底边横线已移除）
+    expect(stripAnsi(vt.line(7))).not.toContain('─'); // 顶边横线已移除，第 7 行留空
     expect(stripAnsi(vt.line(9))).not.toContain('─'); // 底边横线已移除，第 9 行留空
     expect(stripAnsi(vt.line(8))).toContain('> hello');
 
@@ -542,14 +543,14 @@ describe('LineEditor + StatusBar 集成（伪 TTY）', () => {
     for (const ch of 'hello') stdin.emitData(Buffer.from(ch));
     for (let i = 0; i < 3; i++) stdin.emitData(Buffer.from('\b'));
 
-    // 只有 1 个输入框盒子：顶边横线只应出现在第 7 行，第 9 行（底边）应留空无横线，
+    // 只有 1 个输入框盒子：第 7 行应为空（顶边横线已移除），第 9 行（底边）应留空无横线，
     // 上方第 1..6 行不应有任何盒子横线或输入提示，证明没有重复/塌缩的输入框。
     const above = [1, 2, 3, 4, 5, 6].map((r) => stripAnsi(vt.line(r)));
     for (const l of above) {
       expect(l).not.toContain('─'); // 无残留盒子横线
       expect(l).not.toContain('> '); // 无残留输入提示
     }
-    expect(stripAnsi(vt.line(7))).toContain('─'); // 顶边横线
+    expect(stripAnsi(vt.line(7))).not.toContain('─'); // 顶边横线已移除，第 7 行留空
     expect(stripAnsi(vt.line(8))).toContain('> hel'); // 输入行含退格后的文本
     expect(stripAnsi(vt.line(9))).not.toContain('─'); // 底边横线已移除，第 9 行留空
     expect(stripAnsi(vt.line(10))).toContain('agnes'); // 状态栏完好且唯一

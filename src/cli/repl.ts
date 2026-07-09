@@ -163,13 +163,13 @@ export async function startRepl(
   }
 
   // 启动欢迎面板（Splash）：显示项目信息 + 运行信息（模型 / git 分支）。
-  // 把 splash 行收集进 transcript，供 StatusLine 作为「历史正文」从顶行重绘，
-  // 避免首轮渲染时清屏把欢迎面板吞掉。
-  // 欢迎面板只在启动空闲时显示一次（printSplash 打印到屏幕）；不塞进每轮 transcript，
-  // 否则它会被反复算进 header、白白吃掉大量行，导致长回复时把用户问题与答案开头吞掉。
-  printSplash({ modelId: model.id });
-  // transcript：仅「对话正文」（历史上各轮用户输入/回复）的屏显行，不含欢迎面板。
-  const transcript: string[] = [];
+  // 把 splash 行收集进 transcript 首部，作为「历史正文」从顶行重绘——
+  // 这样首轮输入后欢迎面板仍在最上方，直到对话变长自然向上滚动消失
+  // （而非一输入就被清屏吞掉）。长对话时 splash 随顶部滚动让位给新内容，
+  // 因为 transcript 模型只向下滚动、永不向上覆盖。
+  const splashLines = printSplash({ modelId: model.id });
+  // transcript：欢迎面板（首部常驻）+ 历史上各轮「用户输入 / 回复」的屏显行。
+  const transcript: string[] = [...splashLines];
   if (!config.llm.apiKey) {
     const warn = chalk.yellow('⚠ 未检测到 API Key，请设置 AGENTCLI_API_KEY（或 OPENAI_API_KEY）后再对话。');
     console_.log(warn);

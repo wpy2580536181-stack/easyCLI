@@ -225,8 +225,9 @@ export class LineEditor {
     const k = dropdown.length;
     const rows = this.out.rows ?? 24;
     const hasBar = !!this.opts.statusBar;
-    // 盒子由：顶边(1) + 输入(1) + 下拉(k) + 底边(1) 组成；底边始终绘制（即便无下拉）。
+    // 盒子由：输入(1) + 下拉(k) 组成；不再绘制任何上下横线（用户要求取消输入框上下的白线）。
     // 有常驻状态栏时最底行 rows 留给状态栏，盒子底边落在 rows-1；否则落在 rows。
+    // top 这一行（输入行上方）留空，作为 AI 输出区与输入框之间的分隔留白（clearFrom 已从此行清起）。
     const bottom = hasBar ? rows - 1 : rows;
     const top = Math.max(1, bottom - (3 + k) + 1);
     // 清除：从「上一帧盒子顶」与「本帧盒子顶」中较高者清起，避免残留更长的下拉
@@ -235,9 +236,7 @@ export class LineEditor {
     this.out.write(`\x1b[${clearFrom};1H\x1b[J`);
     // 逐行绝对定位绘制：不依赖 \n 前进，规避不同终端换行/自动折行差异
     // （这正是旧版「按删除键冒出多个输入框」的根因——\n 在边界处的处理不一致）。
-    // 顶边横线：无底色（仅保留上沿，作为与上方 AI 输出的分隔）
-    this.out.write(`\x1b[${top};1H` + '─'.repeat(width));
-    // 输入行：保留输入框底色（仅这一行有底色），与上方输出区分
+    // 输入行：仅这一行带输入框底色，与上方输出区分；不再绘制顶边横线（白线已取消）。
     this.out.write(`\x1b[${top + 1};1H` + paintBoxLine(this.opts.prompt + this.input, width));
     // 注意：不再绘制底边横线（用户要求去掉输入框下方的横线）。
     // 底边那一行（top+2）保持空白，作为输入框与最底状态栏之间的留白。
