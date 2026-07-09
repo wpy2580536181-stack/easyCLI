@@ -190,8 +190,19 @@ export class StatusLine {
       this.lastBodyLines = [];
       return;
     }
-    // 终帧：保留全部正文（header + userTurn + body），仅移除动画状态行（footer 行留空），
-    // 其下方由输入框盒子接管。正文从顶行统一重绘，绝不向上吞掉已提交的用户输入。
+    this.refresh();
+    this.mode = 'idle';
+    this.prevLines = 0;
+    this.body = '';
+  }
+
+  /**
+   * 公开接口：供外部在「输入框取消/下拉菜单关闭」等时机强制重绘 transcript 历史，
+   * 恢复被输入框临时覆盖的内容。安全幂等：当前处于任何 mode 都可调用，不会破坏
+   * body 等内部状态（仅负责重绘）。
+   */
+  refresh(): void {
+    if (!this.tty) return;
     const sink = this.out as OutputSink & { columns?: number; rows?: number };
     const width = sink.columns ?? process.stdout.columns ?? 80;
     const { footerRow, bodyAvail } = this.layout();
@@ -202,13 +213,9 @@ export class StatusLine {
     const visible = content.length > bodyAvail ? content.slice(content.length - bodyAvail) : content;
     this.out.write('\x1b[1;1H\x1b[J');
     if (visible.length > 0) this.out.write(visible.join('\n'));
-    // footer 行动画行留空（\x1b[J 已清到屏末），其下方留给输入框盒子，正文不被覆盖
     const caretRow = Math.min(footerRow - 1, 1 + visible.length);
     this.sb?.setCaret(caretRow, 1);
     this.sb?.render();
-    this.mode = 'idle';
-    this.prevLines = 0;
-    this.body = '';
   }
 
   // ===================== 内部 =====================

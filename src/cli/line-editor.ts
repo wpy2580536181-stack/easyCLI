@@ -23,6 +23,31 @@ import type { StatusBar } from './statusbar';
 /** 多行粘贴判定的 debounce 窗口（与 repl 保持一致） */
 const PASTE_DEBOUNCE_MS = 12;
 
+/**
+ * 计算斜杠下拉菜单的「可视窗口」：限制最大高度（上限 10 行，且不向上吞掉
+ * topReserve 预留区上方的 transcript 历史），并让选中项始终落在可视区内。
+ *
+ * 纯函数，便于单测（不依赖 TTY / this）。
+ * @returns maxVisible 最多显示几项；viewportStart 可见区在 matches 中的起始下标。
+ */
+export function computeDropdownViewport(
+  selIndex: number,
+  matchesLen: number,
+  rows: number,
+  topReserve: number,
+): { maxVisible: number; viewportStart: number } {
+  // 限制下拉最大高度：上限 10 行，且不能超出 topReserve 上方可用空间。
+  const available = Math.max(2, rows - topReserve - 4);
+  const maxVisible = Math.min(10, available);
+  // 滚动视口：选中项向下移出底部时视口跟随下移；向上移出顶部时视口跟随上移。
+  let viewportStart = 0;
+  if (selIndex >= maxVisible) {
+    viewportStart = selIndex - maxVisible + 1;
+  }
+  viewportStart = Math.max(0, Math.min(viewportStart, matchesLen - maxVisible));
+  return { maxVisible, viewportStart };
+}
+
 /** 单个字符的显示宽度（CJK 等宽字符按 2，其余按 1），忽略 ANSI 转义 */
 function displayWidth(s: string): number {
   const strip = s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -71,6 +96,11 @@ export interface LineEditorOpts {
    * （rows-3）升进欢迎框、把其底边 ╰─╯ 乃至更多行一起擦掉。默认 0（不预留）。
    */
   topReserve?: number;
+  /**
+   * 下拉菜单关闭时回调（Esc 或删除 / 触发筛选为空）。调用方可用它重绘被输入框
+   * 下拉覆盖的历史内容，避免屏幕上方留下空白。
+   */
+  onDropdownClose?: () => void;
 }
 
 type State = 'input' | 'hidden' | 'asking';
@@ -92,6 +122,9 @@ export class LineEditor {
   /** 当前盒子顶边所在的物理行号（1-indexed）；-1 表示盒子不在屏上。
    *  用于 hide/commit 精准清掉整盒、以及 draw 重绘时清掉可能残留的更长下拉。 */
   private boxTop = -1;
+  /** 上一帧斜杠下拉是否处于「可见」状态；用于检测「打开 → 关闭」的跳变，
+   *  在关闭时回调 onDropdownClose 让调用方重绘被下拉覆盖的 transcript 历史。 */
+  private dropdownWasOpen = false;
 
   // —— 历史导航 ——
   private histIndex = -1;
@@ -259,6 +292,12 @@ export class LineEditor {
     }
     // 输入框盒子绘制完成，刷新最底状态栏
     this.boxTop = top;
+    // 检测到下拉「打开 → 关闭」跳变：本帧无下拉但上一帧有，回调让调用方重绘
+    // 被下拉覆盖的 transcript 历史（删除字符使筛选为空等编辑路径也会走到这里）。
+    if (this.dropdownWasOpen && k === 0) {
+      this.opts.onDropdownClose?.();
+    }
+    this.dropdownWasOpen = k > 0;
     const caretCol = Math.min(width, displayWidth(this.opts.prompt + this.input.slice(0, this.cursor)) + 1);
     // 让状态栏重绘后把光标送回输入行、且停在已输入文本之后（部分终端忽略 ESC[s/u）
     this.opts.statusBar?.setCaret(top + 1, caretCol);
@@ -281,9 +320,14 @@ export class LineEditor {
     if (this.selIndex >= matches.length) this.selIndex = matches.length - 1;
     if (this.selIndex < 0) this.selIndex = 0;
 
-    // 预留：输入框盒子 3 行 + 最底状态栏 1 行 + 1 行缓冲
-    const maxVisible = Math.min(matches.length, Math.max(2, (this.out.rows ?? 24) - 4));
-    const visible = matches.slice(0, maxVisible);
+    const { viewportStart, maxVisible } = computeDropdownViewport(
+      this.selIndex,
+      matches.length,
+      this.out.rows ?? 24,
+      this.opts.topReserve ?? 0,
+    );
+    const visible = matches.slice(viewportStart, viewportStart + maxVisible);
+
     const reserved = 6 + 16 + 2; // "  /" + 名字补位 + 分隔
     const maxDesc = Math.max(8, width - reserved);
 
@@ -292,7 +336,8 @@ export class LineEditor {
       let desc = c.description;
       if (desc.length > maxDesc) desc = desc.slice(0, maxDesc - 1) + '…';
       const row = `  ${chalk.cyan(name.padEnd(16))}  ${chalk.gray(desc)}`;
-      return i === this.selIndex ? chalk.inverse(row) : row;
+      const actualIndex = viewportStart + i;
+      return actualIndex === this.selIndex ? chalk.inverse(row) : row;
     });
   }
 
@@ -359,7 +404,8 @@ export class LineEditor {
 
   private handleEscape(buf: Buffer): void {
     if (buf.length === 1) {
-      // 单独 Esc：清空输入（关闭菜单）
+      // 单独 Esc：清空输入（关闭菜单）。onDropdownClose 由 draw() 的
+      //「下拉打开 → 关闭」跳变检测统一触发（覆盖 Esc 与删除至空等全部路径）。
       if (this.state === 'input') {
         this.input = '';
         this.cursor = 0;

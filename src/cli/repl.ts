@@ -180,6 +180,10 @@ export async function startRepl(
     startedAt: Date.now(),
   });
 
+  // 当前轮次的 StatusLine 实例（每轮 runTurn/runPlan 重建后写入），供输入框下拉
+  // 关闭回调重绘 transcript 历史（refresh 在空闲态也可安全调用，幂等）。
+  let currentStatus: StatusLine | null = null;
+
   const historyStore = new HistoryStore();
   // 本地维护一份「新 → 旧」历史，用于 Tab 补全与跨会话 ↑/↓。
   // 注：新版 @types/node 的 readline.Interface 已不直接暴露可读写的 rl.history 属性，
@@ -207,6 +211,10 @@ export async function startRepl(
     // 顶部预留 splash 区域：输入框盒子绝不上侵欢迎框（矮终端 / rows 被报小时，
     // 避免 rows-3 的清屏起点升进欢迎框、把其底边 ╰─╯ 擦掉）。+1 留一行分隔空白。
     topReserve: splashLines.length + 1,
+    // 斜杠下拉关闭（Esc 清空 / 删除至空）后，强制重绘 transcript 历史，
+    // 恢复被下拉临时覆盖的上方内容（避免屏幕上方留下空白）。
+    // refresh() 属于 StatusLine；currentStatus 指向最近一轮的 StatusLine 实例。
+    onDropdownClose: () => currentStatus?.refresh(),
   });
   // 规划模式（Phase 15）需要「切换系统提示」：把正常/规划两套系统提示都准备好，
   // 进入/退出规划模式时只替换 history[0].content，不另起引擎。
@@ -291,6 +299,7 @@ export async function startRepl(
       // 盒子上方一行，transcript 只画在盒子之上，空闲时输入框绝不覆盖回复内容。
       reservedBottom: 4,
     });
+    currentStatus = status;
     // 把历史正文 + 本轮用户输入交给状态行，从顶行统一重绘（避免向上吞掉已提交输入框）
     status.setHeader(transcript);
     status.setUserTurn(userTurn);
@@ -342,6 +351,7 @@ export async function startRepl(
       statusBar,
       reservedBottom: 4,
     });
+    currentStatus = status;
     status.setHeader(transcript);
     status.setUserTurn(userTurn);
     tracker.beginTurn();
