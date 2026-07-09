@@ -180,9 +180,16 @@ export async function startRepl(
     startedAt: Date.now(),
   });
 
-  // 当前轮次的 StatusLine 实例（每轮 runTurn/runPlan 重建后写入），供输入框下拉
-  // 关闭回调重绘 transcript 历史（refresh 在空闲态也可安全调用，幂等）。
-  let currentStatus: StatusLine | null = null;
+  // 持续存在的 StatusLine 实例：空闲态承载 transcript（含 splash），轮次开始时复用，
+  // 下拉关闭回调用它 refresh() 重绘被输入框覆盖的历史内容。
+  const currentStatus = new StatusLine({
+    color: ui.assistant,
+    markdown: renderMarkdown,
+    statusBar,
+    reservedBottom: 4,
+  });
+  currentStatus.setHeader(transcript);
+  currentStatus.setUserTurn([]);
 
   const historyStore = new HistoryStore();
   // 本地维护一份「新 → 旧」历史，用于 Tab 补全与跨会话 ↑/↓。
@@ -213,8 +220,7 @@ export async function startRepl(
     topReserve: splashLines.length + 1,
     // 斜杠下拉关闭（Esc 清空 / 删除至空）后，强制重绘 transcript 历史，
     // 恢复被下拉临时覆盖的上方内容（避免屏幕上方留下空白）。
-    // refresh() 属于 StatusLine；currentStatus 指向最近一轮的 StatusLine 实例。
-    onDropdownClose: () => currentStatus?.refresh(),
+    onDropdownClose: () => currentStatus.refresh(),
   });
   // 规划模式（Phase 15）需要「切换系统提示」：把正常/规划两套系统提示都准备好，
   // 进入/退出规划模式时只替换 history[0].content，不另起引擎。
@@ -291,15 +297,10 @@ export async function startRepl(
   }
 
   async function runTurn(userTurn: string[]): Promise<void> {
-    const status = new StatusLine({
-      color: ui.assistant,
-      markdown: renderMarkdown,
-      statusBar,
-      // 为输入框预留底部 4 行（上沿+输入行+下沿 共 3 行 + footer 1 行），footer 钉在
-      // 盒子上方一行，transcript 只画在盒子之上，空闲时输入框绝不覆盖回复内容。
-      reservedBottom: 4,
-    });
-    currentStatus = status;
+    // 复用外层持久 StatusLine，避免轮次间创建多个实例，也保证下拉关闭时 currentStatus
+    // 始终非空、可用来 refresh() 重绘历史。
+    const status = currentStatus;
+    let turnError = false;
     // 把历史正文 + 本轮用户输入交给状态行，从顶行统一重绘（避免向上吞掉已提交输入框）
     status.setHeader(transcript);
     status.setUserTurn(userTurn);
@@ -330,28 +331,28 @@ export async function startRepl(
       });
     } catch (e) {
       // 模型调用失败（多为网络/密钥问题）：友好提示后正常返回，不冲垮 REPL。
+      turnError = true;
       showTurnError(status, e);
-      return;
     } finally {
       // 无论正常结束还是被 Ctrl+C 中断，都清掉状态行动画，避免残留半行
       status.stop();
     }
-    void persistAutosave();
-    // Phase 14：每轮结束展示本轮 + 累计成本（并入 transcript，下一轮可见）
-    const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
-    transcript.push(...userTurn, ...status.getBodyLines(), costLine);
+    if (!turnError) {
+      void persistAutosave();
+      // Phase 14：每轮结束展示本轮 + 累计成本（并入 transcript，下一轮可见）
+      const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
+      transcript.push(...userTurn, ...status.getBodyLines(), costLine);
+    }
     if (transcript.length > 4000) transcript.splice(0, transcript.length - 4000);
+    // 更新 StatusLine 的 header，使空闲态下拉关闭回调能重绘包含本轮的完整 transcript。
+    status.setHeader(transcript);
+    status.setUserTurn([]);
   }
 
   /** 规划模式的一轮：只读探测 + 产出计划，结束后进入「待批准」状态（Phase 15） */
   async function runPlan(userTurn: string[]): Promise<void> {
-    const status = new StatusLine({
-      color: ui.assistant,
-      markdown: renderMarkdown,
-      statusBar,
-      reservedBottom: 4,
-    });
-    currentStatus = status;
+    const status = currentStatus;
+    let turnError = false;
     status.setHeader(transcript);
     status.setUserTurn(userTurn);
     tracker.beginTurn();
@@ -380,21 +381,25 @@ export async function startRepl(
         onCompact: (info) => status.setLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
       });
     } catch (e) {
+      turnError = true;
       showTurnError(status, e);
-      return;
     } finally {
       status.stop();
     }
-    void persistAutosave();
-    const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
-    // 计划批注（空行 + 提示）并入 transcript，下一轮可见
-    const notes = [
-      '',
-      chalk.bold.yellow('⬆ 以上是模型生成的执行计划。'),
-      chalk.gray('   /approve 执行  ·  /discard 放弃  ·  直接输入补充让模型修订'),
-    ];
-    transcript.push(...userTurn, ...status.getBodyLines(), costLine, ...notes);
+    if (!turnError) {
+      void persistAutosave();
+      const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
+      // 计划批注（空行 + 提示）并入 transcript，下一轮可见
+      const notes = [
+        '',
+        chalk.bold.yellow('⬆ 以上是模型生成的执行计划。'),
+        chalk.gray('   /approve 执行  ·  /discard 放弃  ·  直接输入补充让模型修订'),
+      ];
+      transcript.push(...userTurn, ...status.getBodyLines(), costLine, ...notes);
+    }
     if (transcript.length > 4000) transcript.splice(0, transcript.length - 4000);
+    status.setHeader(transcript);
+    status.setUserTurn([]);
     awaitingApproval = true;
   }
 

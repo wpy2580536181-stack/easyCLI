@@ -276,6 +276,17 @@ export class LineEditor {
     const top = Math.max(this.opts.topReserve ?? 0, idealTop);
     // 清除：从「上一帧盒子顶」与「本帧盒子顶」中较高者清起，避免残留更长的下拉
     const clearFrom = this.boxTop > 0 ? Math.min(top, this.boxTop) : top;
+    // 光标列：提前算好，后续 onDropdownClose 与输入框绘制都复用
+    const caretCol = Math.min(width, displayWidth(this.opts.prompt + this.input.slice(0, this.cursor)) + 1);
+
+    // 下拉菜单从「打开」跳到「关闭」时，先回调调用方重绘被覆盖的 transcript 历史。
+    // 回调里通常会清全屏并重画历史；我们在它之后重新画输入框，确保输入框不被覆盖。
+    const wasOpen = this.dropdownWasOpen;
+    this.dropdownWasOpen = k > 0;
+    if (wasOpen && k === 0) {
+      this.opts.onDropdownClose?.();
+    }
+
     // 清到屏末（含状态栏行，稍后由 statusBar.render 重写）
     this.out.write(`\x1b[${clearFrom};1H\x1b[J`);
     // 逐行绝对定位绘制：不依赖 \n 前进，规避不同终端换行/自动折行差异
@@ -292,13 +303,6 @@ export class LineEditor {
     }
     // 输入框盒子绘制完成，刷新最底状态栏
     this.boxTop = top;
-    // 检测到下拉「打开 → 关闭」跳变：本帧无下拉但上一帧有，回调让调用方重绘
-    // 被下拉覆盖的 transcript 历史（删除字符使筛选为空等编辑路径也会走到这里）。
-    if (this.dropdownWasOpen && k === 0) {
-      this.opts.onDropdownClose?.();
-    }
-    this.dropdownWasOpen = k > 0;
-    const caretCol = Math.min(width, displayWidth(this.opts.prompt + this.input.slice(0, this.cursor)) + 1);
     // 让状态栏重绘后把光标送回输入行、且停在已输入文本之后（部分终端忽略 ESC[s/u）
     this.opts.statusBar?.setCaret(top + 1, caretCol);
     this.opts.statusBar?.render();
