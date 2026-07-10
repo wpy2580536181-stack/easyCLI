@@ -26,6 +26,7 @@
 - **Token / 成本统计与可观测性**：挂事件总线统一观测
 - **动态上下文注入**：当前时间、cwd、git 分支、OS 自动注入 System Prompt
 - **Multi-Agent**：Planner / Worker / Reviewer，文件隔离（git worktree）+ 事件总线
+- **联网搜索**：`web_search`（实时检索标题/链接/摘要）+ `web_fetch`（网页正文提取）；Provider 无关（Tavily 正式 API + DuckDuckGo 零 key 兜底），配置纳入 `config.json` 的 `search`
 
 ---
 
@@ -119,7 +120,8 @@ pnpm lint        # eslint
 | 15 | Plan 模式 + 异步并行（与 ReAct 共享同一引擎） | ✅ 完成 |
 | 16 | 记忆与检索自动注入（recall/RAG 结果每轮自动进上下文） | ✅ 完成 |
 | 17 | Multi-Agent（Planner/Worker/Reviewer + 文件隔离 worktree + 事件总线） | ✅ 完成 |
-| 18 | Browser（CDP） | ⏳ 待做 |
+| 18 | 联网搜索工具（web_search / web_fetch，Provider 无关：Tavily 正式 API + DuckDuckGo 零 key 兜底） | ✅ 完成 |
+| 19 | Browser（CDP） | ⏳ 待做 |
 
 ---
 

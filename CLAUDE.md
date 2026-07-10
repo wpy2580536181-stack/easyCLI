@@ -121,7 +121,8 @@ pnpm typecheck      # tsc --noEmit
 | 15 | **Plan 模式 + 异步并行**（与 ReAct 共享同一引擎；先规划再执行，子任务可并行预执行只读工具） | ✅ 已完成 |
 | 16 | **记忆与检索自动注入**：把 recall（期4）/ RAG（期6）结果在每轮自动注入上下文，无需模型主动调，提升「上下文智能化」 | ✅ 已完成 |
 | 17 | Multi-Agent（Planner/Worker/Reviewer + **文件隔离 worktree** + 事件总线落地） | ✅ 已完成 |
-| 18 | Browser（CDP） | 待做 |
+| 18 | 联网搜索工具（web_search / web_fetch，Provider 无关：Tavily 正式 API + DuckDuckGo 零 key 兜底；配置纳入 AppConfig.search） | ✅ 完成 |
+| 19 | Browser（CDP） | 待做 |
 
 > **贯穿性关注点**（不单独占期，但每期实现时遵守，对应决策 7–10）：① 上下文压缩；② 工具并发模型（只读并行/写串行）；③ 事件总线/钩子（审计与可观测性挂载点）；④ 错误恢复（上下文超限自动压缩、max-tokens 续写、API 错误指数退避、fallback model）。这些在 Phase 1 定义类型、Phase 3 写工具时就要留接口。
 
