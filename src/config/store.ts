@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import type { McpServerSpec } from '../core/mcp/client';
-import type { EmbedderConfig, FallbackConfig } from '../config';
+import type { EmbedderConfig, FallbackConfig, SearchConfig } from '../config';
 
 /** 配置文件绝对路径（跨平台：~/.config/agent-cli/config.json） */
 export const CONFIG_PATH = join(homedir(), '.config', 'agent-cli', 'config.json');
@@ -34,6 +34,8 @@ export interface UserConfig {
   fallback?: FallbackConfig;
   /** Phase 11：RAG 嵌入器配置（可选，默认手写 TF-IDF） */
   embedder?: EmbedderConfig;
+  /** Phase 18：联网搜索配置（可选；默认零 key 的 DuckDuckGo，不写即开箱即用） */
+  search?: SearchConfig;
   /** 底部状态栏（statusline）开关，默认开；false 关闭 */
   statusline?: boolean;
 }
@@ -74,6 +76,14 @@ const userConfigSchema = z.object({
     ])
     .optional(),
   statusline: z.boolean().optional(),
+  search: z
+    .object({
+      provider: z.enum(['tavily', 'duckduckgo']).optional(),
+      apiKey: z.string().optional(),
+      maxResults: z.number().optional(),
+      timeoutMs: z.number().optional(),
+    })
+    .optional(),
 });
 
 /**

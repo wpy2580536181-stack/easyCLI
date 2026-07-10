@@ -23,7 +23,9 @@ import { RagStore } from '../core/rag/store';
 import { getRagTools } from '../core/rag/tools';
 import { createEmbedder } from '../core/rag/embedder';
 import { SkillLoader, getSkillTools, type SkillSource } from '../core/skill';
+import { getWebTools } from '../core/tools/web';
 import type { CompressOptions } from '../core/memory/compressor';
+import { createCounter } from '../core/observability/tokenizer';
 import { CostTracker } from '../core/observability';
 import { runOnce, startRepl } from './repl';
 import { runFirstRunSetup } from './setup';
@@ -69,6 +71,9 @@ program
   .option('--plan', '规划模式：只生成执行计划、不执行（搭配 -p 单次使用）')
   .option('--no-auto-context', '关闭每轮自动注入记忆/知识库上下文（Phase 16，默认开启）')
   .option('--no-statusline', '关闭底部状态栏（statusline，默认开启）')
+  .option('--search-provider <provider>', '联网搜索服务：tavily | duckduckgo（默认 duckduckgo，零 key）')
+  .option('--search-key <key>', '联网搜索服务 API key（tavily 需要；可用 AGENTCLI_SEARCH_API_KEY 注入）')
+  .option('--search-max-results <n>', '联网搜索单次返回结果数上限（默认 5）')
   .action(async () => {
     const opts = program.opts<
       ConfigOverrides & {
@@ -80,6 +85,9 @@ program
         mcpServe?: boolean;
         mcpTransport?: 'stdio' | 'http';
         mcpPort?: string;
+        searchProvider?: string;
+        searchKey?: string;
+        searchMaxResults?: string;
       }
     >();
 
@@ -113,6 +121,11 @@ program
         fallback: opts.fallback,
         // --no-statusline 关闭底部状态栏；未指定则交回文件/默认（开）
         statusline: process.argv.includes('--no-statusline') ? false : undefined,
+        // Phase 18：联网搜索。--search-max-results 是字符串，转 number（NaN 则交回默认）
+        searchProvider: opts.searchProvider,
+        searchKey: opts.searchKey,
+        searchMaxResults:
+          opts.searchMaxResults !== undefined ? Number(opts.searchMaxResults) : undefined,
       },
       fileCfg,
     );
@@ -123,6 +136,13 @@ program
     }
     const model = createChatModel(config);
     const tools = createToolRegistry();
+
+    // Phase 18：联网搜索工具（web_search / web_fetch）注册进同一张表。
+    // 配置了 tavily 但没给 key 时降级到零 key 的 DuckDuckGo，并提示一次。
+    if (config.search.provider === 'tavily' && !config.search.apiKey) {
+      console.warn('[web] 未配置搜索 API key，已降级使用 DuckDuckGo（零 key）搜索；如需更高质量可设置 AGENTCLI_SEARCH_API_KEY。');
+    }
+    tools.registerAll(getWebTools(config.search));
 
     // Phase 4：长期记忆仓库 + 记忆工具注册
     const memory = new MemoryStore(join(homedir(), '.config', 'agent-cli', 'memory.db'));
@@ -177,10 +197,13 @@ program
     tracker.attach(bus);
 
     // Phase 4：上下文压缩配置（超预算时自动压缩后重试）
+    // 压缩预算用真实/校准 token 计数（优先真 BPE，未装 tiktoken 则 CJK 自校准）
+    const counter = await createCounter('tiktoken');
     const compress: CompressOptions = {
       budgetTokens: 8000,
       keepRecentTurns: 4,
       maxToolOutputChars: 1500,
+      counter,
     };
 
     // 退出时回收 MCP 子进程，避免孤儿进程

@@ -8,17 +8,38 @@ import {
 describe('prompts 模块（Phase 13）', () => {
   const fixedNow = new Date('2026-07-07T11:30:00Z');
 
-  it('buildAgentSystemPrompt 包含各分块：身份/行为/工具策略/输出格式/few-shot/运行上下文', () => {
-    const p = buildAgentSystemPrompt({ cwd: '/tmp/proj', now: fixedNow });
+  it('buildAgentSystemPrompt 包含各分块：身份/行为/工具策略/输出格式/few-shot/运行上下文，且工具名来自注册表', () => {
+    const toolNames = ['read_file', 'write_file', 'edit_file', 'list_dir', 'glob', 'grep', 'bash', 'web_search', 'web_fetch', 'rag_search', 'use_skill'];
+    const p = buildAgentSystemPrompt({ cwd: '/tmp/proj', now: fixedNow, toolNames });
     expect(p).toContain('AI 编程助手'); // identity
     expect(p).toContain('用简洁、准确的中文'); // behavior
-    expect(p).toContain('read_file / write_file'); // tool-policy
+    expect(p).toContain('优先可用的工具'); // tool-policy（动态生成）
+    expect(p).toContain('read_file / write_file'); // 工具名来自注册表
+    expect(p).toContain('web_search（联网搜索）'); // 条件出现
+    expect(p).toContain('rag_search（本地知识库'); // 条件出现
     expect(p).toContain('回答结构'); // output-format
     expect(p).toContain('示例'); // few-shot
     expect(p).toContain('【运行上下文】'); // 动态上下文块
     expect(p).toContain('/tmp/proj'); // cwd 注入
     expect(p).toContain('当前时间');
     expect(p).toContain('运行环境');
+  });
+
+  it('工具策略块按注册表条件出现：未注册 web/rag 时不提及其使用时机；改名工具也能自动列入', () => {
+    const noSearch = buildAgentSystemPrompt({ cwd: '/tmp/proj', now: fixedNow, toolNames: ['read_file', 'bash'] });
+    expect(noSearch).not.toContain('联网搜索');
+    expect(noSearch).not.toContain('rag_search（本地');
+    expect(noSearch).toContain('read_file / bash');
+
+    const renamed = buildAgentSystemPrompt({ cwd: '/tmp/proj', now: fixedNow, toolNames: ['readFile', 'runCmd', 'web_search'] });
+    expect(renamed).toContain('readFile / runCmd'); // 不再手写 read_file 等旧名
+    expect(renamed).toContain('web_search（联网搜索）');
+  });
+
+  it('未提供 toolNames 时工具策略块优雅降级（不抛、不谎称工具存在）', () => {
+    const p = buildAgentSystemPrompt({ cwd: '/tmp/proj', now: fixedNow });
+    expect(p).toContain('优先调用可用工具');
+    expect(p).not.toContain('优先可用的工具：');
   });
 
   it('skillsMenu 提供时追加「可用技能」，缺失时不追加', () => {

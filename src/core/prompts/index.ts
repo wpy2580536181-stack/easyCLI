@@ -23,6 +23,8 @@ export type AgentMode = 'normal' | 'plan';
 export interface AgentPromptContext {
   /** 工作目录（注入运行上下文） */
   cwd: string;
+  /** 已注册工具名列表（来自 ToolRegistry.list()）；工具策略块据此动态生成，避免手写不同步 */
+  toolNames?: string[];
   /** 渐进式披露：技能 name+description 清单（来自 SkillLoader.menuText），可选 */
   skillsMenu?: string;
   /** 注入时间；默认 new Date()；单测可注入固定值保证确定性 */
@@ -38,10 +40,30 @@ const identityBlock = (): string =>
 const behaviorBlock = (): string =>
   '用简洁、准确的中文回答用户的问题；优先动手用工具解决，而不是只给建议。';
 
-const toolPolicyBlock = (): string =>
-  '需要操作文件或执行命令时，优先调用工具：read_file / write_file / edit_file / list_dir / glob / grep / bash。' +
-  '若已提供 rag_search 工具（本地知识库语义检索），在回答涉及项目文档、规范、历史决策等问题前，应先检索补充上下文。' +
-  '若下方列出「可用技能」，在任务匹配时应调用 use_skill 获取其详细指令并严格遵循。';
+/** 语义上需单独给「使用时机」指引的工具（名称属项目契约）；其余工具直接列入「优先可用的工具」 */
+const NON_GENERAL_TOOLS = new Set(['web_search', 'web_fetch', 'rag_search', 'use_skill']);
+
+const toolPolicyBlock = (toolNames: string[]): string => {
+  const parts: string[] = ['需要完成任务时，优先调用可用工具，而不是只给建议。'];
+  // 通用工具名称直接来自注册表：保证提示与真正可调用的工具一致，消除手写不同步
+  const generalTools = toolNames.filter((n) => !NON_GENERAL_TOOLS.has(n));
+  if (generalTools.length) parts.push(`优先可用的工具：${generalTools.join(' / ')}。`);
+  // 以下三类按「是否注册」条件出现：注册了才提示使用时机，绝不谎称存在
+  if (toolNames.includes('web_search')) {
+    parts.push(
+      '已提供 web_search（联网搜索）：当问题涉及实时信息、最新事件、你不确定或可能过期的外部知识时，应先调用 web_search 检索，再据此回答；需要某条结果的网页正文时用 web_fetch。',
+    );
+  }
+  if (toolNames.includes('rag_search')) {
+    parts.push(
+      '已提供 rag_search（本地知识库语义检索）：在回答涉及项目文档、规范、历史决策等问题前，应先检索补充上下文。',
+    );
+  }
+  if (toolNames.includes('use_skill')) {
+    parts.push('若下方列出「可用技能」，在任务匹配时应调用 use_skill 获取其详细指令并严格遵循。');
+  }
+  return parts.join('');
+};
 
 const outputFormatBlock = (): string =>
   '回答结构：能用工具直接解决的，先动手再复述；解释性内容用要点（bullet）呈现，避免大段无关铺垫。' +
@@ -75,17 +97,22 @@ function contextBlock(dc: DynamicContext): string {
   return '【运行上下文】\n' + lines.join('\n');
 }
 
-const BLOCKS = [identityBlock, behaviorBlock, toolPolicyBlock, outputFormatBlock, fewShotBlock];
-
 /**
  * 组装 Agent 主系统提示：分块组合 + 动态上下文注入 + 可选技能清单追加。
  * 返回的字符串可直接作为 ChatMessage(role:'system') 的 content。
- * mode='plan' 时追加规划模式约束块（Phase 15）。
+ * mode='plan' 时追加规划模式约束块（Phase 15）。工具策略块的工具名由调用方
+ * 从 ToolRegistry 传入（ctx.toolNames），保证与真正可调用的工具一致。
  */
 export function buildAgentSystemPrompt(ctx: AgentPromptContext): string {
   const dc = gatherContext(ctx.cwd, ctx.now);
-  const parts = BLOCKS.map((b) => b());
-  parts.push(contextBlock(dc));
+  const parts = [
+    identityBlock(),
+    behaviorBlock(),
+    toolPolicyBlock(ctx.toolNames ?? []),
+    outputFormatBlock(),
+    fewShotBlock(),
+    contextBlock(dc),
+  ];
   if (ctx.mode === 'plan') parts.push(planModeBlock());
   // 技能清单按需追加（渐进式披露：仅 name+description 常驻，正文仍按需加载）
   if (ctx.skillsMenu && ctx.skillsMenu.trim()) {

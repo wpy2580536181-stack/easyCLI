@@ -27,6 +27,18 @@ export interface FallbackConfig {
   model?: string;
 }
 
+/** Phase 18：联网搜索配置（零 key 可用；配 key 后切到 Tavily 等正式搜索服务） */
+export interface SearchConfig {
+  /** 搜索服务实现：'duckduckgo'（零 key 兜底）| 'tavily'（需 apiKey） */
+  provider: 'tavily' | 'duckduckgo';
+  /** 搜索服务 API key（DuckDuckGo 不需要；Tavily 必填） */
+  apiKey?: string;
+  /** 单次搜索返回结果数上限，默认 5 */
+  maxResults?: number;
+  /** 单次搜索超时（毫秒），默认 15000 */
+  timeoutMs?: number;
+}
+
 export interface AppConfig {
   provider: string;
   llm: LlmConfig;
@@ -38,6 +50,8 @@ export interface AppConfig {
   fallback?: FallbackConfig;
   /** Phase 11：RAG 嵌入器配置；默认手写 TF-IDF（离线） */
   embedder: EmbedderConfig;
+  /** Phase 18：联网搜索配置；默认零 key 的 DuckDuckGo，开箱即用 */
+  search: SearchConfig;
   /** 底部状态栏（statusline）开关，默认开 */
   statusline: boolean;
 }
@@ -59,6 +73,12 @@ export interface ConfigOverrides {
   embedder?: string;
   /** 底部状态栏开关（--no-statusline 时 false）；默认开 */
   statusline?: boolean;
+  /** Phase 18：搜索服务实现（CLI --search-provider），如 'tavily' | 'duckduckgo' */
+  searchProvider?: string;
+  /** Phase 18：搜索服务 API key（CLI --search-key） */
+  searchKey?: string;
+  /** Phase 18：单次搜索返回结果数上限（CLI --search-max-results） */
+  searchMaxResults?: number;
 }
 
 /**
@@ -190,6 +210,42 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
     overrides.statusline ??
     (process.env.AGENTCLI_STATUSLINE === 'false' ? false : (file?.statusline ?? true));
 
+  // Phase 18：联网搜索配置。优先级：CLI > env > 文件 > 默认（零 key 的 duckduckgo）。
+  // 默认 provider=duckduckgo（开箱即用，无需 key）；maxResults 默认 5；timeoutMs 默认 15000。
+  const searchProvider = firstNonEmpty(
+    'duckduckgo',
+    overrides.searchProvider,
+    process.env.AGENTCLI_SEARCH_PROVIDER,
+    file?.search?.provider,
+  );
+  const searchApiKey = firstNonEmpty(
+    '',
+    overrides.searchKey,
+    process.env.AGENTCLI_SEARCH_API_KEY,
+    file?.search?.apiKey,
+  );
+  const searchMaxRaw = firstNonEmpty(
+    '5',
+    overrides.searchMaxResults !== undefined ? String(overrides.searchMaxResults) : undefined,
+    process.env.AGENTCLI_SEARCH_MAX_RESULTS,
+    file?.search?.maxResults !== undefined ? String(file.search.maxResults) : undefined,
+  );
+  const searchMaxResults = Number.parseInt(searchMaxRaw, 10);
+  const maxResults = Number.isFinite(searchMaxResults) && searchMaxResults > 0 ? searchMaxResults : 5;
+  const searchTimeoutRaw = firstNonEmpty(
+    '15000',
+    process.env.AGENTCLI_SEARCH_TIMEOUT_MS,
+    file?.search?.timeoutMs !== undefined ? String(file.search.timeoutMs) : undefined,
+  );
+  const searchTimeout = Number.parseInt(searchTimeoutRaw, 10);
+  const timeoutMs = Number.isFinite(searchTimeout) && searchTimeout > 0 ? searchTimeout : 15_000;
+  const search: SearchConfig = {
+    provider: searchProvider === 'tavily' ? 'tavily' : 'duckduckgo',
+    apiKey: searchApiKey || undefined,
+    maxResults,
+    timeoutMs,
+  };
+
   return {
     provider,
     llm: { baseURL, apiKey, model, stream },
@@ -197,6 +253,7 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
     ragPath,
     fallback: fallbackFinal,
     embedder,
+    search,
     statusline,
   };
 }
@@ -218,6 +275,18 @@ export function appConfigToUserConfig(cfg: AppConfig): UserConfig {
   if (cfg.fallback && cfg.fallback.model) out.fallback = cfg.fallback;
   // 手写 TF-IDF 是默认值，无需落盘；只有切换到 API 嵌入器时才持久化，避免冗余配置
   if (cfg.embedder && cfg.embedder.type !== 'tfidf') out.embedder = cfg.embedder;
+  // Phase 18：仅当搜索配置偏离默认（duckduckgo / maxResults=5 / timeoutMs=15000 / 无 key）时才落盘，
+  // 避免把零 key 默认配置写进文件造成冗余。注意先判「已显式设置」，未设置字段（undefined）不算偏离。
+  const s = cfg.search;
+  if (
+    s &&
+    (s.provider !== 'duckduckgo' ||
+      s.apiKey ||
+      (s.maxResults !== undefined && s.maxResults !== 5) ||
+      (s.timeoutMs !== undefined && s.timeoutMs !== 15_000))
+  ) {
+    out.search = s;
+  }
   // 仅在显式关闭状态栏时落盘，避免把默认 true 写进文件造成冗余
   if (cfg.statusline === false) out.statusline = false;
   return out;
