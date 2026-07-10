@@ -1,12 +1,11 @@
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import type { ToolContext, ToolDef, ToolResult } from '../chatmodel/types';
 import { resolveSafe } from '../security/path-fence';
 import { checkCommand } from '../security/command-blacklist';
+import { createSandbox } from '../security/sandbox';
 
-const execAsync = promisify(exec);
+const sandbox = createSandbox();
 
 function ok(output: string): ToolResult {
   return { ok: true, output };
@@ -138,19 +137,22 @@ async function grepTool(args: Record<string, unknown>, ctx: ToolContext): Promis
   }
 }
 
-// ── bash（命令黑名单硬 gate） ─────────────────────────────
+// ── bash（命令黑名单硬 gate → 权限/HITL → 软 sandbox 资源限额） ──
 async function bashTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const command = typeof args.command === 'string' ? args.command : '';
   if (!command) return fail('缺少参数 command');
   const blocked = checkCommand(command);
   if (!blocked.ok) return fail(`命令被拒绝: ${blocked.reason}`);
   try {
-    const { stdout, stderr } = await execAsync(command, {
+    // 经软 sandbox 运行：权限/HITL 通过后再加一层资源限额护栏
+    // （fork 炸弹 / 无限循环 / 写出超大文件）。文件类工具已走路径围栏，豁免本沙箱。
+    const res = await sandbox.run(command, {
       cwd: ctx.cwd,
       signal: ctx.signal,
       maxBuffer: 1024 * 1024,
     });
-    return ok((stdout + stderr).trim());
+    if (res.code !== 0) return fail((res.stdout + res.stderr).trim());
+    return ok((res.stdout + res.stderr).trim());
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string; message?: string };
     const out = (err.stdout ?? '') + (err.stderr ?? '');
