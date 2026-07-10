@@ -7,6 +7,7 @@ import type {
   ToolDef,
 } from './types';
 import { classifyFetchError, ModelRequestError } from './errors';
+import { historyBreakpointIndex, markLastContentBlock } from './cache';
 
 export interface OpenAIConfig {
   /** 例如 https://api.deepseek.com/v1 */
@@ -47,14 +48,38 @@ export class OpenAICompatibleAdapter implements ChatModel {
   }
 
   async complete(opts: CompleteOptions): Promise<CompleteResult> {
+    const cacheSystem = opts.cache?.system !== false;
+    const cacheTools = opts.cache?.tools !== false;
+    const cacheHistory = opts.cache?.history === true;
+    // 把消息翻译出来，便于在首个 system 块上打 cache_control 断点（OpenAI 兼容网关多忽略未知字段）
+    const messages = toOpenAIMessages(opts.messages) as Array<Record<string, unknown>>;
+    if (cacheSystem) {
+      const idx = messages.findIndex((m) => m.role === 'system');
+      if (idx >= 0 && typeof messages[idx]!.content === 'string') {
+        messages[idx]!.content = [
+          { type: 'text', text: messages[idx]!.content, cache_control: { type: 'ephemeral' } },
+        ];
+      }
+    }
+    // 历史稳定段缓存：在「除当前轮外」最后一条消息末块打 cache_control。
+    // 与 Anthropic 同源：system + tools + 几乎整段历史整体成为可缓存前缀（多轮高命中）。
+    if (cacheHistory) {
+      const k = historyBreakpointIndex(messages as unknown as ChatMessage[]);
+      if (k >= 0) markLastContentBlock(messages[k]!);
+    }
+
     const body: Record<string, unknown> = {
       model: this.config.model,
-      messages: toOpenAIMessages(opts.messages),
+      messages,
       stream: true,
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
       ...(opts.tools && opts.tools.length > 0
-        ? { tools: opts.tools.map(toOpenAITool) }
+        ? {
+            tools: opts.tools.map((t, i) =>
+              toOpenAITool(t, cacheTools && i === opts.tools!.length - 1),
+            ),
+          }
         : {}),
       // 请求真实 token 用量（OpenAI 流式默认不回报，需显式开启）。
       // 绝大多数 OpenAI 兼容服务忽略未知字段，无需担心兼容性。
@@ -94,6 +119,9 @@ export class OpenAICompatibleAdapter implements ChatModel {
             promptTokens: Number(json.usage.prompt_tokens ?? 0),
             completionTokens: Number(json.usage.completion_tokens ?? 0),
             totalTokens: Number(json.usage.total_tokens ?? 0),
+            ...(typeof json.usage?.prompt_tokens_details?.cached_tokens === 'number'
+              ? { cacheReadTokens: json.usage.prompt_tokens_details.cached_tokens }
+              : {}),
           }
         : undefined;
       const toolCalls: ToolCall[] = Array.isArray(msg?.tool_calls)
@@ -138,6 +166,7 @@ export class OpenAICompatibleAdapter implements ChatModel {
     let buffer = '';
     let content = '';
     let lastUsage: any;
+    let cacheReadTokens: number | undefined;
     const toolCalls = new Map<number, StreamToolCall>();
 
     for (;;) {
@@ -162,7 +191,11 @@ export class OpenAICompatibleAdapter implements ChatModel {
         }
 
         // 真实用量通常在 [DONE] 前的最后一个分片回报（choices 可能为空），先记下
-        if (json?.usage) lastUsage = json.usage;
+        if (json?.usage) {
+          lastUsage = json.usage;
+          const ct = json.usage?.prompt_tokens_details?.cached_tokens;
+          if (typeof ct === 'number') cacheReadTokens = ct;
+        }
 
         const delta = json?.choices?.[0]?.delta;
         if (!delta) continue;
@@ -209,6 +242,7 @@ export class OpenAICompatibleAdapter implements ChatModel {
           promptTokens: Number(lastUsage.prompt_tokens ?? 0),
           completionTokens: Number(lastUsage.completion_tokens ?? 0),
           totalTokens: Number(lastUsage.total_tokens ?? 0),
+          ...(cacheReadTokens != null ? { cacheReadTokens } : {}),
         }
       : undefined;
     return {
@@ -258,9 +292,10 @@ function toOpenAIMessages(messages: ChatMessage[]): unknown[] {
   });
 }
 
-/** 把 ToolDef 转成 OpenAI function 声明 */
-function toOpenAITool(tool: ToolDef): unknown {
-  return {
+/** 把 ToolDef 转成 OpenAI function 声明。
+ * mark=true 时在末个工具上加 cache_control 断点（工具定义属稳定前缀，值得缓存）。 */
+function toOpenAITool(tool: ToolDef, mark?: boolean): unknown {
+  const t: Record<string, unknown> = {
     type: 'function',
     function: {
       name: tool.name,
@@ -268,4 +303,6 @@ function toOpenAITool(tool: ToolDef): unknown {
       parameters: tool.inputSchema,
     },
   };
+  if (mark) t.cache_control = { type: 'ephemeral' };
+  return t;
 }

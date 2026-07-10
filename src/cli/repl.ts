@@ -28,24 +28,31 @@ import { ui } from './theme';
 /** 多行粘贴判定的 debounce 窗口：窗口内连续到达的非 slash 行视为同一次粘贴 */
 const PASTE_DEBOUNCE_MS = 12;
 
-/** 构造 HITL 审批器：交互式询问用户是否放行（y/n/a），a 表示持久预批准 */
+/**
+ * 构造 HITL 审批器：交互式询问用户是否放行（y/n/a），a 表示持久预批准。
+ * 安全增强：
+ *  - 操作预览摘要：把将要执行的完整命令（bash）或目标路径（文件工具）单独成行高亮，
+ *    让用户看清再确认（对照「生产级」要求）；
+ *  - 200ms 防抖：确认框刚渲染时忽略首回车，避免上一动作的残留/自动重复回车瞬间放行。
+ */
 function makeResolver(editor: LineEditor, permission: PermissionManager): Resolver {
-  return (tool: string, detail: string): Promise<Decision> =>
-    editor
-      .ask(
-        chalk.yellow(
-          `⚠ 允许执行 ${tool}${detail ? ' › ' + detail : ''} ? [y=允许 / n=拒绝 / a=总是允许] `,
-        ),
-      )
-      .then((ans) => {
-        const a = ans.trim().toLowerCase();
-        if (a === 'a' || a === 'always') {
-          permission.addAllow(tool);
-          return 'allow' as Decision;
-        }
-        if (a === 'y' || a === 'yes') return 'allow' as Decision;
-    return 'deny' as Decision;
-  });
+  const HITL_DEBOUNCE_MS = 200;
+  return (tool: string, detail: string): Promise<Decision> => {
+    const preview = detail ? '\n' + chalk.yellow('  › ' + detail) : '';
+    const prompt =
+      chalk.yellow(`⚠ 允许执行 ${tool}?`) +
+      preview +
+      chalk.gray('  [y=允许 / n=拒绝 / a=总是允许] ');
+    return editor.ask(prompt, { debounceMs: HITL_DEBOUNCE_MS }).then((ans) => {
+      const a = ans.trim().toLowerCase();
+      if (a === 'a' || a === 'always') {
+        permission.addAllow(tool);
+        return 'allow' as Decision;
+      }
+      if (a === 'y' || a === 'yes') return 'allow' as Decision;
+      return 'deny' as Decision;
+    });
+  };
 }
 
 /**
@@ -71,7 +78,17 @@ export async function runOnce(
   planMode?: boolean,
 ): Promise<void> {
   const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown });
-  const sysCtx = { cwd: process.cwd(), skillsMenu: skillLoader?.menuText() ?? undefined };
+  // 前缀缓存命中率：从 token 事件回填到状态栏（让优化「肉眼可见」）
+  bus?.on('token', (e) => {
+    const u = e as { cacheReadTokens?: number; promptTokens?: number };
+    if (u.cacheReadTokens != null && (u.promptTokens ?? 0) > 0) {
+      status.setCache(Math.round((u.cacheReadTokens / u.promptTokens!) * 100));
+    }
+  });
+  // ⚠ 前缀缓存：sysCtx 在本函数内只构造一次 → now 被冻结在「会话起点」。
+  // 这样含时间/cwd/git 的 system 提示在整段会话里逐字节稳定（前缀匹配才能命中）。
+  // 若想刷新运行上下文，应显式 /clear 或重建会话，而非每轮 new Date()。
+  const sysCtx = { cwd: process.cwd(), skillsMenu: skillLoader?.menuText() ?? undefined, toolNames: tools.list().map((t) => t.name), now: new Date() };
   const sys = planMode ? buildPlanSystemPrompt(sysCtx) : buildAgentSystemPrompt(sysCtx);
   const history: ChatMessage[] = [
     { role: 'system', content: sys },
@@ -126,7 +143,26 @@ export async function startRepl(
   autoContextEnabled?: boolean,
   resume?: boolean,
 ): Promise<void> {
-  const console_ = console;
+  /**
+   * 自定义控制台：TTY 下，斜杠命令（/sessions、/help、/tools…）的 console_.log 输出
+   * 不直接写屏，而是先收集进 `slashBuffer`，待命令结束后再并入 transcript 并由 StatusLine
+   * 整屏重绘——否则这些输出会落在「输入框预留区」，被紧随其后的 editor.show() 清屏抹掉，
+   * 表现为「命令毫无反应」（这正是 /sessions 看不到任何内容的根因）。非 TTY 直接写屏，
+   * 保证管道 / 测试输出可解析。
+   */
+  let slashBuffer: string[] | null = null;
+  const console_ = {
+    log: (...args: unknown[]) => {
+      const text = args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ');
+      if (slashBuffer && process.stdout.isTTY) {
+        slashBuffer.push(text);
+        return;
+      }
+      console.log(text);
+    },
+    error: (...args: unknown[]) => console.error(...args),
+    warn: (...args: unknown[]) => console.warn(...args),
+  };
 
   /**
    * 把模型调用抛出的错误翻译成「对用户友好的一行提示」。
@@ -188,6 +224,13 @@ export async function startRepl(
     statusBar,
     reservedBottom: 4,
   });
+  // 前缀缓存命中率：从 token 事件回填到状态栏（让优化「肉眼可见」）
+  bus?.on('token', (e) => {
+    const u = e as { cacheReadTokens?: number; promptTokens?: number };
+    if (u.cacheReadTokens != null && (u.promptTokens ?? 0) > 0) {
+      currentStatus.setCache(Math.round((u.cacheReadTokens / u.promptTokens!) * 100));
+    }
+  });
   currentStatus.setHeader(transcript);
   currentStatus.setUserTurn([]);
 
@@ -224,7 +267,9 @@ export async function startRepl(
   });
   // 规划模式（Phase 15）需要「切换系统提示」：把正常/规划两套系统提示都准备好，
   // 进入/退出规划模式时只替换 history[0].content，不另起引擎。
-  const sysCtx = { cwd: process.cwd(), skillsMenu: skillLoader?.menuText() ?? undefined };
+  // ⚠ 前缀缓存：sysCtx 在会话内只构造一次 → now 冻结在会话起点，
+  // 使含时间/cwd/git 的 system 提示整段稳定（前缀匹配才能命中）。
+  const sysCtx = { cwd: process.cwd(), skillsMenu: skillLoader?.menuText() ?? undefined, toolNames: tools.list().map((t) => t.name), now: new Date() };
   const history: ChatMessage[] = [
     {
       role: 'system',
@@ -291,7 +336,7 @@ export async function startRepl(
     const cum = tracker.snapshot();
     const costText = '¥' + formatUSD(cum.cost).replace(/^\$/, '');
     const ctxPct = compress
-      ? Math.round((estimateHistoryTokens(history) / compress.budgetTokens) * 100)
+      ? Math.round((estimateHistoryTokens(history, compress.counter) / compress.budgetTokens) * 100)
       : undefined;
     statusBar.update({ costText, ctxPct, mode, ...extra });
   }
@@ -485,7 +530,7 @@ export async function startRepl(
         return 'continue';
       }
       case 'compact': {
-        const before = estimateHistoryTokens(history);
+        const before = estimateHistoryTokens(history, compress?.counter);
         console_.log(chalk.gray(`上下文 ${before} token，开始压缩…`));
         const summarizer = createDefaultSummarizer(model);
         const compressOpts = compress ?? {
@@ -493,8 +538,8 @@ export async function startRepl(
           keepRecentTurns: 4,
           maxToolOutputChars: 1500,
         };
-        const compressed = await compressHistory(history, { ...compressOpts, summarizer });
-        const after = estimateHistoryTokens(compressed);
+        const compressed = await compressHistory(history, { ...compressOpts, summarizer, counter: compress?.counter });
+        const after = estimateHistoryTokens(compressed, compress?.counter);
         history.length = 0;
         history.push(...compressed);
         console_.log(chalk.gray(`压缩完成：${before} → ${after} token（省 ~${formatTokens(before - after)} token）`));
@@ -725,17 +770,39 @@ export async function startRepl(
   }
 
   /** 处理一条输入：slash 走命令，普通文本入 history 并跑一轮（Phase 15：待批准时普通输入视为修订计划） */
-  async function processInput(input: string): Promise<'exit' | 'continue'> {
-    if (input.startsWith('/')) return handleSlash(input);
+  function isPinnedInput(text: string): boolean {
+  return /(记住|记一下|重要|务必|别忘|删?除?这?条|置顶|保留这)/i.test(text);
+}
+
+async function processInput(input: string): Promise<'exit' | 'continue'> {
+    if (input.startsWith('/')) {
+      // 收集斜杠命令输出，结束后再并入 transcript 整屏重绘，避免被输入框清屏吞掉
+      slashBuffer = [];
+      try {
+        const r = await handleSlash(input);
+        if (process.stdout.isTTY && slashBuffer.length) {
+          const width = process.stdout.columns ?? 80;
+          transcript.push(paintInputBox(ui.prompt + input, width));
+          transcript.push(...slashBuffer);
+          if (transcript.length > 4000) transcript.splice(0, transcript.length - 4000);
+          currentStatus.setHeader(transcript);
+          currentStatus.setUserTurn([]);
+          currentStatus.refresh();
+        }
+        return r;
+      } finally {
+        slashBuffer = null;
+      }
+    }
     const userTurn = buildUserTurn(input, promptStr);
     if (awaitingApproval) {
       // 计划待批准时，普通输入 = 对计划的补充修订：保留已生成计划，重新规划
-      history.push({ role: 'user', content: input });
+      history.push({ role: 'user', content: input, ...(isPinnedInput(input) ? { protected: true } : {}) });
       console_.log(ui.muted('⚙ 修订规划中…'));
       await runPlan(userTurn);
       return 'continue';
     }
-    history.push({ role: 'user', content: input });
+    history.push({ role: 'user', content: input, ...(isPinnedInput(input) ? { protected: true } : {}) });
     await runTurn(userTurn);
     return 'continue';
   }

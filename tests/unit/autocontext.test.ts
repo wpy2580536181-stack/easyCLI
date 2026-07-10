@@ -91,7 +91,7 @@ describe('Phase 16 · runAgent 注入临时系统消息', () => {
     // 兼容 node:sqlite 在测试环境下的加载（与 memory/rag 测试同源）
   });
 
-  it('autoContext 作为临时系统消息注入，且不污染持久 history', async () => {
+  it('autoContext 作为临时 user 消息注入（置于已缓存前缀之后、真实问题之前），且不污染持久 history', async () => {
     const mem = new MemoryStore(':memory:');
     mem.remember('用户偏好中文回复');
     const tools = createToolRegistry();
@@ -105,16 +105,37 @@ describe('Phase 16 · runAgent 注入临时系统消息', () => {
       autoContext: '【自动上下文】用户偏好中文回复',
     });
 
-    // 模型收到的第一条消息就是注入的自动上下文（系统消息）
+    // 模型收到的第一条消息仍是 system（前缀缓存不被 autoContext 污染）
     const firstMsgs = model.captured[0]!;
     expect(firstMsgs[0]!.role).toBe('system');
-    expect(String(firstMsgs[0]!.content)).toContain('【自动上下文】');
-    // 原始 history 的内容仍在（位于注入消息之后）
-    expect(firstMsgs.some((m) => m.role === 'user' && String(m.content) === '你好')).toBe(true);
+    expect(String(firstMsgs[0]!.content)).toBe('sys');
+    // 自动上下文以 user 角色、插在最后一个真实 user 消息「之前」注入
+    const acIdx = firstMsgs.findIndex(
+      (m) => m.role === 'user' && String(m.content).includes('【自动上下文】'),
+    );
+    expect(acIdx).toBeGreaterThan(0);
+    expect(firstMsgs[acIdx]!.role).toBe('user');
+    // 原始 user 消息仍在，且在 autoContext 之后（顺序：上下文 → 真实问题）
+    const helloIdx = firstMsgs.findIndex((m) => m.role === 'user' && String(m.content) === '你好');
+    expect(helloIdx).toBeGreaterThan(acIdx);
     // 注入的上下文【没有】写进持久 history（保持临时、可重算）
     expect(history.some((m) => typeof m.content === 'string' && m.content.includes('【自动上下文】'))).toBe(false);
     // 持久 history 仅新增了模型的最终 assistant 回答
     expect(history.at(-1)!.role).toBe('assistant');
+  });
+
+  it('autoContext 在无 user 消息时以 user 角色追加到末尾', async () => {
+    const tools = createToolRegistry();
+    const model = new CapturingModel([{ content: '已回答', toolCalls: [] }]);
+    const history: ChatMessage[] = [{ role: 'system', content: 'sys' }];
+
+    await runAgent(history, { model, tools, cwd: process.cwd(), autoContext: '【自动上下文】X' });
+
+    const firstMsgs = model.captured[0]!;
+    // system 之后紧跟 autoContext（user 角色）
+    expect(firstMsgs[0]!.role).toBe('system');
+    expect(firstMsgs[1]!.role).toBe('user');
+    expect(String(firstMsgs[1]!.content)).toContain('【自动上下文】');
   });
 
   it('不提供 autoContext 时不在模型输入前插入额外系统消息', async () => {

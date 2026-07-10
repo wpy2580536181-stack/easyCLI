@@ -20,6 +20,7 @@ import type {
   ContentBlock,
 } from './types';
 import { classifyFetchError, ModelRequestError } from './errors';
+import { historyBreakpointIndex } from './cache';
 
 export interface AnthropicConfig {
   apiKey: string;
@@ -49,17 +50,24 @@ export class AnthropicAdapter implements ChatModel {
   }
 
   async complete(opts: CompleteOptions): Promise<CompleteResult> {
-    const { system, messages } = toAnthropicMessages(opts.messages);
+    const cacheSystem = opts.cache?.system !== false;
+    const cacheTools = opts.cache?.tools !== false;
+    const cacheHistory = opts.cache?.history === true;
+    const { system, messages } = toAnthropicMessages(opts.messages, cacheSystem, cacheHistory);
 
     const body: Record<string, unknown> = {
       model: this.config.model,
       // Anthropic 强制要求 max_tokens；未给时给一个合理默认
       max_tokens: opts.maxTokens ?? 4096,
-      ...(system ? { system } : {}),
+      ...(system.length ? { system } : {}),
       messages,
       stream: true,
       ...(opts.tools && opts.tools.length > 0
-        ? { tools: opts.tools.map(toAnthropicTool) }
+        ? {
+            tools: opts.tools.map((t, i) =>
+              toAnthropicTool(t, cacheTools && i === opts.tools!.length - 1),
+            ),
+          }
         : {}),
     };
 
@@ -102,6 +110,8 @@ export class AnthropicAdapter implements ChatModel {
     let content = '';
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
+    let cacheReadTokens: number | undefined;
+    let cacheCreationTokens: number | undefined;
     const toolCalls = new Map<number, StreamToolCall>();
 
     const dispatch = (): void => {
@@ -120,6 +130,11 @@ export class AnthropicAdapter implements ChatModel {
           // input_tokens 在 message_start 的 usage 里（含 cache 命中/创建）
           const it = json?.message?.usage?.input_tokens;
           if (typeof it === 'number') inputTokens = it;
+          // 前缀缓存可观测：命中(cache_read) 与新建(cache_creation) 分别回报
+          const cr = json?.message?.usage?.cache_read_input_tokens;
+          const cc = json?.message?.usage?.cache_creation_input_tokens;
+          if (typeof cr === 'number') cacheReadTokens = cr;
+          if (typeof cc === 'number') cacheCreationTokens = cc;
           break;
         }
         case 'message_delta': {
@@ -192,11 +207,16 @@ export class AnthropicAdapter implements ChatModel {
 
     // 翻译真实用量（message_start 给 input，message_delta 给 output；任一存在即记录）
     const usage =
-      inputTokens != null || outputTokens != null
+      inputTokens != null ||
+      outputTokens != null ||
+      cacheReadTokens != null ||
+      cacheCreationTokens != null
         ? {
             promptTokens: inputTokens ?? 0,
             completionTokens: outputTokens ?? 0,
             totalTokens: (inputTokens ?? 0) + (outputTokens ?? 0),
+            ...(cacheReadTokens != null ? { cacheReadTokens } : {}),
+            ...(cacheCreationTokens != null ? { cacheCreationTokens } : {}),
           }
         : undefined;
     return {
@@ -217,14 +237,19 @@ function extractText(content: string | ContentBlock[]): string {
     .join('');
 }
 
-/** 把 ChatMessage[] 翻译成 Anthropic 的 {system, messages} */
-function toAnthropicMessages(messages: ChatMessage[]): { system: string; messages: unknown[] } {
-  let system = '';
+/** 把 ChatMessage[] 翻译成 Anthropic 的 {system, messages}。
+ *  system 返回为 block 数组（而非字符串），以便在其末块打 cache_control 断点。 */
+function toAnthropicMessages(
+  messages: ChatMessage[],
+  cacheSystem: boolean,
+  cacheHistory = false,
+): { system: unknown[]; messages: unknown[] } {
+  const system: unknown[] = [];
   const out: unknown[] = [];
 
   for (const m of messages) {
     if (m.role === 'system') {
-      system += extractText(m.content) + '\n';
+      system.push({ type: 'text', text: extractText(m.content) });
       continue;
     }
 
@@ -257,7 +282,34 @@ function toAnthropicMessages(messages: ChatMessage[]): { system: string; message
     }
   }
 
-  return { system: system.trim(), messages: out };
+  // 若开启 system 缓存，在最后一个 system block 上打 cache_control 断点
+  if (cacheSystem && system.length) {
+    const last = system[system.length - 1] as { type: 'text'; text: string; cache_control?: unknown };
+    last.cache_control = { type: 'ephemeral' };
+  }
+
+  // 历史稳定段缓存：在「除当前轮外」的最后一条消息末块打 cache_control。
+  // out 已去掉 system（提取到顶层），故这里的索引即非 system 消息的相对序，
+  // 与 historyBreakpointIndex 在去 system 后的数组上算出的结果一致。
+  if (cacheHistory) {
+    const k = historyBreakpointIndex(out as ChatMessage[]);
+    if (k >= 0) markLastBlock(out[k] as { content?: unknown });
+  }
+  return { system, messages: out };
+}
+
+/** 在一条已翻译消息的「最后一个内容块」上打 cache_control 断点。
+ * 内容可能是字符串（包成 text block 数组）或 block 数组（取末块）。 */
+function markLastBlock(msg: { content?: unknown }): void {
+  const content = msg.content;
+  if (typeof content === 'string') {
+    msg.content = [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }];
+    return;
+  }
+  if (Array.isArray(content) && content.length) {
+    const last = content[content.length - 1] as { cache_control?: unknown };
+    last.cache_control = { type: 'ephemeral' };
+  }
 }
 
 /** user 消息内容：字符串直接给字符串，数组则转成 text block 数组 */
@@ -278,11 +330,14 @@ function toAnthropicAssistantContent(content: string | ContentBlock[]): unknown 
   });
 }
 
-/** 把 ToolDef 转成 Anthropic tool 声明（注意字段是 input_schema，不是 parameters） */
-function toAnthropicTool(tool: ToolDef): unknown {
-  return {
+/** 把 ToolDef 转成 Anthropic tool 声明（注意字段是 input_schema，不是 parameters）。
+ * mark=true 时在末个工具上加 cache_control 断点（工具定义属稳定前缀，值得缓存）。 */
+function toAnthropicTool(tool: ToolDef, mark?: boolean): unknown {
+  const t = {
     name: tool.name,
     description: tool.description,
     input_schema: tool.inputSchema,
   };
+  if (mark) (t as { cache_control?: unknown }).cache_control = { type: 'ephemeral' };
+  return t;
 }

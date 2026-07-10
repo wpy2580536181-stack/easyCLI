@@ -7,6 +7,8 @@ export type Role = 'system' | 'user' | 'assistant' | 'tool';
 export interface TextBlock {
   type: 'text';
   text: string;
+  /** 前缀缓存断点标记（Provider 无关；适配器翻译成 cache_control） */
+  cacheControl?: 'ephemeral';
 }
 export interface ToolCallBlock {
   type: 'tool_call';
@@ -59,6 +61,8 @@ export interface ToolDef {
   isReadOnly?: boolean;
   /** 是否破坏性操作（写/删除类）——Phase 3 接 HITL 更严格审批 */
   isDestructive?: boolean;
+  /** 前缀缓存断点标记（Provider 无关）；适配器在末个工具上加 cache_control */
+  cacheControl?: 'ephemeral';
   /** 工具执行体，由 ToolRegistry 统一调度 */
   execute?: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
 }
@@ -76,6 +80,18 @@ export interface CompleteOptions {
   onText?: (chunk: string) => void;
   temperature?: number;
   maxTokens?: number;
+  /**
+   * 前缀缓存意图（Provider 无关）：
+   *  - system：在 system 末尾打 cache_control 断点（默认 true）。
+   *  - tools ：在末个 tool 上打 cache_control 断点（默认 true）。
+   *  - history：在「除当前轮外」的最后一条消息末块打 cache_control 断点，
+   *    使 system + tools + 几乎整段历史整体成为可缓存前缀（多轮命中率 60~85%、几乎不衰减）。
+   *    默认 false（仅缓存 system+tools，长对话时占比很小）。
+   * 设为 undefined 或显式 false 则适配器不加对应标记。
+   * 备注：OpenAI 系网关对 ≥1024 token 的前缀自动缓存（无需标记），
+   * 本意图对它们主要是 Anthropic 显式断点 + 可观测字段；旧网关忽略未知字段。
+   */
+  cache?: { system?: boolean; tools?: boolean; history?: boolean };
 }
 
 /** 一次模型调用的真实 token 用量（API 在响应里回报；未回报则为 undefined，由上层估算） */
@@ -83,6 +99,10 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** 命中缓存的 input token 数（Anthropic cache_read / OpenAI cached_tokens） */
+  cacheReadTokens?: number;
+  /** 新建缓存的 input token 数（Anthropic cache_creation，写费略高） */
+  cacheCreationTokens?: number;
 }
 
 export interface CompleteResult {

@@ -73,6 +73,8 @@ export class StatusLine {
   private label = '思考中…';
   private startedAt = 0;
   private estTokens = 0;
+  /** 前缀缓存命中率（%）——由 token 事件回填；null 表示尚无数据 */
+  private cachePct: number | null = null;
   /** 流式正文累积（仅 TTY 下常用，用于整体重绘） */
   private body = '';
   /** 上一次 render 占用的行数（含 1 行 footer），用于精准回到区域顶部清屏 */
@@ -114,6 +116,12 @@ export class StatusLine {
   /** 取最近一次渲染出的 body 行（已套样式），供回合结束后并入 transcript */
   getBodyLines(): string[] {
     return this.lastBodyLines;
+  }
+
+  /** 回填前缀缓存命中率（%）；传 null 清掉（如切模型后） */
+  setCache(pct: number | null): void {
+    this.cachePct = pct;
+    if (this.tty) this.render();
   }
 
   /** 开新一轮：显示「思考中…」并启动动画 */
@@ -204,7 +212,8 @@ export class StatusLine {
   refresh(): void {
     if (!this.tty) return;
     const sink = this.out as OutputSink & { columns?: number; rows?: number };
-    const width = sink.columns ?? process.stdout.columns ?? 80;
+    // 0 也视为「未知」，回退到默认值（pty 下 columns/rows 常为 0，?? 不会回退）
+    const width = sink.columns || process.stdout.columns || 80;
     const { footerRow, bodyAvail } = this.layout();
     const rawBody = this.bodyLines(width);
     const body = this.md ? rawBody : rawBody.map((l) => this.color(l));
@@ -212,7 +221,9 @@ export class StatusLine {
     const content = [...this.header, ...this.userTurn, ...body];
     const visible = content.length > bodyAvail ? content.slice(content.length - bodyAvail) : content;
     this.out.write('\x1b[1;1H\x1b[J');
-    if (visible.length > 0) this.out.write(visible.join('\n'));
+    // 逐行写出（而非一次性 join 大字符串）：pty 在背压下对单次大写入可能只收部分字节，
+    // 逐行小写入更稳健，避免 transcript 末尾几行（含斜杠命令输出）在 TTY 下丢失。
+    for (const line of visible) this.out.write(line + '\n');
     const caretRow = Math.min(footerRow - 1, 1 + visible.length);
     this.sb?.setCaret(caretRow, 1);
     this.sb?.render();
@@ -228,7 +239,7 @@ export class StatusLine {
    */
   private layout(): { footerRow: number; bodyAvail: number } {
     const sink = this.out as OutputSink & { columns?: number; rows?: number };
-    const rows = sink.rows ?? process.stdout.rows ?? 24;
+    const rows = sink.rows || process.stdout.rows || 24;
     let footerRow: number;
     if (this.reserved > 0) footerRow = rows - this.reserved;
     else if (this.sb) footerRow = rows - 1;
@@ -257,13 +268,20 @@ export class StatusLine {
     return Math.max(0, Math.round((Date.now() - this.startedAt) / 1000));
   }
 
+  private cacheTag(): string {
+    if (this.cachePct == null) return '';
+    const p = this.cachePct;
+    const c = p >= 70 ? chalk.green : p >= 40 ? chalk.yellow : chalk.red;
+    return chalk.gray(' · ') + c(`cache ${p}%`);
+  }
+
   private footerLine(): string {
     const sec = this.elapsedSec();
     const glyph = SPIN[this.frame % SPIN.length];
     if (this.mode === 'stream') {
-      return `${chalk.cyan(glyph)} ${chalk.bold.gray(this.label)} ${chalk.gray(`(${sec}s · ↓ ${this.estTokens} tokens)`)}`;
+      return `${chalk.cyan(glyph)} ${chalk.bold.gray(this.label)} ${chalk.gray(`(${sec}s · ↓ ${this.estTokens} tokens)`)}${this.cacheTag()}`;
     }
-    return `${chalk.cyan(glyph)} ${chalk.bold.gray(this.label)} ${chalk.gray(`(${sec}s)`)}`;
+    return `${chalk.cyan(glyph)} ${chalk.bold.gray(this.label)} ${chalk.gray(`(${sec}s)`)}${this.cacheTag()}`;
   }
 
   /** 计算流式正文应当显示的屏显行（Markdown 模式实时渲染，否则纯文本按宽度折行） */
@@ -311,7 +329,7 @@ export class StatusLine {
    */
   private render(): void {
     const sink = this.out as OutputSink & { columns?: number; rows?: number };
-    const width = sink.columns ?? process.stdout.columns ?? 80;
+    const width = sink.columns || process.stdout.columns || 80;
     const { footerRow: footerCap, bodyAvail } = this.layout();
     const rawBody = this.bodyLines(width);
     // Markdown 模式：正文自带样式，不再套 color（避免覆盖）；纯文本模式：套 color
@@ -321,9 +339,9 @@ export class StatusLine {
     // 内容超过可视高度则从顶部裁剪（早期内容滚出屏幕，与真实终端滚动一致）
     const visible = content.length > bodyAvail ? content.slice(content.length - bodyAvail) : content;
 
-    // 从顶行清屏并重绘整段 transcript（header + userTurn + body）
+    // 从顶行清屏并重绘整段 transcript（header + userTurn + body）；逐行小写入更稳健
     this.out.write('\x1b[1;1H\x1b[J');
-    if (visible.length > 0) this.out.write(visible.join('\n'));
+    for (const line of visible) this.out.write(line + '\n');
     // 动画状态行（思考 / 工具 / 流式）的位置：
     //  - 交互模式（reservedBottom>0，有输入框）：紧贴正文最后一行下方（visible.length+1），
     //    让「思考中…」始终贴着 AI 输出；同时受 footerCap 限制不进入输入框盒子区域。

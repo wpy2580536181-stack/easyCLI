@@ -85,8 +85,8 @@ describe('AnthropicAdapter 流式解析', () => {
 
     (globalThis.fetch as any).mockImplementation(async (_url: string, init: any) => {
       const body = JSON.parse(init.body);
-      // 断言格式翻译正确
-      expect(body.system).toBe('SYS');
+      // 断言格式翻译正确：system 抽成顶层 block 数组，末块带缓存断点
+      expect(body.system).toEqual([{ type: 'text', text: 'SYS', cache_control: { type: 'ephemeral' } }]);
       expect(body.messages[0]).toEqual({ role: 'user', content: '读文件' });
       expect(body.messages[1]).toEqual({
         role: 'assistant',
@@ -115,11 +115,11 @@ describe('AnthropicAdapter 流式解析', () => {
   it('tool 映射使用 input_schema（而非 OpenAI 的 parameters）', async () => {
     (globalThis.fetch as any).mockImplementation(async (_url: string, init: any) => {
       const body = JSON.parse(init.body);
-      expect(body.tools[0]).toEqual({
-        name: 'read_file',
-        description: '读文件',
-        input_schema: { type: 'object' },
-      });
+      // 字段名是 Anthropic 的 input_schema（非 OpenAI 的 parameters）
+      expect(body.tools[0]).toHaveProperty('input_schema');
+      expect(body.tools[0]).not.toHaveProperty('parameters');
+      // 末个工具默认打上缓存断点（tool 定义属稳定前缀，值得缓存）
+      expect(body.tools[0].cache_control).toEqual({ type: 'ephemeral' });
       return {
         ok: true,
         body: anthropicStream([

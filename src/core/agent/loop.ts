@@ -150,18 +150,38 @@ export async function runAgent(
       messages = history; // 压缩失败则退回原文，保证主流程不中断
     }
 
-    // Phase 16：自动上下文——在每轮模型调用前，把检索到的记忆/知识库作为**临时**系统消息注入。
-    // 不写入 history，故下一轮会重新检索、不污染持久对话；缺省/空则不注入。
+    // Phase 16：自动上下文——把检索到的记忆/知识库作为**临时**上下文注入。
+    // ⚠ 前缀缓存关键：必须以 user 角色、放在「已缓存前缀（system + tools）之后」，
+    // 绝不能作为最前的 system 消息（否则会被并进 Anthropic 的顶层 system 前缀，
+    // 每轮 RAG 结果不同 → 前缀失效、缓存命中率归零）。不写入 history，下一轮重新检索。
     if (opts.autoContext) {
-      messages = [{ role: 'system', content: opts.autoContext }, ...messages];
+      // 复制一份再注入，确保持久 history 不被污染（临时、可重算）。
+      // 压缩分支已返回新数组故无需再拷；非压缩分支 messages === history，必须拷。
+      if (messages === history) messages = [...history];
+      const acMsg: ChatMessage = { role: 'user', content: opts.autoContext };
+      let lastUser = -1;
+      for (let k = messages.length - 1; k >= 0; k--) {
+        if ((messages[k] as ChatMessage).role === 'user') {
+          lastUser = k;
+          break;
+        }
+      }
+      if (lastUser >= 0) messages.splice(lastUser, 0, acMsg);
+      else messages.push(acMsg);
     }
 
     try {
+      // 工具顺序固定（按名排序）：工具定义属稳定前缀，顺序变化会令前缀失效、缓存击穿
+      const tools = [...opts.tools.list()].sort((a, b) => a.name.localeCompare(b.name));
+      // 前缀缓存意图：system 末尾 + 末个 tool 打 cache_control 断点；
+      // history:true 再在「除当前轮外」的最后一条消息末块打点，
+      // 使 system+tools+几乎整段历史整体成为可缓存前缀（多轮命中率 60~85%、几乎不衰减）。
       result = await opts.model.complete({
         messages,
-        tools: opts.tools.list(),
+        tools,
         signal: opts.signal,
         onText: opts.onText,
+        cache: { system: true, tools: true, history: true },
       });
     } catch (e) {
       if (opts.signal?.aborted) break;
@@ -171,6 +191,12 @@ export async function runAgent(
     // 每轮 token 用量：真实优先（适配器回报），否则本地估算 → 发事件给可观测层（决策 9）
     const usage = computeUsage(opts.model.id, messages, result);
     opts.bus?.emit({ type: 'token', ...usage });
+    // 真实用量反校准计数器（若有）：使后续压缩预算更接近模型实际收到的 token 数
+    const counter = opts.compress?.counter;
+    if (usage.estimated === false && counter && counter.calibrate) {
+      const est = estimateHistoryTokens(messages, counter);
+      counter.calibrate(usage.promptTokens, est);
+    }
 
     // 1) 落 assistant 消息：文本与 tool_call 都存成 ContentBlock[]，
     //    保证下一轮模型能看到自己上一轮的工具调用与参数。
