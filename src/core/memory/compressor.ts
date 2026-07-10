@@ -1,5 +1,6 @@
 import type { ChatMessage, ChatModel } from '../chatmodel/types';
 import { compressorSystemPrompt } from '../prompts';
+import { type TokenCounter, createDefaultCounter } from '../observability/tokenizer';
 
 /**
  * 上下文压缩器（Phase 4，决策 7 + §8.1 的 4 级渐进压缩）。
@@ -26,6 +27,8 @@ export interface CompressOptions {
   maxToolOutputChars: number;
   /** 第 4 级 摘要回调；不提供则只用结构化折叠（第 3 级） */
   summarizer?: Summarizer;
+  /** 可插拔 token 计数器：压缩预算用真实/校准计数（缺省回退 CJK 感知自校准） */
+  counter?: TokenCounter;
 }
 
 /** 粗略 token 估算：英文约 4 字符/token，中文约 1.5；取 4 作保守上界 */
@@ -39,8 +42,9 @@ export function messageText(m: ChatMessage): string {
   return m.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
 }
 
-export function estimateHistoryTokens(history: ChatMessage[]): number {
-  return history.reduce((s, m) => s + estimateTokens(messageText(m)), 0);
+export function estimateHistoryTokens(history: ChatMessage[], counter?: TokenCounter): number {
+  const c = counter ?? createDefaultCounter();
+  return history.reduce((s, m) => s + c.count(messageText(m)), 0);
 }
 
 /** 以 user 消息为锚点，把消息流切成「轮」（user + 其后的 assistant/tool 结果） */
@@ -60,6 +64,7 @@ function splitIntoTurns(msgs: ChatMessage[]): ChatMessage[][] {
 
 /** 第 1 级：裁剪超长工具/助手输出（有损但便宜） */
 function trimMessage(m: ChatMessage, cap: number): ChatMessage {
+  if (m.protected) return m; // 受保护消息豁免裁剪
   if ((m.role === 'tool' || m.role === 'assistant') && typeof m.content === 'string') {
     if (m.content.length > cap) {
       return { ...m, content: m.content.slice(0, cap) + `\n…[已裁剪 ${m.content.length - cap} 字符]` };
@@ -77,6 +82,7 @@ function dedupeToolResults(msgs: ChatMessage[]): ChatMessage[] {
       m.role === 'tool' &&
       prev &&
       prev.role === 'tool' &&
+      !prev.protected &&
       messageText(prev) === messageText(m)
     ) {
       continue;
@@ -110,30 +116,34 @@ export async function compressHistory(
   history: ChatMessage[],
   opts: CompressOptions,
 ): Promise<ChatMessage[]> {
+  const counter = opts.counter ?? createDefaultCounter();
   const system = history.filter((m) => m.role === 'system');
   const rest = history.filter((m) => m.role !== 'system');
 
   // 第 1 级：裁剪
   let working = rest.map((m) => trimMessage(m, opts.maxToolOutputChars));
-  if (estimateHistoryTokens(working) <= opts.budgetTokens) return [...system, ...working];
+  if (estimateHistoryTokens(working, counter) <= opts.budgetTokens) return [...system, ...working];
 
   // 第 2 级：去重
   working = dedupeToolResults(working);
-  if (estimateHistoryTokens(working) <= opts.budgetTokens) return [...system, ...working];
+  if (estimateHistoryTokens(working, counter) <= opts.budgetTokens) return [...system, ...working];
 
   // 超预算 → 处理「中间」部分，保留最近 keepRecentTurns 轮
   const turns = splitIntoTurns(working);
   const recent = turns.slice(-opts.keepRecentTurns);
   const middle = turns.slice(0, -opts.keepRecentTurns);
+  const pinnedTurns = middle.filter((t) => t.some((m) => m.protected === true));
+  const workableMiddle = middle.filter((t) => !t.some((m) => m.protected === true));
 
   // 第 3 级：折叠中间的工具结果
-  const foldedMiddle = middle.map((t) => t.map(foldToolResult));
-  const afterFold = [...foldedMiddle.flat(), ...recent.flat()];
-  if (estimateHistoryTokens(afterFold) <= opts.budgetTokens) return [...system, ...afterFold];
+  const foldedMiddle = workableMiddle.map((t) => t.map(foldToolResult));
+  const afterFold = [...pinnedTurns.flat(), ...foldedMiddle.flat(), ...recent.flat()];
+  if (estimateHistoryTokens(afterFold, counter) <= opts.budgetTokens)
+    return [...system, ...pinnedTurns.flat(), ...afterFold];
 
   // 第 4 级：用摘要器把中间轮压成一条摘要（失败则回退折叠）
   if (opts.summarizer) {
-    const middleText = middle.flat().map((m) => `${m.role}: ${messageText(m)}`).join('\n');
+    const middleText = workableMiddle.flat().map((m) => `${m.role}: ${messageText(m)}`).join('\n');
     let summary = '';
     try {
       summary = await opts.summarizer(middleText);
@@ -144,12 +154,12 @@ export async function compressHistory(
       role: 'system',
       content: summary ? `[历史摘要]\n${summary}` : '[历史摘要] (摘要生成失败，已折叠)',
     };
-    return [...system, summaryMsg, ...recent.flat()];
+    return [...system, ...pinnedTurns.flat(), summaryMsg, ...recent.flat()];
   }
 
   // 无摘要器兜底：激进折叠（含助手长文本）
-  const aggressive = middle.map((t) => t.map((m) => aggressiveFold(m, opts.maxToolOutputChars)));
-  return [...system, ...aggressive.flat(), ...recent.flat()];
+  const aggressive = workableMiddle.map((t) => t.map((m) => aggressiveFold(m, opts.maxToolOutputChars)));
+  return [...system, ...pinnedTurns.flat(), ...aggressive.flat(), ...recent.flat()];
 }
 
 /** 默认摘要器：用模型把一段对话文本压成中文摘要（供手动 /compact 命令使用） */

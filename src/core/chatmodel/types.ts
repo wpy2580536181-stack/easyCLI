@@ -26,6 +26,8 @@ export interface ChatMessage {
   content: string | ContentBlock[];
   tool_call_id?: string;
   name?: string;
+  /** 重要消息保护：用户显式「记住/重要」等指令标记，压缩时整轮永不折叠/摘要（随会话 JSON 自然持久化） */
+  protected?: boolean;
 }
 
 /** 模型返回的工具调用（已解析） */

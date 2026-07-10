@@ -61,3 +61,83 @@ export function estimateMessagesTokens(messages: ChatMessage[]): number {
   for (const m of messages) total += 3 + estimateMessageTokens(m);
   return total;
 }
+
+/**
+ * 可插拔的 token 计数契约（Phase 14 增强：压缩预算用真实/校准计数，而非粗糙字符估算）。
+ * - count(text)：返回文本 token 数。
+ * - calibrate?：可选，用真实用量反校准内部系数（仅自校准实现提供）。
+ */
+export interface TokenCounter {
+  count(text: string): number;
+  /** 用「真实 token 数 / 本计数器估算数」校准内部系数（指数移动平均），使后续预算更接近真实 */
+  calibrate?(realTokens: number, estimatedTokens: number): void;
+}
+
+/**
+ * 自校准计数器：以 CJK 感知启发式为底，用每轮模型回报的真实 usage 学一个系数。
+ * 零依赖、跨轮共享同一实例即可越跑越准；真实 BPE 不可用时的默认实现。
+ */
+export class CalibratedCounter implements TokenCounter {
+  private calibration = 1;
+
+  count(text: string): number {
+    return Math.max(1, Math.round(estimateTokens(text) * this.calibration));
+  }
+
+  calibrate(real: number, estimated: number): void {
+    if (estimated <= 0) return;
+    const ratio = real / estimated;
+    // 指数移动平均（0.8/0.2），平滑单次噪声、又能随模型切换缓慢适配
+    this.calibration = this.calibration * 0.8 + ratio * 0.2;
+  }
+}
+
+/**
+ * 真实 BPE 计数器：用 tiktoken 的 cl100k_base 精确编码（与 GPT 类模型一致）。
+ * 动态加载——未安装 tiktoken 时 create() 会 reject，由工厂回退到自校准实现，不强制第三方依赖。
+ */
+export class TiktokenCounter implements TokenCounter {
+  private constructor(private readonly encode: (t: string) => number[]) {}
+
+  static async create(): Promise<TiktokenCounter> {
+    try {
+      // 用变量拼模块名，绕过 tsc 对字面量模块的解析检查；运行时未装则抛错被上层捕获
+      const spec = 'tiktoken';
+      const mod: unknown = await import(spec);
+      const enc = await (mod as { getEncoding: (n: string) => Promise<{ encode: (t: string) => number[] }> }).getEncoding(
+        'cl100k_base',
+      );
+      return new TiktokenCounter((t: string) => enc.encode(t));
+    } catch {
+      throw new Error('tiktoken 未安装：npm i tiktoken 后即可用真实 BPE 计数');
+    }
+  }
+
+  count(text: string): number {
+    return this.encode(text).length;
+  }
+}
+
+let defaultCounter: TokenCounter | null = null;
+/** 模块级默认计数器单例（供未显式注入时的独立调用，如单测） */
+export function createDefaultCounter(): TokenCounter {
+  if (!defaultCounter) defaultCounter = new CalibratedCounter();
+  return defaultCounter;
+}
+
+/**
+ * 创建计数器：
+ * - 'tiktoken'：优先真实 BPE，失败（未安装）静默回退自校准；
+ * - 'auto'（默认）：零依赖的自校准实现。
+ * 真实 BPE 与自校准都让压缩预算更接近「模型实际收到的 token 数」。
+ */
+export async function createCounter(mode: 'auto' | 'tiktoken' = 'auto'): Promise<TokenCounter> {
+  if (mode === 'tiktoken') {
+    try {
+      return await TiktokenCounter.create();
+    } catch {
+      return new CalibratedCounter();
+    }
+  }
+  return new CalibratedCounter();
+}
