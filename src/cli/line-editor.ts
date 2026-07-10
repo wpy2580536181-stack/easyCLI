@@ -140,6 +140,8 @@ export class LineEditor {
   // —— HITL 提问（y/n/a 审批）——
   private askResolve: ((v: string) => void) | null = null;
   private askBuffer = '';
+  /** 防抖：确认框渲染后 200ms 内忽略首回车，避免「框刚弹出就误确认」。0 表示不防抖。 */
+  private askReadyAt = 0;
 
   // —— readline 回退 ——
   private rl: readline.Interface | null = null;
@@ -223,8 +225,12 @@ export class LineEditor {
     this.draw();
   }
 
-  /** 交互式提问（权限审批 y/n/a），返回用户输入（已 trim） */
-  ask(question: string): Promise<string> {
+  /**
+   * 交互式提问（权限审批 y/n/a），返回用户输入（已 trim）。
+   * @param opts.debounceMs 渲染后忽略首回车的防抖窗口（ms）。默认 0（不防抖）。
+   *   用于防止「确认框刚弹出时，上一动作的残留回车/自动重复回车瞬间放行危险命令」。
+   */
+  ask(question: string, opts?: { debounceMs?: number }): Promise<string> {
     if (!this.tty) {
       return new Promise<string>((resolve) => {
         if (!this.rl) {
@@ -238,6 +244,8 @@ export class LineEditor {
       this.askResolve = resolve;
       this.askBuffer = '';
       this.state = 'asking';
+      // 记录防抖截止时刻：窗口内的首回车被忽略（见 handleEnter）
+      this.askReadyAt = opts?.debounceMs && opts.debounceMs > 0 ? Date.now() + opts.debounceMs : 0;
       this.out.write('\n' + question);
     });
   }
@@ -548,10 +556,13 @@ export class LineEditor {
 
   private handleEnter(): void {
     if (this.state === 'asking') {
+      // 防抖窗口内：忽略首回车，避免残留/自动重复的回车瞬间确认
+      if (this.askReadyAt && Date.now() < this.askReadyAt) return;
       const r = this.askResolve;
       this.askResolve = null;
       const ans = this.askBuffer;
       this.askBuffer = '';
+      this.askReadyAt = 0;
       this.state = 'hidden';
       r?.(ans.trim());
       return;
