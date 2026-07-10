@@ -533,12 +533,20 @@ export async function startRepl(
         const before = estimateHistoryTokens(history, compress?.counter);
         console_.log(chalk.gray(`上下文 ${before} token，开始压缩…`));
         const summarizer = createDefaultSummarizer(model);
-        const compressOpts = compress ?? {
+        // 用户显式 /compact = 处于 turn boundary，允许 L4 摘要；透传 compress 的全部新字段
+        // （persistDir / summaryCache / summaryFailures / transcriptDir / keepRecentToolResults），
+        // 与自动压缩共用同一份配置与缓存。
+        const base: CompressOptions = compress ?? {
           budgetTokens: 8000,
           keepRecentTurns: 4,
           maxToolOutputChars: 1500,
         };
-        const compressed = await compressHistory(history, { ...compressOpts, summarizer, counter: compress?.counter });
+        const compressed = await compressHistory(history, {
+          ...base,
+          summarizer,
+          counter: base.counter ?? compress?.counter,
+          atTurnBoundary: true,
+        });
         const after = estimateHistoryTokens(compressed, compress?.counter);
         history.length = 0;
         history.push(...compressed);

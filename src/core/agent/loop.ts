@@ -15,6 +15,7 @@ import type { PermissionManager } from '../security/permission';
 import type { EventBus } from '../events/bus';
 import {
   compressHistory,
+  reactiveCompact,
   estimateHistoryTokens,
   type CompressOptions,
   type Summarizer,
@@ -72,6 +73,14 @@ function defaultSummarizer(model: ChatModel): Summarizer {
   };
 }
 
+/** 判断错误是否「上下文超长」（API 返回 413 / prompt_too_long / context length） */
+function isPromptTooLong(e: unknown): boolean {
+  const err = e as { message?: string; status?: number };
+  if (err?.status === 413) return true;
+  const msg = err?.message ?? '';
+  return /prompt[_\s-]?too[_\s-]?long|context[_\s-]?(length|window|limit)|maximum context|too many tokens/i.test(msg);
+}
+
 /**
  * 计算一次模型调用的 token 用量记录：
  * - 适配器回报了真实 usage → 直接用（estimated=false）；
@@ -127,6 +136,8 @@ export async function runAgent(
 ): Promise<ChatMessage[]> {
   const maxIter = opts.maxIterations ?? 10;
   const cwd = opts.cwd ?? process.cwd();
+  // 应急压缩重试上限（prompt_too_long / 413 时 reactive 一回）
+  let reactiveRetries = 0;
 
   for (let i = 0; i < maxIter; i++) {
     if (opts.signal?.aborted) break;
@@ -135,12 +146,18 @@ export async function runAgent(
     // 否则异常会冒泡冲垮 REPL 的事件循环。
     let result: CompleteResult;
 
-    // 上下文超限自动压缩（决策 10 + 决策 7）：压缩「发给模型的副本」，不动规范 history
+    // 上下文超限自动压缩（决策 10 + 决策 7）：压缩「发给模型的副本」，不动规范 history。
+    // atTurnBoundary 仅本轮首个迭代（= 该用户轮的 turn boundary）为 true，
+    // 使 L4 摘要只在边界触发，工具循环中段不摘要、不乱动缓存前缀。
     let messages: ChatMessage[] = history;
     try {
       if (opts.compress && estimateHistoryTokens(history) > opts.compress.budgetTokens) {
         const summarizer = opts.compress.summarizer ?? defaultSummarizer(opts.model);
-        messages = await compressHistory(history, { ...opts.compress, summarizer });
+        messages = await compressHistory(history, {
+          ...opts.compress,
+          summarizer,
+          atTurnBoundary: i === 0,
+        });
         const before = estimateHistoryTokens(history);
         const after = estimateHistoryTokens(messages);
         opts.bus?.emit({ type: 'compact', before, after });
@@ -170,23 +187,49 @@ export async function runAgent(
       else messages.push(acMsg);
     }
 
-    try {
-      // 工具顺序固定（按名排序）：工具定义属稳定前缀，顺序变化会令前缀失效、缓存击穿
-      const tools = [...opts.tools.list()].sort((a, b) => a.name.localeCompare(b.name));
+    // 工具顺序固定（按名排序）：工具定义属稳定前缀，顺序变化会令前缀失效、缓存击穿
+    const tools = [...opts.tools.list()].sort((a, b) => a.name.localeCompare(b.name));
       // 前缀缓存意图：system 末尾 + 末个 tool 打 cache_control 断点；
       // history:true 再在「除当前轮外」的最后一条消息末块打点，
       // 使 system+tools+几乎整段历史整体成为可缓存前缀（多轮命中率 60~85%、几乎不衰减）。
-      result = await opts.model.complete({
-        messages,
-        tools,
-        signal: opts.signal,
-        onText: opts.onText,
-        cache: { system: true, tools: true, history: true },
-      });
-    } catch (e) {
-      if (opts.signal?.aborted) break;
-      throw e;
-    }
+      const callModel = (msgs: ChatMessage[]) =>
+        opts.model.complete({
+          messages: msgs,
+          tools,
+          signal: opts.signal,
+          onText: opts.onText,
+          cache: { system: true, tools: true, history: true },
+        });
+      // 单次模型调用（最外层只有一个 try/catch）：
+      try {
+        result = await callModel(messages);
+      } catch (e) {
+        // 应急：API 报 prompt_too_long / 413（上下文增长快于压缩触发速度）时，
+        // 激进折叠（reactive compact）后重试一次；再失败则按原错误抛出，不无限循环。
+        if (isPromptTooLong(e) && reactiveRetries < 1) {
+          reactiveRetries++;
+          const summarizer = defaultSummarizer(opts.model);
+          const rm = reactiveCompact(history, {
+            ...(opts.compress ?? { budgetTokens: 8000, keepRecentTurns: 4, maxToolOutputChars: 1500 }),
+            summarizer,
+          });
+          messages = rm;
+          const before = estimateHistoryTokens(history);
+          const after = estimateHistoryTokens(messages);
+          opts.bus?.emit({ type: 'compact', before, after });
+          opts.onCompact?.({ before, after });
+          try {
+            result = await callModel(messages);
+          } catch (e2) {
+            if (opts.signal?.aborted) break;
+            throw e2;
+          }
+        } else {
+          if (opts.signal?.aborted) break;
+          throw e;
+        }
+      }
+
 
     // 每轮 token 用量：真实优先（适配器回报），否则本地估算 → 发事件给可观测层（决策 9）
     const usage = computeUsage(opts.model.id, messages, result);

@@ -11,6 +11,7 @@ import {
   type ConfigOverrides,
 } from '../config';
 import { createChatModel } from '../core/chatmodel';
+import { defaultContextWindow, resolveCompressBudget } from '../core/chatmodel/contextWindow';
 import { createToolRegistry } from '../core/tools/registry';
 import { EventBus } from '../core/events/bus';
 import { PermissionManager } from '../core/security/permission';
@@ -29,6 +30,14 @@ import { createCounter } from '../core/observability/tokenizer';
 import { CostTracker } from '../core/observability';
 import { runOnce, startRepl } from './repl';
 import { runFirstRunSetup } from './setup';
+
+/**
+ * 摘要缓存 + 熔断计数：进程级单例，跨 REPL 轮次共享。
+ * - summaryCache：以 middle 内容哈希为键，使 L4 摘要确定性、不每轮重写缓存前缀（护 P0 缓存）。
+ * - summaryFailures：摘要连续失败计数，达上限（默认 3）后熔断只折叠。
+ */
+const summaryCache = new Map<string, string>();
+const summaryFailures = { n: 0 };
 
 const program = new Command();
 
@@ -74,6 +83,7 @@ program
   .option('--search-provider <provider>', '联网搜索服务：tavily | duckduckgo（默认 duckduckgo，零 key）')
   .option('--search-key <key>', '联网搜索服务 API key（tavily 需要；可用 AGENTCLI_SEARCH_API_KEY 注入）')
   .option('--search-max-results <n>', '联网搜索单次返回结果数上限（默认 5）')
+  .option('--context-window <n>', '模型上下文窗口 token 数（不传则由 provider/model 推导默认）')
   .action(async () => {
     const opts = program.opts<
       ConfigOverrides & {
@@ -126,6 +136,8 @@ program
         searchKey: opts.searchKey,
         searchMaxResults:
           opts.searchMaxResults !== undefined ? Number(opts.searchMaxResults) : undefined,
+        // 上下文窗口：CLI --context-window <n>（token）；不传由 provider/model 推导
+        contextWindow: opts.contextWindow !== undefined ? Number(opts.contextWindow) : undefined,
       },
       fileCfg,
     );
@@ -196,14 +208,28 @@ program
     const tracker = new CostTracker();
     tracker.attach(bus);
 
-    // Phase 4：上下文压缩配置（超预算时自动压缩后重试）
-    // 压缩预算用真实/校准 token 计数（优先真 BPE，未装 tiktoken 则 CJK 自校准）
+    // Phase 4 / 19：上下文压缩配置（超窗口相对预算时自动压缩后重试）
+    // 预算由模型上下文窗口推导（窗口 - 最大输出 - 20K 缓冲），而非绝对 8000：
+    // 200K 模型下约 174K，不再过早压缩；小窗口本地模型下取 8000 硬下限。
+    // 压缩预算用真实/校准 token 计数（优先真 BPE，未装 tiktoken 则 CJK 自校准）。
     const counter = await createCounter('tiktoken');
+    const ctx = config.contextWindow ?? defaultContextWindow(config.provider, config.llm.model);
+    const budget = resolveCompressBudget(ctx);
     const compress: CompressOptions = {
-      budgetTokens: 8000,
+      budgetTokens: budget,
       keepRecentTurns: 4,
       maxToolOutputChars: 1500,
       counter,
+      // Phase 19：大结果落盘（可 re-read）+ 选择性保留最近 3 条 tool 结果完整
+      persistDir: join(homedir(), '.config', 'agent-cli', 'tool-results'),
+      persistThresholdChars: 30_000,
+      previewChars: 2000,
+      keepRecentToolResults: 3,
+      // 摘要确定性（护缓存）+ 跨轮熔断 + transcript 落盘
+      summaryCache,
+      summaryFailures,
+      maxSummaryFailures: 3,
+      transcriptDir: join(homedir(), '.config', 'agent-cli', 'transcripts'),
     };
 
     // 退出时回收 MCP 子进程，避免孤儿进程
