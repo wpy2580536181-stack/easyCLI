@@ -38,6 +38,8 @@ export interface UserConfig {
   search?: SearchConfig;
   /** 底部状态栏（statusline）开关，默认开；false 关闭 */
   statusline?: boolean;
+  /** 模型上下文窗口（token）；不设置则由 provider/model 推导默认 */
+  contextWindow?: number;
 }
 
 const mcpServerSchema = z.object({
@@ -76,6 +78,7 @@ const userConfigSchema = z.object({
     ])
     .optional(),
   statusline: z.boolean().optional(),
+  contextWindow: z.number().int().positive().optional(),
   search: z
     .object({
       provider: z.enum(['tavily', 'duckduckgo']).optional(),

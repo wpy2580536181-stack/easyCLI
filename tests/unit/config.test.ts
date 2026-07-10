@@ -183,3 +183,31 @@ describe('Phase 8 配置持久化（store + 文件层）', () => {
     expect(maskSecret('sk-abcdefghij')).toBe('sk-a****ghij');
   });
 });
+
+describe('contextWindow 推导', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('无显式设置时由 provider/model 推导（deepseek-chat → 64K）', () => {
+    vi.stubEnv('AGENTCLI_PROVIDER', '');
+    vi.stubEnv('AGENTCLI_BASE_URL', '');
+    vi.stubEnv('AGENTCLI_API_KEY', '');
+    vi.stubEnv('AGENTCLI_MODEL', '');
+    vi.stubEnv('OPENAI_API_KEY', '');
+    const config = loadConfig();
+    expect(config.contextWindow).toBe(64_000);
+  });
+
+  it('CLI --context-window 覆盖推导值', () => {
+    const config = loadConfig({ contextWindow: 32000 });
+    expect(config.contextWindow).toBe(32_000);
+  });
+
+  it('appConfigToUserConfig 仅在非默认时落盘 contextWindow', () => {
+    const uc = appConfigToUserConfig(loadConfig({ provider: 'anthropic', model: 'claude-x', contextWindow: 200_000 }));
+    expect(uc.contextWindow).toBeUndefined(); // 200K 是 anthropic 默认，不落盘
+    const uc2 = appConfigToUserConfig(loadConfig({ provider: 'anthropic', model: 'claude-x', contextWindow: 999_999 }));
+    expect(uc2.contextWindow).toBe(999_999); // 非默认，落盘
+  });
+});

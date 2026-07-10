@@ -5,6 +5,7 @@
 // 这样设计：用户设一次 config.json 即长期生效，但单次运行仍可用 --model 等旗标临时改写。
 
 import type { McpServerSpec } from '../core/mcp/client';
+import { defaultContextWindow } from '../core/chatmodel/contextWindow';
 import type { EmbedderConfig } from '../core/rag/embedder';
 import { loadUserConfig, saveUserConfig, maskSecret, CONFIG_PATH, type UserConfig } from './store';
 
@@ -54,6 +55,8 @@ export interface AppConfig {
   search: SearchConfig;
   /** 底部状态栏（statusline）开关，默认开 */
   statusline: boolean;
+  /** 模型上下文窗口（token）；不设置则由 provider/model 推导默认（见 chatmodel/contextWindow） */
+  contextWindow?: number;
 }
 
 export interface ConfigOverrides {
@@ -73,6 +76,8 @@ export interface ConfigOverrides {
   embedder?: string;
   /** 底部状态栏开关（--no-statusline 时 false）；默认开 */
   statusline?: boolean;
+  /** 模型上下文窗口（token）；CLI --context-window 传入，不传则由 provider/model 推导 */
+  contextWindow?: number;
   /** Phase 18：搜索服务实现（CLI --search-provider），如 'tavily' | 'duckduckgo' */
   searchProvider?: string;
   /** Phase 18：搜索服务 API key（CLI --search-key） */
@@ -210,6 +215,20 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
     overrides.statusline ??
     (process.env.AGENTCLI_STATUSLINE === 'false' ? false : (file?.statusline ?? true));
 
+  // 上下文窗口：CLI > 环境变量 > 文件 > provider/model 默认。
+  // 用于把压缩预算从「绝对 8000」改为「窗口相对」（见 memory/compressor）。
+  const ctxRaw = firstNonEmpty(
+    '',
+    overrides.contextWindow !== undefined ? String(overrides.contextWindow) : undefined,
+    process.env.AGENTCLI_CONTEXT_WINDOW,
+    file?.contextWindow !== undefined ? String(file.contextWindow) : undefined,
+  );
+  const contextWindow = ctxRaw ? Number.parseInt(ctxRaw, 10) : undefined;
+  const ctxFinal =
+    contextWindow && contextWindow > 0
+      ? contextWindow
+      : defaultContextWindow(provider, model);
+
   // Phase 18：联网搜索配置。优先级：CLI > env > 文件 > 默认（零 key 的 duckduckgo）。
   // 默认 provider=duckduckgo（开箱即用，无需 key）；maxResults 默认 5；timeoutMs 默认 15000。
   const searchProvider = firstNonEmpty(
@@ -255,6 +274,7 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
     embedder,
     search,
     statusline,
+    contextWindow: ctxFinal,
   };
 }
 
@@ -289,6 +309,10 @@ export function appConfigToUserConfig(cfg: AppConfig): UserConfig {
   }
   // 仅在显式关闭状态栏时落盘，避免把默认 true 写进文件造成冗余
   if (cfg.statusline === false) out.statusline = false;
+  // 仅当用户显式设置的窗口与 provider/model 默认不同时落盘，避免把推导默认值写进文件
+  if (cfg.contextWindow && cfg.contextWindow !== defaultContextWindow(cfg.provider, cfg.llm.model)) {
+    out.contextWindow = cfg.contextWindow;
+  }
   return out;
 }
 
