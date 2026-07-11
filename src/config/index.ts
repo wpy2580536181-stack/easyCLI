@@ -28,11 +28,11 @@ export interface FallbackConfig {
   model?: string;
 }
 
-/** Phase 18：联网搜索配置（零 key 可用；配 key 后切到 Tavily 等正式搜索服务） */
+/** Phase 18 + Phase 20：联网搜索配置（零 key 可用；配 key 后切到 Tavily 等正式搜索服务） */
 export interface SearchConfig {
-  /** 搜索服务实现：'duckduckgo'（零 key 兜底）| 'tavily'（需 apiKey） */
-  provider: 'tavily' | 'duckduckgo';
-  /** 搜索服务 API key（DuckDuckGo 不需要；Tavily 必填） */
+  /** 搜索服务实现：'bing'（零 key，受限网络/代理下可达，默认）| 'duckduckgo'（零 key 兜底）| 'tavily'（需 apiKey） */
+  provider: 'tavily' | 'duckduckgo' | 'bing';
+  /** 搜索服务 API key（DuckDuckGo/Bing 不需要；Tavily 必填） */
   apiKey?: string;
   /** 单次搜索返回结果数上限，默认 5 */
   maxResults?: number;
@@ -257,10 +257,10 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
           : 'true';
   const semanticRecall = !(srRaw === 'false' || srRaw === '0');
 
-  // Phase 18：联网搜索配置。优先级：CLI > env > 文件 > 默认（零 key 的 duckduckgo）。
-  // 默认 provider=duckduckgo（开箱即用，无需 key）；maxResults 默认 5；timeoutMs 默认 15000。
+  // Phase 18 + Phase 20：联网搜索配置。优先级：CLI > env > 文件 > 默认（零 key 的 bing）。
+  // 默认 provider=bing（受限网络/代理下通常可达，无需 key）；maxResults 默认 5；timeoutMs 默认 15000。
   const searchProvider = firstNonEmpty(
-    'duckduckgo',
+    'bing',
     overrides.searchProvider,
     process.env.AGENTCLI_SEARCH_PROVIDER,
     file?.search?.provider,
@@ -287,7 +287,10 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
   const searchTimeout = Number.parseInt(searchTimeoutRaw, 10);
   const timeoutMs = Number.isFinite(searchTimeout) && searchTimeout > 0 ? searchTimeout : 15_000;
   const search: SearchConfig = {
-    provider: searchProvider === 'tavily' ? 'tavily' : 'duckduckgo',
+    provider:
+      searchProvider === 'tavily' || searchProvider === 'duckduckgo' || searchProvider === 'bing'
+        ? searchProvider
+        : 'bing',
     apiKey: searchApiKey || undefined,
     maxResults,
     timeoutMs,
@@ -325,12 +328,12 @@ export function appConfigToUserConfig(cfg: AppConfig): UserConfig {
   if (cfg.fallback && cfg.fallback.model) out.fallback = cfg.fallback;
   // 手写 TF-IDF 是默认值，无需落盘；只有切换到 API 嵌入器时才持久化，避免冗余配置
   if (cfg.embedder && cfg.embedder.type !== 'tfidf') out.embedder = cfg.embedder;
-  // Phase 18：仅当搜索配置偏离默认（duckduckgo / maxResults=5 / timeoutMs=15000 / 无 key）时才落盘，
+  // Phase 18 + Phase 20：仅当搜索配置偏离默认（bing / maxResults=5 / timeoutMs=15000 / 无 key）时才落盘，
   // 避免把零 key 默认配置写进文件造成冗余。注意先判「已显式设置」，未设置字段（undefined）不算偏离。
   const s = cfg.search;
   if (
     s &&
-    (s.provider !== 'duckduckgo' ||
+    (s.provider !== 'bing' ||
       s.apiKey ||
       (s.maxResults !== undefined && s.maxResults !== 5) ||
       (s.timeoutMs !== undefined && s.timeoutMs !== 15_000))

@@ -80,7 +80,7 @@ program
   .option('--plan', '规划模式：只生成执行计划、不执行（搭配 -p 单次使用）')
   .option('--no-auto-context', '关闭每轮自动注入记忆/知识库上下文（Phase 16，默认开启）')
   .option('--no-statusline', '关闭底部状态栏（statusline，默认开启）')
-  .option('--search-provider <provider>', '联网搜索服务：tavily | duckduckgo（默认 duckduckgo，零 key）')
+  .option('--search-provider <provider>', '联网搜索服务：bing | duckduckgo | tavily（默认 bing，零 key）')
   .option('--search-key <key>', '联网搜索服务 API key（tavily 需要；可用 AGENTCLI_SEARCH_API_KEY 注入）')
   .option('--search-max-results <n>', '联网搜索单次返回结果数上限（默认 5）')
   .option('--context-window <n>', '模型上下文窗口 token 数（不传则由 provider/model 推导默认）')
@@ -154,7 +154,7 @@ program
     const model = createChatModel(config);
     const tools = createToolRegistry();
 
-    // Phase 18：联网搜索工具（web_search / web_fetch）注册进同一张表。
+    // Phase 18 + Phase 20：联网搜索工具（web_search / web_fetch）注册进同一张表。
     // 配置了 tavily 但没给 key 时降级到零 key 的 DuckDuckGo，并提示一次。
     if (config.search.provider === 'tavily' && !config.search.apiKey) {
       console.warn('[web] 未配置搜索 API key，已降级使用 DuckDuckGo（零 key）搜索；如需更高质量可设置 AGENTCLI_SEARCH_API_KEY。');

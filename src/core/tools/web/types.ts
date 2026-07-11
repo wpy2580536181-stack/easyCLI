@@ -20,7 +20,7 @@ export interface SearchOptions {
 
 /** 搜索服务抽象；所有 Provider 实现同一接口，工具外壳只依赖它 */
 export interface SearchProvider {
-  /** 实现名：'tavily' | 'duckduckgo'，用于日志/调试 */
+  /** 实现名：'tavily' | 'duckduckgo' | 'bing' | 'fallback'，用于日志/调试 */
   readonly name: string;
   search(query: string, opts: SearchOptions): Promise<SearchResult[]>;
 }

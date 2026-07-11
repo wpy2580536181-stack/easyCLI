@@ -176,6 +176,7 @@ describe('Phase 8 配置持久化（store + 文件层）', () => {
       model: 'm',
       mcpServers: [{ command: 'c' }],
       ragPaths: ['./d'],
+      search: { provider: 'duckduckgo' },
     });
   });
 

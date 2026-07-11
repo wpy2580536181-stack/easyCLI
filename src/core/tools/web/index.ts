@@ -12,7 +12,7 @@ import type { ToolContext, ToolDef, ToolResult } from '../../chatmodel/types';
 import type { SearchConfig } from '../../../config';
 import { classifyFetchError } from '../../chatmodel/errors';
 import { createSearchProvider } from './factory';
-import { combinedSignal } from './fetch-util';
+import { combinedSignal, fetchViaProxy } from './fetch-util';
 
 function ok(output: string): ToolResult {
   return { ok: true, output };
@@ -79,10 +79,12 @@ export function getWebTools(cfg: SearchConfig): ToolDef[] {
         const maxLength =
           typeof args.maxLength === 'number' && args.maxLength > 0 ? args.maxLength : 10_000;
         try {
-          const res = await fetch(url, {
-            headers: { 'User-Agent': 'agent-cli/0.1' },
-            signal: combinedSignal(ctx.signal, timeoutMs),
-          });
+          const res = await fetchViaProxy(
+            url,
+            { headers: { 'User-Agent': 'agent-cli/0.1' } },
+            combinedSignal(ctx.signal, timeoutMs),
+            '网页抓取',
+          );
           if (!res.ok) {
             const hint = res.status === 429 ? '（目标站点限流）' : '';
             return fail(`HTTP ${res.status}: ${res.statusText} ${hint}`.trim());

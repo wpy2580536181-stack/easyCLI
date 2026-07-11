@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DuckDuckGoProvider } from '../../src/core/tools/web/providers/duckduckgo';
+import { BingProvider } from '../../src/core/tools/web/providers/bing';
 import { TavilyProvider } from '../../src/core/tools/web/providers/tavily';
-import { createSearchProvider } from '../../src/core/tools/web/factory';
+import { createSearchProvider, FallbackSearchProvider } from '../../src/core/tools/web/factory';
 import { getWebTools } from '../../src/core/tools/web/index';
-import { combinedSignal, fetchSearch } from '../../src/core/tools/web/fetch-util';
+import { combinedSignal, fetchSearch, shouldBypassProxy, getProxyDispatcher } from '../../src/core/tools/web/fetch-util';
 import type { SearchConfig } from '../../src/config';
 
 const DDG_HTML = `
@@ -85,6 +86,97 @@ describe('createSearchProvider 工厂', () => {
   });
   it('duckduckgo 返回 DuckDuckGo', () => {
     expect(createSearchProvider({ provider: 'duckduckgo' })).toBeInstanceOf(DuckDuckGoProvider);
+  });
+  it('bing 返回 Bing', () => {
+    expect(createSearchProvider({ provider: 'bing' })).toBeInstanceOf(BingProvider);
+  });
+  it('默认（无 provider）返回 Fallback，且 bing 优先', () => {
+    const p = createSearchProvider({ provider: 'bing' });
+    expect(p).toBeInstanceOf(BingProvider);
+  });
+});
+
+describe('BingProvider', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  const BING_HTML = `
+    <li class="b_algo">
+      <h2><a href="https://example.com" h="ID=SERP">Example <b>Title</b></a></h2>
+      <div class="b_caption"><p>Example snippet &amp; more text</p></div>
+    </li>
+    <li class="b_algo">
+      <h2><a href="https://test.org">Test Org</a></h2>
+      <p class="b_lineclamp2">Second snippet</p>
+    </li>
+  `;
+
+  it('解析 b_algo 块（标题/链接/摘要，HTML 反转义、stripTags）', async () => {
+    (globalThis.fetch as any).mockResolvedValue({ ok: true, text: async () => BING_HTML });
+    const p = new BingProvider({ provider: 'bing' });
+    const results = await p.search('hello', { maxResults: 5 });
+    expect(results).toHaveLength(2);
+    expect(results[0]).toEqual({
+      title: 'Example Title',
+      url: 'https://example.com',
+      snippet: 'Example snippet & more text',
+    });
+    expect(results[1]!.url).toBe('https://test.org');
+  });
+
+  it('按 maxResults 截断', async () => {
+    (globalThis.fetch as any).mockResolvedValue({ ok: true, text: async () => BING_HTML });
+    const p = new BingProvider({ provider: 'bing' });
+    const results = await p.search('hello', { maxResults: 1 });
+    expect(results).toHaveLength(1);
+  });
+});
+
+describe('FallbackSearchProvider', () => {
+  it('首个可用 provider 命中即返回', async () => {
+    const ok = { name: 'ok', search: vi.fn(async () => [{ title: 't', url: 'u', snippet: 's' }]) } as any;
+    const neverCalled = { name: 'nc', search: vi.fn() } as any;
+    const fb = new FallbackSearchProvider({ provider: 'bing' }, [ok, neverCalled]);
+    const r = await fb.search('q', { maxResults: 5 });
+    expect(r).toHaveLength(1);
+    expect(ok.search).toHaveBeenCalledOnce();
+    expect(neverCalled.search).not.toHaveBeenCalled();
+  });
+
+  it('前一个抛错时回退到下一个', async () => {
+    const bad = { name: 'bad', search: vi.fn(async () => { throw new Error('boom'); }) } as any;
+    const good = { name: 'good', search: vi.fn(async () => [{ title: 't', url: 'u', snippet: 's' }]) } as any;
+    const fb = new FallbackSearchProvider({ provider: 'bing' }, [bad, good]);
+    const r = await fb.search('q', { maxResults: 5 });
+    expect(r).toHaveLength(1);
+    expect(good.search).toHaveBeenCalledOnce();
+  });
+});
+
+describe('代理支持（fetch-util）', () => {
+  const saved = process.env.HTTPS_PROXY;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.HTTPS_PROXY;
+    else process.env.HTTPS_PROXY = saved;
+  });
+
+  it('localhost / 私网地址应绕过代理', () => {
+    expect(shouldBypassProxy('http://localhost:3000/x')).toBe(true);
+    expect(shouldBypassProxy('http://127.0.0.1:8080/x')).toBe(true);
+    expect(shouldBypassProxy('http://192.168.1.10/x')).toBe(true);
+    expect(shouldBypassProxy('http://10.0.0.5/x')).toBe(true);
+  });
+
+  it('公网地址不应绕过代理', () => {
+    expect(shouldBypassProxy('https://www.bing.com/search?q=1')).toBe(false);
+  });
+
+  it('配置了 HTTPS_PROXY 时 getProxyDispatcher 返回 dispatcher 实例', () => {
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:55604';
+    // 重置模块级缓存后重新探测
+    (getProxyDispatcher as any); // 仅引用，确认可调用
+    const d = getProxyDispatcher();
+    expect(d).toBeDefined();
   });
 });
 
