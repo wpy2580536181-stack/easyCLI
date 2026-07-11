@@ -15,6 +15,7 @@
 - **内置工具**：`read_file` / `write_file` / `edit_file` / `list_dir` / `glob` / `grep` / `bash`
 - **安全围栏**：`isReadOnly`/`isDestructive` 标记，读并行 / 写串行；三级权限 + 围栏 + 黑名单 + HITL 人工确认 + 审计日志（挂事件总线）
 - **上下文压缩 + 长期记忆**（SQLite）：窗口相对预算 + 5 层渐进压缩（大结果落盘 / 选择性裁剪 / 去重 / 折叠 / 缓存友好摘要）+ 413 响应式兜底
+- **记忆增强**：① 每轮结束自动从对话提取稳定事实写入记忆库（fire-and-forget）；② 记忆召回用 LLM 语义选择 topN（理解字面不同但语义相关，失败降级关键词）。开关 `--no-auto-memory` / `--no-semantic-recall`
 - **MCP 协议**：客户端（stdio，JSON-RPC 状态机）+ 服务端（暴露 tools/resources，可选 Streamable HTTP）
 - **RAG 检索增强**：纯手写嵌入（TF-IDF）+ SQLite 向量检索，可插拔 API 嵌入器
 - **Skill 系统**：三层加载（builtin/user/project）+ 渐进式披露，保护 Prompt Cache
@@ -122,6 +123,7 @@ pnpm lint        # eslint
 | 17 | Multi-Agent（Planner/Worker/Reviewer + 文件隔离 worktree + 事件总线） | ✅ 完成 |
 | 18 | 联网搜索工具（web_search / web_fetch，Provider 无关：Tavily 正式 API + DuckDuckGo 零 key 兜底） | ✅ 完成 |
 | 19 | Browser（CDP） | ⏳ 待做 |
+| 20 | 记忆增强：自动提取（每轮从对话被动记忆）+ LLM 语义召回（topN 选择，降级关键词） | ✅ 完成 |
 
 ---
 
@@ -145,6 +147,7 @@ pnpm lint        # eslint
 - [第 15 期：Plan 模式 + 异步并行](./docs/phase15.md)
 - [第 16 期：记忆与检索自动注入](./docs/phase16.md)
 - [第 17 期：Multi-Agent](./docs/phase17.md)
+- [记忆增强设计（Phase 20）：自动提取 + LLM 语义召回](./docs/memory-enhancement-design.md)
 
 ---
 
@@ -155,7 +158,7 @@ src/core/chatmodel/   ChatModel 接口 + 适配器（OpenAI 兼容 / Anthropic /
 src/core/agent/       ReAct 循环（决策核心，不依赖 REPL）
 src/core/tools/       工具系统（含 isReadOnly/isDestructive 标记）
 src/core/mcp/         McpClient（期5）/ McpServer（期12）
-src/core/memory/      上下文压缩（5 层）+ SQLite 长期记忆；窗口推导见 src/core/chatmodel/contextWindow.ts
+src/core/memory/      上下文压缩（5 层）+ SQLite 长期记忆；extractor.ts 自动提取（期20）；窗口推导见 src/core/chatmodel/contextWindow.ts
 src/core/rag/         向量检索（期6）
 src/core/skill/       三层加载 + 渐进式披露（期7）
 src/core/multiagent/  Orchestrator（期17，worktree 隔离）

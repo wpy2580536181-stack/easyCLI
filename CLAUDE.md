@@ -123,6 +123,7 @@ pnpm typecheck      # tsc --noEmit
 | 17 | Multi-Agent（Planner/Worker/Reviewer + **文件隔离 worktree** + 事件总线落地） | ✅ 已完成 |
 | 18 | 联网搜索工具（web_search / web_fetch，Provider 无关：Tavily 正式 API + DuckDuckGo 零 key 兜底；配置纳入 AppConfig.search） | ✅ 完成 |
 | 19 | Browser（CDP） | 待做 |
+| 20 | **记忆增强**：① 每轮结束自动从对话提取稳定事实写入记忆库（fire-and-forget，`extractor.ts`）；② 记忆召回改 LLM 语义选择 topN（side-query，失败降级关键词，`autoinject.ts`）。对标 s09 / mini-claude 第8章 | ✅ 已完成（设计见 `docs/memory-enhancement-design.md`） |
 
 > **贯穿性关注点**（不单独占期，但每期实现时遵守，对应决策 7–10）：① 上下文压缩；② 工具并发模型（只读并行/写串行）；③ 事件总线/钩子（审计与可观测性挂载点）；④ 错误恢复（上下文超限自动压缩、max-tokens 续写、API 错误指数退避、fallback model）。这些在 Phase 1 定义类型、Phase 3 写工具时就要留接口。
 
@@ -147,7 +148,7 @@ src/core/agent/       ReAct 循环（期2，决策核心，不依赖 REPL）
 src/core/events/      事件总线/钩子（决策9，期3落地）
 src/core/tools/       工具系统（期3，含 isReadOnly/isDestructive 标记）
 src/core/mcp/         McpClient（期5）/McpServer（期12）
-src/core/memory/      上下文压缩 + SQLite 长期记忆（期4）
+src/core/memory/      上下文压缩 + SQLite 长期记忆（期4）；extractor.ts 自动提取（期20）
 src/core/rag/         向量检索（期6）
 src/core/skill/       三层加载 + 渐进式披露（期7）
 src/core/multiagent/  Orchestrator（期8，worktree 隔离）
@@ -212,6 +213,7 @@ flowchart TD
 - **上下文窗口与压缩预算**：预算不再硬编码（旧为绝对 8000），改为「窗口相对」——`defaultContextWindow(provider, model)` 按 provider/model 推导默认窗口（anthropic 200k / openai 128k / ollama 32k，deepseek 64k），`resolveCompressBudget(win) = win - max(maxOut,16384) - 20000`（下限 8000）；用户可用 `--context-window` 覆盖。→ 落地：压缩后续增强（`src/core/chatmodel/contextWindow.ts`）。
 - **Prompt Cache 命中率**：Skill 渐进式披露、压缩后保留最近若干文件——直接降成本、降延迟；**L4 摘要特意「缓存友好」**：仅在 turn boundary 触发、按中间内容哈希缓存，使压缩副本确定性、不每轮重写缓存前缀（否则会把 P0 前缀缓存命中率打回 0%）。→ 落地：Skill（期7）、压缩（期4 → 后续增强护缓存）。
 - **5 层渐进压缩**：L0.5 落盘（>30KB 工具结果写磁盘 + 预览标记，可 re-read 恢复）→ L1 选择性裁剪（截旧工具/助手输出，保留最近 3 条 tool 结果完整）→ L2 去重（相邻相同工具结果）→ L3 折叠（中间工具结果换占位，保留 `tool_call` 配对）→ L4 摘要（模型把中间轮压成一条；仅 turn boundary + 哈希缓存；连续失败 3 次熔断转纯折叠）。每级都可能释放足够空间，不必走到最后一级。→ 落地：期4 → 后续增强（L0.5 / L1 选择性 / L4 护缓存）。
+- **记忆增强（Phase 20）**：① **自动提取**——每轮结束（`runTurn`/`runPlan` 返回后，fire-and-forget 不阻塞）取近 10 条对话发给模型，提取 `user/feedback/project/reference` 类稳定事实写入记忆库（`source='auto'`），含多道门控（本轮已显式 `remember` 则跳过 / 最近 user 文本过短跳过 / 节流 / 总开关）与二次去重；② **LLM 语义召回**——`buildAutoContext` 在候选池 >8 时把记忆清单（name+description）发给模型做 side-query 选 topN 注入，理解语义相关但字面不同的表达，失败必降级到关键词 `LIKE`（绝不阻断主对话、不破坏 P0 前缀缓存）。→ 落地：`src/core/memory/extractor.ts`、`src/core/context/autoinject.ts`；设计见 `docs/memory-enhancement-design.md`。开关：`--no-auto-memory` / `--no-semantic-recall`。
 
 ### 8.2 性能与体验
 - **工具预执行**：模型还在流式输出时就解析并执行 `tool_calls`，把约 1s 的工具延迟藏进模型思考窗口。当前 `complete()` 等全流结束才返回，未来可在流式阶段并行预执行只读工具。→ 升级期：期3/期10。
