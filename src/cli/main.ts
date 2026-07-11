@@ -26,6 +26,7 @@ import { createEmbedder } from '../core/rag/embedder';
 import { SkillLoader, getSkillTools, type SkillSource } from '../core/skill';
 import { getWebTools } from '../core/tools/web';
 import { TodoStore, getPlanningTools } from '../core/tools/planning';
+import { TaskStore, getTaskTools } from '../core/tasks';
 import { getSubagentTools } from '../core/multiagent/subagent';
 import type { CompressOptions } from '../core/memory/compressor';
 import { createCounter } from '../core/observability/tokenizer';
@@ -205,6 +206,11 @@ program
     // 与 memory/skill 同级，走同一 registerAll 装配；工具本身只读（无代码库副作用）。
     const todoStore = new TodoStore();
     tools.registerAll(getPlanningTools(todoStore));
+
+    // Phase 24：Task System（对齐 s12）——可持久化到 .tasks/ 的依赖任务图，与 todo_write（s05）并存：
+    // 任务系统用于「有依赖、需跨会话恢复」的多步任务；todo_write 用于当前会话内的执行清单。
+    const taskStore = new TaskStore(process.cwd());
+    tools.registerAll(getTaskTools(taskStore));
 
     // Phase 5：连接并注册 MCP Server 工具（与内置工具进同一张表）
     const mcpClients: McpClient[] = await connectMcpServers(

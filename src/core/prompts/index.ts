@@ -76,6 +76,16 @@ const toolPolicyBlock = (toolNames: string[]): string => {
         '但不想让冗长过程冲淡主对话注意力的子任务。琐碎的单步操作无需派发子 Agent。',
     );
   }
+  if (toolNames.some((n) => n.startsWith('task_'))) {
+    parts.push(
+      '已提供任务系统（task_create / task_list / task_get / task_claim / task_complete）：当任务之间「有先后依赖、' +
+        '或需要跨会话 / 上下文压缩后恢复进度」时，用 task_create 把大目标拆成有 id、可声明 blockedBy 依赖的任务；' +
+        '开始前用 task_claim 认领（依赖未完成会被拒绝），完成后用 task_complete 标记完成并自动解锁下游；' +
+        'task_list 看全貌、task_get 取完整细节。任务持久化在 .tasks/，进程重启后仍可恢复。' +
+        '与 todo_write 的区别：todo_write 是当前会话内的执行清单（内存，退出即清空），任务系统是可持久化、有依赖图的独立系统——' +
+        '有依赖或需恢复的多步任务优先用任务系统。',
+    );
+  }
   return parts.join('');
 };
 
