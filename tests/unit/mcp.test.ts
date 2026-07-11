@@ -85,7 +85,7 @@ describe('McpClient：tools/list + tools/call', () => {
     expect(r.output).toBe('故意失败');
   });
 
-  it('未知工具触发 JSON-RPC 协议错误并抛异常', async () => {
+  it('未知工具触发协议错误（-32601）并归一化为「MCP 错误」文案', async () => {
     const c = spawnClient(FAKE);
     await c.connect();
     await expect(c.callTool('mcp_unknown', {})).rejects.toThrow(/MCP 错误 -32601/);
@@ -101,11 +101,15 @@ describe('McpClient：tools/list + tools/call', () => {
   it('disconnect 时让在途 callTool 立即失败，不卡到超时', async () => {
     const c = spawnClient(LAZY, { timeoutMs: 30_000 });
     await c.connect();
-    // 发起一个会「卡死」的调用，但不 await
+    // 发起一个会「卡死」的调用，但不 await。
+    // 注意：必须先挂上 .rejects 处理器，再 disconnect——否则 pending 在 disconnect
+    // 中途 reject 时还没人接管，会被 Node 当成未处理 rejection。
     const pending = c.callTool('mcp_echo', { text: 'x' });
+    const assertion = expect(pending).rejects.toThrow(/连接已关闭/);
     const start = Date.now();
     await c.disconnect(); // 关闭应让在途请求立即失败
-    await expect(pending).rejects.toThrow(/连接已关闭/);
+    // SDK 在断开时 abort 在途请求，门面归一化为「连接已关闭」
+    await assertion;
     expect(Date.now() - start).toBeLessThan(10_000); // 远小于 timeoutMs(30s)
   });
 });

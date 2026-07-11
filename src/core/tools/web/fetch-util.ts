@@ -25,6 +25,7 @@ export function combinedSignal(userSignal: AbortSignal | undefined, ms: number):
 // ───────────────────────────── 代理支持 ─────────────────────────────
 
 let cachedDispatcher: Dispatcher | undefined | null = null; // null = 尚未探测；undefined = 无代理
+let cachedProxyUrl: string | undefined | null = null; // 上次探测所用的代理 URL（用于感知 env 变化）
 
 function resolveProxyUrl(): string | undefined {
   return (
@@ -36,10 +37,13 @@ function resolveProxyUrl(): string | undefined {
   );
 }
 
-/** 返回缓存的代理 dispatcher（未配置代理则返回 undefined）。创建失败也安全降级为 undefined。 */
+/** 返回缓存的代理 dispatcher（未配置代理则返回 undefined）。创建失败也安全降级为 undefined。
+ *  缓存按「代理 URL」失效：env 可能在运行时变化（进程启动后才注入代理），若探测时的 URL
+ *  与当前不一致则重新探测，避免「启动后才设 HTTPS_PROXY 却始终走直连」的隐性失效。 */
 export function getProxyDispatcher(): Dispatcher | undefined {
-  if (cachedDispatcher === null) {
-    const url = resolveProxyUrl();
+  const url = resolveProxyUrl();
+  if (cachedDispatcher === null || cachedProxyUrl !== url) {
+    cachedProxyUrl = url;
     try {
       cachedDispatcher = url ? new ProxyAgent(url) : undefined;
     } catch {

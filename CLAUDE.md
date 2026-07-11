@@ -63,7 +63,8 @@
 - **构建**：tsup（esbuild），产物到 `dist/`。
 - **测试**：vitest，单测放 `tests/unit/`，每模块配回归测试。
 - **类型检查**：`tsc --noEmit`。
-- **依赖克制**：仅引入必要依赖——`commander`（CLI）、`chalk`（着色）、`zod`（schema 校验）；MCP 客户端、SSE 解析等**一律手写，不引官方 SDK**，以吃透原理。
+- **依赖克制**：仅引入必要依赖——`commander`（CLI）、`chalk`（着色）、`zod`（schema 校验）。其余协议/解析层**原则上从零手写，不引官方 SDK**，以吃透原理。
+- **MCP 例外（已批准）**：MCP 客户端与服务端**基于官方 `@modelcontextprotocol/sdk`**（手写 JSON-RPC 层先作为学习产物，后迁到 SDK 以获得生产级健壮性）。详见 `docs/mcp-sdk-migration-plan.md` 与 `docs/phase5.md`/`docs/phase12.md`。迁移前提是「对外契约不变」——`McpClient`/`McpServer` 门面 + `ToolDef` 归一化 + CLI/配置零改动。
 - **忽略项**：`node_modules`、`dist`、`.env` 已在 `.gitignore`，**密钥（API Key）绝不入库**。
 
 常用命令：
@@ -133,7 +134,7 @@ pnpm typecheck      # tsc --noEmit
 
 - **`ChatModel` 归一化接口**（`src/core/chatmodel/types.ts`）：`complete(opts)` 返回 `{ content, toolCalls }`，屏蔽厂商差异。新增模型 = 新增适配器，上层零改动。**多模型适配的核心在 Phase 1 已就位**，Phase 9 仅补 Anthropic/Ollama 适配器。
 - **工具统一契约** `ToolDef`：内置工具与 MCP 工具统一进同一 `ToolRegistry`；`ToolDef` 自带 `isReadOnly`/`isDestructive` 标记（决策8），执行器据此**只读并行、写串行**；后续期把 `execute` 补进 `ToolDef`。
-- **MCP 客户端**：`child_process.spawn` + JSON-RPC 2.0（`initialize`→`tools/list`→`tools/call`），stdio 先于 HTTP；维护连接状态机。
+- **MCP 客户端/服务端**：基于官方 `@modelcontextprotocol/sdk`（`Client`/`Server` + SDK 传输）；`McpClient`/`McpServer` 为薄门面，保留 `connect/listTools/callTool/disconnect`、状态机、`ToolDef` 归一化契约。stdio 优先，服务端可选 Streamable HTTP。
 - **配置**：`CLI 参数 > 环境变量 > 配置文件 > 默认值`，空字符串视为未设置（`firstNonEmpty`，高优先级排在候选最前）；文件为「持久化默认」层，启动即生效但可被单次旗标/环境变量临时覆盖（详见 `docs/phase8.md` §4）。
 - **权限/安全**：三级模型 + 路径围栏/命令黑名单硬 gate；写操作/bash 默认 `ask`；审计日志挂事件总线。
 - **事件总线/钩子（预留）**：工具执行、错误、压缩等关键节点发事件（`onToolCall`/`onError`/`onCompact`），审计与可观测性统一挂载（决策9），避免后期推翻结构。

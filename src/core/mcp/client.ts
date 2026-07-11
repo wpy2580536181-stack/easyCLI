@@ -1,16 +1,16 @@
-// Phase 5：MCP 客户端（stdio + JSON-RPC 2.0），纯手写，不引官方 SDK。
+// Phase 5：MCP 客户端 —— 基于官方 @modelcontextprotocol/sdk 的 Client 实现。
 //
 // 设计要点：
-// 1. 传输层：child_process.spawn 拉起 MCP Server，stdin/stdout 走「换行分隔的 JSON-RPC」；
-//    这是 MCP stdio 约定的事实标准（每条消息一行 JSON，比 HTTP 的 Content-Length 头更轻）。
-// 2. 连接状态机：disconnected → initializing → ready → closed，
-//    未就绪时禁止 listTools/callTool，避免协议层级错乱。
-// 3. 握手：initialize（协商 protocolVersion）→ 发送 notifications/initialized → ready。
-// 4. 超时：initialize 用 connectTimeoutMs，tools/call 用 timeoutMs；静默/假死服务端必须能超时失败。
-// 5. 工具归一化：MCP 工具转成统一 ToolDef，execute 内部转调 tools/call，
-//    从而与内置工具走同一套执行器、权限、审计、事件总线（安全默认一致）。
+// 1. 传输层：底层用 SDK 的 StdioClientTransport 拉起 MCP Server 子进程，
+//    JSON-RPC 配对、请求/响应 id 匹配、协议版本协商等全部由 SDK 负责。
+// 2. 门面（facade）：McpClient 在 SDK Client 之上保留「连接状态机」与对外方法
+//    （connect/listTools/callTool/disconnect），以最小化调用方与测试改动。
+// 3. 超时：connectTimeoutMs 用于握手、timeoutMs 用于 tools/call，超时即失败不 hang。
+// 4. 工具归一化：mcpToolsToToolDefs 把 MCP 工具转成统一 ToolDef，execute 内部转调
+//    client.callTool，从而与内置工具走同一套执行器、权限、审计、事件总线。
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { ToolDef } from '../chatmodel/types';
 
 export type McpState = 'disconnected' | 'initializing' | 'ready' | 'closed';
@@ -44,43 +44,25 @@ export interface McpTool {
   };
 }
 
-// ── JSON-RPC 2.0 报文类型（手写，不依赖 SDK） ──────────────
-interface JsonRpcRequest {
-  jsonrpc: '2.0';
-  id: number;
-  method: string;
-  params?: unknown;
+interface Registrar {
+  registerAll(tools: ToolDef[]): void;
 }
-interface JsonRpcResponse {
-  jsonrpc: '2.0';
-  id: number;
-  result?: unknown;
-  error?: { code: number; message: string };
-}
-interface Pending {
-  resolve: (r: unknown) => void;
-  reject: (e: Error) => void;
-  timer?: ReturnType<typeof setTimeout>;
-}
-
-const SUPPORTED_PROTOCOL = '2024-11-05';
 
 /**
- * 手写 MCP 客户端：通过 stdio 与单个 MCP Server 通信。
- * 对外暴露 connect / listTools / callTool / disconnect，
- * 内部维护请求-响应配对（按 id 匹配）与连接状态机。
+ * MCP 客户端门面：内部持有一个 SDK Client + StdioClientTransport，
+ * 对外暴露 connect / listTools / callTool / disconnect，并维护连接状态机。
  */
 export class McpClient {
   private state: McpState = 'disconnected';
-  private child: ChildProcess | undefined;
-  private readonly pending = new Map<number, Pending>();
-  private nextId = 1;
-  private buffer = '';
-  private stderrChunks: string[] = [];
-  private closedByUs = false;
+  private sdk: Client;
+  private transport?: StdioClientTransport;
+  private readonly inFlight = new Set<AbortController>();
 
   private readonly timeoutMs: number;
   private readonly connectTimeoutMs: number;
+
+  /** 已协商的协议版本（initialize 成功后才有意义） */
+  negotiatedProtocol?: string;
 
   constructor(
     private readonly spec: McpServerSpec,
@@ -88,14 +70,12 @@ export class McpClient {
   ) {
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.connectTimeoutMs = opts.connectTimeoutMs ?? 15_000;
+    this.sdk = new Client({ name: 'easyCLI', version: '0.5.0' });
   }
 
   getState(): McpState {
     return this.state;
   }
-
-  /** 已协商的协议版本（initialize 成功后才有意义） */
-  negotiatedProtocol?: string;
 
   // ── 生命周期：connect ────────────────────────────────
   async connect(): Promise<void> {
@@ -104,48 +84,43 @@ export class McpClient {
     }
     this.state = 'initializing';
 
-    const child = spawn(this.spec.command, this.spec.args ?? [], {
+    const transport = new StdioClientTransport({
+      command: this.spec.command,
+      args: this.spec.args ?? [],
+      env: { ...process.env, ...(this.spec.env ?? {}) } as Record<string, string>,
       cwd: this.spec.cwd,
-      env: { ...process.env, ...(this.spec.env ?? {}) },
-      stdio: ['pipe', 'pipe', 'pipe'],
     });
-    this.child = child;
+    this.transport = transport;
 
-    child.on('error', (err) => this.failAll(new Error(`子进程启动失败: ${err.message}`)));
-    child.on('exit', (code, signal) => {
-      if (!this.closedByUs) {
-        this.failAll(
-          new Error(`MCP 子进程意外退出（code=${code ?? 'null'}, signal=${signal ?? 'null'}）`),
-        );
-      }
-      this.state = 'closed';
-    });
-    child.stderr?.on('data', (d: Buffer) => {
-      this.stderrChunks.push(d.toString('utf8'));
-      if (this.stderrChunks.length > 50) this.stderrChunks.shift();
-    });
+    // SDK 在 initialize 协商成功后会调用 transport.setProtocolVersion(negotiated)。
+    // 但 Stdio / InMemory 传输默认未实现该方法，协商版本会被丢弃。这里补一个拦截器，
+    // 把协商出的协议版本捕获到门面，作为 negotiatedProtocol 对外暴露（替代手写版的固定值）。
+    const negotiated: { version?: string } = {};
+    const t = transport as unknown as { setProtocolVersion?: (v: string) => void };
+    const origSetProtocolVersion = t.setProtocolVersion?.bind(transport);
+    t.setProtocolVersion = (v: string): void => {
+      negotiated.version = v;
+      origSetProtocolVersion?.(v);
+    };
 
-    // 关键：先挂好 stdout 解析，再发第一条请求，防止丢消息
-    child.stdout?.on('data', (d: Buffer) => this.onStdout(d.toString('utf8')));
+    const connectPromise = this.sdk.connect(transport);
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`MCP 连接超时（>${this.connectTimeoutMs}ms 无响应）`)),
+        this.connectTimeoutMs,
+      ),
+    );
 
     try {
-      const init = (await this.request(
-        'initialize',
-        {
-          protocolVersion: SUPPORTED_PROTOCOL,
-          capabilities: {},
-          clientInfo: { name: 'easyCLI', version: '0.5.0' },
-        },
-        this.connectTimeoutMs,
-      )) as { protocolVersion?: string; capabilities?: Record<string, unknown> };
-
-      this.negotiatedProtocol = init.protocolVersion;
-      // 发送 initialized 通知（无 id，不期待响应），正式进入 ready
-      this.notify('notifications/initialized', {});
+      await Promise.race([connectPromise, timeout]);
+      // 协商出的协议版本（如 fake 服务端为 2024-11-05，SDK 服务端为最新版）
+      this.negotiatedProtocol = negotiated.version;
       this.state = 'ready';
     } catch (e) {
       this.state = 'closed';
-      this.killChild();
+      // 静默/假死服务端必须被回收，避免子进程泄漏
+      await transport.close().catch(() => undefined);
+      connectPromise.catch(() => undefined); // 防止 connect 后续 reject 成未处理异常
       throw e;
     }
   }
@@ -153,31 +128,40 @@ export class McpClient {
   // ── tools/list ───────────────────────────────────────
   async listTools(): Promise<McpTool[]> {
     this.requireReady();
-    const resp = (await this.request('tools/list', {}, this.timeoutMs)) as {
-      tools?: McpTool[];
-    };
-    return resp.tools ?? [];
+    const { tools } = await this.sdk.listTools();
+    return tools.map((t) => ({
+      name: t.name,
+      description: t.description ?? '',
+      inputSchema: t.inputSchema as Record<string, unknown>,
+      annotations: t.annotations as McpTool['annotations'],
+    }));
   }
 
   // ── tools/call ───────────────────────────────────────
   /** 调用一个 MCP 工具，返回统一 ToolResult（ok/output）。MCP 错误侧转为 ok:false 的结果。 */
-  async callTool(name: string, args: Record<string, unknown>): Promise<{ ok: boolean; output: string }> {
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ ok: boolean; output: string }> {
     this.requireReady();
-    const resp = (await this.request(
-      'tools/call',
-      { name, arguments: args },
-      this.timeoutMs,
-    )) as {
-      content?: Array<{ type: string; text?: string }>;
-      isError?: boolean;
-      structuredContent?: unknown;
-    };
-
-    const blocks = resp.content ?? [];
-    const text = blocks
-      .map((c) => (c.type === 'text' ? (c.text ?? '') : JSON.stringify(c)))
-      .join('\n');
-    return { ok: !resp.isError, output: text };
+    const ac = new AbortController();
+    this.inFlight.add(ac);
+    try {
+      const result = await this.withTimeout(
+        this.sdk.callTool({ name, arguments: args }, undefined, { signal: ac.signal }),
+        this.timeoutMs,
+        'MCP 请求超时',
+      );
+      const blocks = (result.content ?? []) as Array<{ type: string; text?: string }>;
+      const text = blocks
+        .map((c) => (c.type === 'text' ? (c.text ?? '') : JSON.stringify(c)))
+        .join('\n');
+      return { ok: !result.isError, output: text };
+    } catch (e) {
+      throw this.normalizeError(e);
+    } finally {
+      this.inFlight.delete(ac);
+    }
   }
 
   // ── 生命周期：disconnect ─────────────────────────────
@@ -186,104 +170,58 @@ export class McpClient {
       this.state = 'closed';
       return;
     }
-    this.closedByUs = true;
-    // 仅当子进程还活着才发 shutdown；connect 超时后子进程可能已被 kill（child 置空），直接跳过快路径
-    if (this.child && !this.child.killed) {
-      try {
-        // shutdown 期待响应，但给短超时，避免服务端卡住时 hang
-        await this.request('shutdown', {}, 2000).catch(() => undefined);
-      } catch {
-        /* 服务端正不正常回 shutdown 都继续退出流程 */
-      }
-    }
-    this.notify('exit', {});
-    this.killChild();
-    // 让任何在途请求立即失败，而不是卡到各自超时
-    this.failAll(new Error('MCP 连接已关闭'));
     this.state = 'closed';
+    // 让任何在途请求立即失败，而不是卡到各自超时
+    for (const ac of this.inFlight) ac.abort();
+    this.inFlight.clear();
+    await this.sdk.close().catch(() => undefined);
   }
 
-  // ── 内部：请求/通知/响应分发 ────────────────────────
-  private request(
-    method: string,
-    params: unknown,
-    timeoutMs: number,
-  ): Promise<unknown> {
-    const id = this.nextId++;
-    const msg: JsonRpcRequest = { jsonrpc: '2.0', id, method, params };
-    return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`MCP 请求超时（${method}，>${timeoutMs}ms 无响应）`));
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      this.write(msg);
+  // ── 内部：超时 / 错误归一化 / 前置校验 ────────────────
+  private withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(`${label}（>${ms}ms 无响应）`)), ms);
+      p.then(
+        (v) => {
+          clearTimeout(t);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(t);
+          reject(e);
+        },
+      );
     });
   }
 
-  private notify(method: string, params: unknown): void {
-    this.write({ jsonrpc: '2.0', method, params });
-  }
-
-  private write(obj: unknown): void {
-    try {
-      this.child?.stdin?.write(JSON.stringify(obj) + '\n');
-    } catch {
-      /* 进程已退出时写 stdin 可能抛 EPIPE，忽略 */
+  private normalizeError(e: unknown): Error {
+    const err = e as { code?: unknown; name?: string; message?: string };
+    // 连接关闭 / 中断（含我们主动 disconnect 时 abort 在途请求）→ 旧文案「连接已关闭」。
+    // SDK 在断开时会把中断包装成 code=-32001 的 McpError（message 含 AbortError）。
+    const aborted =
+      err.name === 'AbortError' ||
+      (typeof err.message === 'string' && /abort/i.test(err.message)) ||
+      err.code === -32001;
+    if (aborted) {
+      return new Error('MCP 连接已关闭');
     }
-  }
-
-  private onStdout(chunk: string): void {
-    this.buffer += chunk;
-    let i: number;
-    while ((i = this.buffer.indexOf('\n')) >= 0) {
-      const line = this.buffer.slice(0, i).trim();
-      this.buffer = this.buffer.slice(i + 1);
-      if (!line) continue;
-      let msg: JsonRpcResponse;
-      try {
-        msg = JSON.parse(line) as JsonRpcResponse;
-      } catch {
-        continue; // 跳过非法行，不中断连接
-      }
-      // 通知（无 id）由服务端发来（如进度/日志），此处无需处理
-      if (msg.id === undefined) continue;
-      const p = this.pending.get(msg.id);
-      if (!p) continue;
-      this.pending.delete(msg.id);
-      if (p.timer) clearTimeout(p.timer);
-      if (msg.error) p.reject(new Error(`MCP 错误 ${msg.error.code}: ${msg.error.message}`));
-      else p.resolve(msg.result);
+    // SDK 协议错误带数字 code：统一收口为「MCP 错误 <code>: <msg>」，
+    // 并剥掉 SDK 自带的前缀「MCP error <code>: 」避免重复。
+    const code = err.code;
+    if (typeof code === 'number') {
+      const detail =
+        typeof err.message === 'string'
+          ? err.message.replace(/^MCP error -?\d+:\s*/i, '')
+          : String(e);
+      return new Error(`MCP 错误 ${code}: ${detail}`);
     }
+    return e instanceof Error ? e : new Error(String(e));
   }
 
   private requireReady(): void {
     if (this.state !== 'ready') {
       throw new Error(`MCP 未就绪：当前为 ${this.state}，需先 connect 成功`);
     }
-  }
-
-  private failAll(err: Error): void {
-    // 把最近 stderr 一并带出，便于排错（如服务端启动即报错）
-    const tail = this.stderrChunks.slice(-3).join('').trim();
-    const enriched = tail ? new Error(`${err.message}（server stderr: ${tail.slice(-300)}）`) : err;
-    for (const p of this.pending.values()) {
-      if (p.timer) clearTimeout(p.timer);
-      p.reject(enriched);
-    }
-    this.pending.clear();
-  }
-
-  private killChild(): void {
-    try {
-      this.child?.stdin?.end();
-    } catch {
-      /* ignore */
-    }
-    if (this.child && !this.child.killed) {
-      this.child.kill('SIGTERM');
-    }
-    this.child = undefined;
   }
 }
 
@@ -301,10 +239,6 @@ export function mcpToolsToToolDefs(client: McpClient, tools: McpTool[]): ToolDef
     isDestructive: t.annotations?.destructiveHint ?? false,
     execute: (args: Record<string, unknown>) => client.callTool(t.name, args),
   }));
-}
-
-interface Registrar {
-  registerAll(tools: ToolDef[]): void;
 }
 
 /**

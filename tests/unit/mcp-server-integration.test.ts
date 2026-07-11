@@ -1,11 +1,16 @@
 import { describe, it, expect } from 'vitest';
+import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { McpClient, type McpServerSpec } from '../../src/core/mcp/client';
-import { McpServer } from '../../src/core/mcp/server';
-import { HttpTransport } from '../../src/core/mcp/http';
+import { createMcpServer } from '../../src/core/mcp/server';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolDef } from '../../src/core/chatmodel/types';
 
-// 对端集成：用 Phase 5 的 McpClient 去连「本项目的 CLI 以 MCP 服务端模式启动」的子进程。
-// 这正验证了「客户端(Phase5) ↔ 服务端(Phase12)」是协议对等的。
+// 对端集成：用 McpClient 去连「本项目的 CLI 以 MCP 服务端模式启动」的子进程。
+// 这正验证了「客户端(基于 SDK Client) ↔ 服务端(基于 SDK Server)」是协议对等的。
 const TSX = 'node_modules/.bin/tsx';
 const CLI = 'src/cli/main.ts';
 
@@ -25,7 +30,8 @@ describe('MCP 对端集成（McpClient ↔ CLI 服务端）', () => {
       try {
         await client.connect();
         expect(client.getState()).toBe('ready');
-        expect(client.negotiatedProtocol).toBe('2024-11-05');
+        // 两端都是 SDK 1.x，协商出最新版（非手写版的固定 2024-11-05）
+        expect(client.negotiatedProtocol).toBe(LATEST_PROTOCOL_VERSION);
 
         const tools = await client.listTools();
         const names = tools.map((t) => t.name);
@@ -45,7 +51,8 @@ describe('MCP 对端集成（McpClient ↔ CLI 服务端）', () => {
   );
 });
 
-// HTTP 传输（Streamable HTTP）单独验证：直接起 HttpTransport，用 fetch 走协议。
+// HTTP 传输（Streamable HTTP）单独验证：SDK Server 起本地 HTTP，
+// 用 SDK Client（StreamableHTTPClientTransport）走 initialize + list + call。
 function echoTool(): ToolDef {
   return {
     name: 'echo',
@@ -55,67 +62,62 @@ function echoTool(): ToolDef {
   };
 }
 
-describe('MCP Streamable HTTP 传输', () => {
+function readBody(req: http.IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c: Buffer) => (data += c.toString('utf8')));
+    req.on('end', () => {
+      try {
+        resolve(data ? JSON.parse(data) : undefined);
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+describe('MCP Streamable HTTP 传输（SDK Server ↔ SDK Client）', () => {
   it(
-    'POST /mcp：initialize 建会话 + tools/list + tools/call',
+    'initialize 建会话 + tools/list + tools/call 走通',
     async () => {
-      const server = new McpServer({ name: 'http-srv' });
-      server.registerTool(echoTool());
-      const transport = new HttpTransport({ server, port: 0 });
-      const port = await transport.listen();
+      const srv = createMcpServer({ name: 'http-srv' });
+      srv.registerTool(echoTool());
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        enableJsonResponse: false,
+      });
+      await srv.server.connect(transport);
+
+      const httpServer = http.createServer(async (req, res) => {
+        const body = req.method === 'POST' ? await readBody(req) : undefined;
+        await transport.handleRequest(req, res, body);
+      });
+      const port = await new Promise<number>((resolve) => {
+        httpServer.listen(0, '127.0.0.1', () => {
+          const addr = httpServer.address();
+          resolve(typeof addr === 'object' && addr ? addr.port : 0);
+        });
+      });
       const base = `http://127.0.0.1:${port}/mcp`;
 
+      const client = new Client({ name: 't', version: '1' });
       try {
-        // 1) initialize —— 应回 Mcp-Session-Id 头
-        const initResp = await fetch(base, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'initialize',
-            params: { protocolVersion: '2024-11-05', clientInfo: { name: 't', version: '1' } },
-          }),
-        });
-        const sid = initResp.headers.get('mcp-session-id');
-        expect(sid).toBeTruthy();
-        const initJson = (await initResp.json()) as { result?: { protocolVersion?: string } };
-        expect(initJson.result?.protocolVersion).toBe('2024-11-05');
+        await client.connect(new StreamableHTTPClientTransport(new URL(base)));
 
-        // 2) tools/list —— 必须带会话头，否则 400
-        const noSid = await fetch(base, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
-        });
-        expect(noSid.status).toBe(400);
+        const { tools } = await client.listTools();
+        expect(tools.some((t) => t.name === 'echo')).toBe(true);
 
-        const listResp = await fetch(base, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'mcp-session-id': sid! },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
-        });
-        const listJson = (await listResp.json()) as { result?: { tools?: Array<{ name: string }> } };
-        expect(listJson.result?.tools?.some((t) => t.name === 'echo')).toBe(true);
-
-        // 3) tools/call
-        const callResp = await fetch(base, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'mcp-session-id': sid! },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 3,
-            method: 'tools/call',
-            params: { name: 'echo', arguments: { text: 'http-ok' } },
-          }),
-        });
-        const callJson = (await callResp.json()) as {
-          result?: { content?: Array<{ text: string }>; isError?: boolean };
-        };
-        expect(callJson.result?.isError).toBe(false);
-        expect(callJson.result?.content?.[0]?.text).toBe('echo:http-ok');
+        const res = (await client.callTool({
+          name: 'echo',
+          arguments: { text: 'http-ok' },
+        })) as unknown as { isError: boolean; content: Array<{ type: string; text?: string }> };
+        expect(res.isError).toBe(false);
+        expect((res.content[0] as { text?: string }).text).toBe('echo:http-ok');
       } finally {
-        await transport.close();
+        await client.close().catch(() => undefined);
+        await srv.server.close().catch(() => undefined);
+        await new Promise<void>((resolve) => httpServer.close(() => resolve()));
       }
     },
     20_000,

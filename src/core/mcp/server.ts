@@ -1,56 +1,26 @@
-// Phase 12：MCP 服务端（与 Phase 5 的 McpClient 对端；纯手写，不引官方 SDK）。
+// Phase 12：MCP 服务端（基于官方 @modelcontextprotocol/sdk 低层 Server 实现）。
 //
-// 设计要点（与客户端对称）：
-// 1. 传输无关：McpServer 只负责「协议层」——解析 JSON-RPC 请求、dispatch、产出响应。
-//    真正的字节收发交给 StdioTransport / HttpTransport（见同目录）。
-// 2. 协议握手：initialize 协商 protocolVersion 并回 capabilities（tools/resources），
-//    之后客户端发 notifications/initialized（无 id，服务端不回包），正式进入 ready。
-// 3. 方法分发：ping / tools/list / tools/call / resources/list / resources/read / shutdown，
-//    其余未知方法回 -32601 Method not found；未初始化就调用业务方法回 -32600。
-// 4. 工具桥接：fromToolDefs 把内置 ToolDef 注册进服务端，tools/call 转调 ToolDef.execute
-//    （与 Agent 侧执行同一份逻辑，无需重写），再以 MCP 收口格式 {content:[{type,text}], isError} 返回。
-//
-// 为何不引 @modelcontextprotocol/sdk：本项目定位「从零手搓学习」，手写能看清 JSON-RPC
-// 的配对、协议版本协商、content/isError 收口等关键细节（也是面试高频考点）。
+// 设计要点（与手写版对齐，但协议层/传输层交由 SDK 负责）：
+// 1. 协议与传输解耦：Server 只注册「请求处理器」，真正字节收发交给 SDK 的
+//    StdioServerTransport / StreamableHTTPServerTransport（见 demo-server.ts）。
+// 2. 工具桥接：createMcpServer + fromToolDefs 把内置 ToolDef 注册进服务端，
+//    tools/call 转调 ToolDef.execute（与 Agent 侧执行同一份逻辑），
+//    再以 MCP 收口格式 {content:[{type,text}], isError} 返回。
+// 3. 资源：registerResource 挂只读资源（如 agent://clock），
+//    resources/list / resources/read 由 SDK 路由到对应处理器。
+// 4. initialize / ping 由 SDK Server 自动处理（含多版本协议协商，取 min(客户端,服务端)）。
+// 5. 协议版本协商、JSON-RPC 配对、错误码模型等底层细节由 SDK 保证，本项目不再手写。
 
-import type { ToolContext, ToolDef, ToolResult } from '../chatmodel/types';
-
-/** 本服务端声明支持（并协商）的协议版本，须与客户端 SUPPORTED_PROTOCOL 对齐 */
-export const SUPPORTED_PROTOCOL = '2024-11-05';
-
-// ── JSON-RPC 2.0 报文类型（服务端视角：id 允许 number | string） ──
-export interface JsonRpcRequest {
-  jsonrpc: '2.0';
-  id?: number | string;
-  method: string;
-  params?: unknown;
-}
-export interface JsonRpcResponse {
-  jsonrpc: '2.0';
-  id?: number | string;
-  result?: unknown;
-  error?: { code: number; message: string };
-}
-
-/** 标准 JSON-RPC 错误码（节选） */
-export const JsonRpcError = {
-  ParseError: -32700,
-  InvalidRequest: -32600,
-  MethodNotFound: -32601,
-  InvalidParams: -32602,
-  InternalError: -32603,
-} as const;
-
-/** 协议层错误：携带标准 JSON-RPC 错误码，在 handleMessage 里被收口为 error 响应 */
-export class McpError extends Error {
-  constructor(
-    public readonly code: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'McpError';
-  }
-}
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import {
+  CallToolRequestSchema,
+  ErrorCode,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  McpError,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
+import type { ToolContext, ToolDef } from '../chatmodel/types';
 
 /** 一个可被 MCP 读取的资源（演示 resources 能力；与 tools 解耦，走只读通道） */
 export interface McpResource {
@@ -70,152 +40,64 @@ export interface McpServerOptions {
 }
 
 /**
- * 传输无关的手写 MCP 服务端。
- * 对外暴露 registerTool(s)/registerResource(s) 与 handleMessage，
- * 后者是协议分发的唯一入口，由传输层（stdio/http）调用。
+ * 对外的「MCP 服务端」门面：持有工具/资源表 + 底层 SDK Server 实例。
+ * 调用方（demo-server / 测试）只与本门面交互，不直接碰 SDK Server。
  */
-export class McpServer {
-  private readonly tools = new Map<string, ToolDef>();
-  private readonly resources = new Map<string, McpResource>();
-  private readonly name: string;
-  private readonly version: string;
-  private readonly cwd: string;
+export interface McpServer {
+  registerTool(tool: ToolDef): void;
+  registerTools(tools: ToolDef[]): void;
+  registerResource(resource: McpResource): void;
+  registerResources(resources: McpResource[]): void;
+  /** 底层 SDK Server 实例，供 createServer 时 connect 传输层使用 */
+  readonly server: Server;
+}
 
-  /** 已协商的协议版本（initialize 成功后才有意义） */
-  negotiatedProtocol?: string;
-  /** 对端客户端信息（initialize 时带回，便于审计/排错） */
-  clientInfo?: { name: string; version: string };
-  private initialized = false;
+/**
+ * 构造一个 MCP 服务端门面。
+ * 在底层 SDK Server 上注册 tools/list、tools/call、resources/list、resources/read
+ * 四个请求处理器，处理器从本门面维护的 tools/resources 表读取并执行。
+ */
+export function createMcpServer(opts: McpServerOptions = {}): McpServer {
+  const name = opts.name ?? 'easyCLI-mcp';
+  const version = opts.version ?? '0.12.0';
+  const cwd = opts.cwd ?? process.cwd();
 
-  constructor(opts: McpServerOptions = {}) {
-    this.name = opts.name ?? 'easyCLI-mcp';
-    this.version = opts.version ?? '0.12.0';
-    this.cwd = opts.cwd ?? process.cwd();
-  }
+  const tools = new Map<string, ToolDef>();
+  const resources = new Map<string, McpResource>();
 
-  // ── 注册能力 ──────────────────────────────────────────
-  registerTool(tool: ToolDef): void {
-    this.tools.set(tool.name, tool);
-  }
-  registerTools(tools: ToolDef[]): void {
-    for (const t of tools) this.registerTool(t);
-  }
-  registerResource(resource: McpResource): void {
-    this.resources.set(resource.uri, resource);
-  }
-  registerResources(resources: McpResource[]): void {
-    for (const r of resources) this.registerResource(r);
-  }
+  // 声明能力：tools + resources（即便当前未注册，也允许对端后续调用时返回空列表）
+  const server = new Server(
+    { name, version },
+    { capabilities: { tools: {}, resources: {} } },
+  );
 
-  /**
-   * 协议分发核心：输入一条解析好的 JSON-RPC 请求，产出响应。
-   * 通知（无 id，如 notifications/initialized、exit）返回 null（不回包）。
-   * 异常统一收口：McpError → 其 code；其余 → -32603 Internal error。
-   */
-  async handleMessage(msg: JsonRpcRequest): Promise<JsonRpcResponse | null> {
-    if (msg.id === undefined) return null; // 通知不回包
-    try {
-      const result = await this.dispatch(msg.method, msg.params);
-      return { jsonrpc: '2.0', id: msg.id, result };
-    } catch (e) {
-      if (e instanceof McpError) {
-        return { jsonrpc: '2.0', id: msg.id, error: { code: e.code, message: e.message } };
-      }
-      return {
-        jsonrpc: '2.0',
-        id: msg.id,
-        error: { code: JsonRpcError.InternalError, message: (e as Error).message },
-      };
-    }
-  }
-
-  // ── 方法分发 ──────────────────────────────────────────
-  private async dispatch(method: string, params: unknown): Promise<unknown> {
-    switch (method) {
-      case 'initialize':
-        return this.onInitialize(params);
-      case 'ping':
-        return {};
-      case 'tools/list':
-        this.requireReady();
-        return this.onToolsList();
-      case 'tools/call':
-        this.requireReady();
-        return this.onToolsCall(params);
-      case 'resources/list':
-        this.requireReady();
-        return {
-          resources: [...this.resources.values()].map((r) => ({
-            uri: r.uri,
-            name: r.name,
-            description: r.description,
-            mimeType: r.mimeType,
-          })),
-        };
-      case 'resources/read':
-        this.requireReady();
-        return this.onResourcesRead(params);
-      case 'shutdown':
-        // 标记连接退出；真正终止由传输层（收到 exit 通知/信号）负责
-        this.initialized = false;
-        return {};
-      default:
-        throw new McpError(JsonRpcError.MethodNotFound, `方法不支持: ${method}`);
-    }
-  }
-
-  private onInitialize(params: unknown): unknown {
-    const p = (params ?? {}) as {
-      protocolVersion?: string;
-      clientInfo?: { name: string; version: string };
-      capabilities?: unknown;
-    };
-    // 协商：服务端声明支持的最高（也是唯一）协议版本 2024-11-05。
-    // 真实实现会按「取 min(客户端请求, 服务端支持)」选择，这里锁定单版本。
-    this.negotiatedProtocol = SUPPORTED_PROTOCOL;
-    this.clientInfo = p.clientInfo;
-    this.initialized = true; // 握手完成，允许业务方法
-
-    // capabilities 动态生成：仅当确实注册了对应能力才声明，避免对端误判
-    const capabilities: Record<string, unknown> = {};
-    if (this.tools.size > 0) capabilities.tools = {};
-    if (this.resources.size > 0) capabilities.resources = {};
-
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
-      protocolVersion: SUPPORTED_PROTOCOL,
-      capabilities,
-      serverInfo: { name: this.name, version: this.version },
+      tools: [...tools.values()].map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+        annotations: {
+          title: t.name,
+          readOnlyHint: t.isReadOnly ?? false,
+          destructiveHint: t.isDestructive ?? false,
+        },
+      })),
     };
-  }
+  });
 
-  private onToolsList(): unknown {
-    const tools = [...this.tools.values()].map((t) => ({
-      name: t.name,
-      description: t.description,
-      // MCP 用 inputSchema（客户端侧 McpTool 也是这个字段名），与 OpenAI 的 parameters 区分
-      inputSchema: t.inputSchema,
-      annotations: {
-        title: t.name,
-        readOnlyHint: t.isReadOnly ?? false,
-        destructiveHint: t.isDestructive ?? false,
-      },
-    }));
-    return { tools };
-  }
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const name = request.params?.name;
+    if (!name) throw new McpError(ErrorCode.InvalidParams, '缺少参数 name');
+    const tool = tools.get(name);
+    if (!tool) throw new McpError(ErrorCode.MethodNotFound, `未知工具: ${name}`);
 
-  private async onToolsCall(params: unknown): Promise<unknown> {
-    const p = (params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
-    const name = p.name;
-    if (!name) throw new McpError(JsonRpcError.InvalidParams, '缺少参数 name');
-    const tool = this.tools.get(name);
-    if (!tool) throw new McpError(JsonRpcError.MethodNotFound, `未知工具: ${name}`);
-
-    const args = p.arguments ?? {};
-    const ctx: ToolContext = { cwd: this.cwd };
-    // tools/call 是「一次请求一次响应」的同步协议：await 执行结果，
-    // 若工具抛异常，按 isError 收口（区别于 JSON-RPC 协议级错误 -32603）。
+    const args = (request.params?.arguments ?? {}) as Record<string, unknown>;
+    const ctx: ToolContext = { cwd };
+    // tools/call 是「一次请求一次响应」：await 执行结果，
+    // 若工具抛异常，按 isError 收口（区别于协议级 -32603）。
     try {
-      const result: ToolResult = (await tool.execute?.(args, ctx)) ?? {
+      const result = (await tool.execute?.(args, ctx)) ?? {
         ok: false,
         output: '工具未提供 execute',
       };
@@ -229,25 +111,45 @@ export class McpServer {
         isError: true,
       };
     }
-  }
+  });
 
-  private async onResourcesRead(params: unknown): Promise<unknown> {
-    const p = (params ?? {}) as { uri?: string };
-    const uri = p.uri;
-    if (!uri) throw new McpError(JsonRpcError.InvalidParams, '缺少参数 uri');
-    const r = this.resources.get(uri);
-    if (!r) throw new McpError(JsonRpcError.InvalidParams, `未知资源: ${uri}`);
+  server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    return {
+      resources: [...resources.values()].map((r) => ({
+        uri: r.uri,
+        name: r.name,
+        description: r.description,
+        mimeType: r.mimeType,
+      })),
+    };
+  });
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const uri = request.params?.uri;
+    if (!uri) throw new McpError(ErrorCode.InvalidParams, '缺少参数 uri');
+    const r = resources.get(uri);
+    if (!r) throw new McpError(ErrorCode.InvalidParams, `未知资源: ${uri}`);
     const text = await r.read();
     return {
       contents: [{ uri: r.uri, mimeType: r.mimeType, text }],
     };
-  }
+  });
 
-  private requireReady(): void {
-    if (!this.initialized) {
-      throw new McpError(JsonRpcError.InvalidRequest, '连接未初始化，请先调用 initialize');
-    }
-  }
+  return {
+    registerTool: (tool) => {
+      tools.set(tool.name, tool);
+    },
+    registerTools: (ts) => {
+      for (const t of ts) tools.set(t.name, t);
+    },
+    registerResource: (r) => {
+      resources.set(r.uri, r);
+    },
+    registerResources: (rs) => {
+      for (const r of rs) resources.set(r.uri, r);
+    },
+    server,
+  };
 }
 
 /**

@@ -2,7 +2,7 @@
 
 从零到一**纯手写**的仿 Claude Code 命令行 Agent CLI。目标是吃透 ReAct、Tool Calling、MCP、多模型适配、Prompt 工程、RAG、安全审计等底层模式，每一期完成一个小模块并配套学习文档。
 
-> 本项目为学习用途，**不 fork 任何参考实现**，所有代码均从零手写。
+> 本项目为学习用途，**不 fork 任何参考实现**：核心 Agent 逻辑（ReAct / Tool Calling / 权限 / 记忆 / RAG 等）均从零手写；**MCP 客户端与服务端基于官方 `@modelcontextprotocol/sdk` 实现**（先手写学习、后迁移到 SDK，见 `docs/mcp-sdk-migration-plan.md`），协议层交由社区维护。
 
 ---
 
@@ -16,7 +16,7 @@
 - **安全围栏**：`isReadOnly`/`isDestructive` 标记，读并行 / 写串行；三级权限 + 围栏 + 黑名单 + HITL 人工确认 + 审计日志（挂事件总线）
 - **上下文压缩 + 长期记忆**（SQLite）：窗口相对预算 + 5 层渐进压缩（大结果落盘 / 选择性裁剪 / 去重 / 折叠 / 缓存友好摘要）+ 413 响应式兜底
 - **记忆增强**：① 每轮结束自动从对话提取稳定事实写入记忆库（fire-and-forget）；② 记忆召回用 LLM 语义选择 topN（理解字面不同但语义相关，失败降级关键词）。开关 `--no-auto-memory` / `--no-semantic-recall`
-- **MCP 协议**：客户端（stdio，JSON-RPC 状态机）+ 服务端（暴露 tools/resources，可选 Streamable HTTP）
+- **MCP 协议**：客户端（基于官方 SDK `Client` 的 stdio 门面，保留连接状态机/超时/错误归一契约）+ 服务端（基于官方 SDK 低层 `Server`，暴露 tools/resources，Streamable HTTP 传输由 SDK 提供完整 SSE/会话能力）
 - **RAG 检索增强**：纯手写嵌入（TF-IDF）+ SQLite 向量检索，可插拔 API 嵌入器
 - **Skill 系统**：三层加载（builtin/user/project）+ 渐进式披露，保护 Prompt Cache；支持 `skills.autoInject` 指定技能每轮自动注入正文
 - **任务规划（todo_write）**：带状态（pending/in_progress/completed）的可追踪任务清单，让模型面对复杂多步任务先拆解再逐项执行；配 nag reminder（连续多轮未更新则临时提醒，不污染 history）
@@ -112,14 +112,14 @@ pnpm lint        # eslint
 | 2 | ReAct 循环 + Tool Calling + 最小内置工具（read_file/bash） | ✅ 完成 |
 | 3 | 内置工具扩展 + 安全围栏（isReadOnly/isDestructive；读并行/写串行；三级权限+围栏+黑名单+HITL+审计） | ✅ 完成 |
 | 4 | 上下文压缩（5 层渐进 + 窗口相对预算 + 413 兜底）+ 长期记忆（SQLite） | ✅ 完成 |
-| 5 | MCP 客户端（stdio，JSON-RPC 连接状态机） | ✅ 完成 |
+| 5 | MCP 客户端（基于官方 SDK `Client` 的 stdio 门面；连接状态机/超时/错误归一） | ✅ 完成 |
 | 6 | RAG（检索增强生成，纯手写嵌入 + SQLite 向量检索） | ✅ 完成 |
 | 7 | Skill 系统（三层加载 + 渐进式披露保护 cache） | ✅ 完成 |
 | 8 | 模型配置持久化（`~/.config/agent-cli/config.json`） | ✅ 完成 |
 | 9 | 会话持久化（Session）：`/save` `/load`、跨会话恢复、历史浏览 | ✅ 完成 |
 | 10 | REPL 体验打磨：跨会话命令历史、多行粘贴、基础补全、流式渲染 | ✅ 完成 |
 | 11 | 多模型适配补全：Anthropic/Ollama 适配器 + fallback model 降级；embed() 可插拔（手写/API） | ✅ 完成 |
-| 12 | MCP Server（与客户端对端；暴露 tools/resources，可选 Streamable HTTP 传输） | ✅ 完成 |
+| 12 | MCP Server（基于官方 SDK 低层 `Server`，与客户端对端；暴露 tools/resources，Streamable HTTP 传输） | ✅ 完成 |
 | 13 | System Prompt 工程化 + 动态上下文注入（时间/cwd/git 分支/OS） | ✅ 完成 |
 | 14 | Token / 成本统计与可观测性（挂事件总线） | ✅ 完成 |
 | 15 | Plan 模式 + 异步并行（与 ReAct 共享同一引擎） | ✅ 完成 |
@@ -168,7 +168,7 @@ src/cli/              入口、REPL、流式渲染器、斜杠命令、首次运
 src/core/chatmodel/   ChatModel 接口 + 适配器（OpenAI 兼容 / Anthropic / Ollama）
 src/core/agent/       ReAct 循环（决策核心，不依赖 REPL）
 src/core/tools/       工具系统（含 isReadOnly/isDestructive 标记）
-src/core/mcp/         McpClient（期5）/ McpServer（期12）
+src/core/mcp/         McpClient（SDK Client 门面，期5）/ McpServer（SDK 低层 Server 门面，期12）/ demo-server（stdio + Streamable HTTP）
 src/core/memory/      上下文压缩（5 层）+ SQLite 长期记忆；extractor.ts 自动提取（期20）；窗口推导见 src/core/chatmodel/contextWindow.ts
 src/core/rag/         向量检索（期6）
 src/core/skill/       三层加载 + 渐进式披露（期7）

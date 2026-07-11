@@ -220,6 +220,13 @@ program
       (m) => console.log(m),
     );
 
+    // 退出时优雅回收 MCP 子进程（SDK client.close 等价且更稳）
+    const cleanupMcp = (): void => {
+      void Promise.allSettled(mcpClients.map((c) => c.disconnect()));
+    };
+    process.once('SIGINT', cleanupMcp);
+    process.once('SIGTERM', cleanupMcp);
+
     // Phase 3：事件总线 + 权限 + 审计日志
     const bus = new EventBus();
     const permission = new PermissionManager({ registry: tools });
