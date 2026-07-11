@@ -41,7 +41,7 @@ const behaviorBlock = (): string =>
   '用简洁、准确的中文回答用户的问题；优先动手用工具解决，而不是只给建议。';
 
 /** 语义上需单独给「使用时机」指引的工具（名称属项目契约）；其余工具直接列入「优先可用的工具」 */
-const NON_GENERAL_TOOLS = new Set(['web_search', 'web_fetch', 'rag_search', 'use_skill', 'todo_write', 'task']);
+const NON_GENERAL_TOOLS = new Set(['web_search', 'web_fetch', 'rag_search', 'use_skill', 'todo_write', 'task', 'task_run_parallel']);
 
 const toolPolicyBlock = (toolNames: string[]): string => {
   const parts: string[] = ['需要完成任务时，优先调用可用工具，而不是只给建议。'];
@@ -84,6 +84,13 @@ const toolPolicyBlock = (toolNames: string[]): string => {
         'task_list 看全貌、task_get 取完整细节。任务持久化在 .tasks/，进程重启后仍可恢复。' +
         '与 todo_write 的区别：todo_write 是当前会话内的执行清单（内存，退出即清空），任务系统是可持久化、有依赖图的独立系统——' +
         '有依赖或需恢复的多步任务优先用任务系统。',
+    );
+  }
+  if (toolNames.includes('task_run_parallel')) {
+    parts.push(
+      '已提供 task_run_parallel（看板并行执行）：当 .tasks/ 看板已建好依赖任务图、且存在可并行的独立任务时，' +
+        '调用它即可自动从看板认领「当前可开始」的任务、用有界并发派发子 Agent 执行、完成一个就解锁下游，直到看板清空——' +
+        '多 Agent 协作的并行处理（对齐 s12）。仅在已用 task_create 建好任务图后调用；琐碎或强顺序任务无需并行。',
     );
   }
   return parts.join('');

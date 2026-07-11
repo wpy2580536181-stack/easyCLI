@@ -31,11 +31,17 @@ export interface SubagentDeps {
   tools: ToolRegistry;
 }
 
-/** 把主注册表裁剪成「子 Agent 工具集」：剔除 task 自身，防止递归 spawn（对齐 s06「子 Agent 无 task」） */
-export function buildSubagentTools(registry: ToolRegistry): ToolRegistry {
+/**
+ * 把主注册表裁剪成「子 Agent 工具集」。
+ * 默认剔除 task + task_run_parallel（防递归 spawn / 防递归扇出）；
+ * stripAllTaskTools=true 时额外剔除整个 task* 家族（并行 worker 只干活、不碰看板）。
+ */
+export function buildSubagentTools(registry: ToolRegistry, stripAllTaskTools = false): ToolRegistry {
   const sub = createToolRegistry();
   for (const t of registry.list()) {
-    if (t.name !== 'task') sub.register(t);
+    if (t.name === 'task' || t.name === 'task_run_parallel') continue;
+    if (stripAllTaskTools && t.name.startsWith('task')) continue;
+    sub.register(t);
   }
   return sub;
 }
@@ -60,13 +66,15 @@ function lastAssistantText(history: ChatMessage[]): string {
  * @param description 派给子 Agent 的自包含子任务描述
  * @returns 子 Agent 的最终结论文本（空则回退提示）
  */
-export async function spawnSubagent(opts: SubagentDeps & { description: string }): Promise<string> {
-  const { description, model, permission, bus, cwd, tools } = opts;
+export async function spawnSubagent(
+  opts: SubagentDeps & { description: string; stripAllTaskTools?: boolean },
+): Promise<string> {
+  const { description, model, permission, bus, cwd, tools, stripAllTaskTools } = opts;
   const desc = description.trim();
   if (!desc) return '(子任务描述为空，未派发子 Agent)';
 
-  // 建构子 Agent 工具集：剔除 task 防递归
-  const subTools = buildSubagentTools(tools);
+  // 建构子 Agent 工具集：剔除 task / task_run_parallel 防递归；可选剔除整个 task* 家族
+  const subTools = buildSubagentTools(tools, stripAllTaskTools);
 
   const history = await runAgent(
     [

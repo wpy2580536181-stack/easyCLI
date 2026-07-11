@@ -209,8 +209,8 @@ program
 
     // Phase 24：Task System（对齐 s12）——可持久化到 .tasks/ 的依赖任务图，与 todo_write（s05）并存：
     // 任务系统用于「有依赖、需跨会话恢复」的多步任务；todo_write 用于当前会话内的执行清单。
+    // 注意：注册（含 task_run_parallel 扇出工具）放在 permission/bus 就绪后，见下方 Phase 23 之后。
     const taskStore = new TaskStore(process.cwd());
-    tools.registerAll(getTaskTools(taskStore));
 
     // Phase 5：连接并注册 MCP Server 工具（与内置工具进同一张表）
     const mcpClients: McpClient[] = await connectMcpServers(
@@ -229,6 +229,10 @@ program
     // 子 Agent 共享主 cwd（文件系统副作用保留，对齐 s06），但拥有全新 messages[]（上下文隔离）；
     // 工具集剔除 task 自身防递归。工具标 isReadOnly=true（编排不改主目录，子 Agent 写操作仍各自经权限 gate）。
     tools.registerAll(getSubagentTools({ model, permission, bus, cwd: process.cwd(), tools }));
+
+    // Phase 24（续）：注册 Task System 工具；传入 subDeps 以额外注册 task_run_parallel 扇出工具
+    // （需 model/permission/bus 就绪）。task_run_parallel 让主 Agent 在循环内把看板任务并行派给子 Agent（对齐 s12）。
+    tools.registerAll(getTaskTools(taskStore, { model, permission, bus, cwd: process.cwd(), tools }));
     new AuditLogger(join(homedir(), '.config', 'agent-cli', 'audit.jsonl')).attach(bus);
     // Phase 14：成本/用量追踪器，同样挂在事件总线上统一观测
     const tracker = new CostTracker();

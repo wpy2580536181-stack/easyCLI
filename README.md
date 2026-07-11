@@ -20,7 +20,8 @@
 - **RAG 检索增强**：纯手写嵌入（TF-IDF）+ SQLite 向量检索，可插拔 API 嵌入器
 - **Skill 系统**：三层加载（builtin/user/project）+ 渐进式披露，保护 Prompt Cache；支持 `skills.autoInject` 指定技能每轮自动注入正文
 - **任务规划（todo_write）**：带状态（pending/in_progress/completed）的可追踪任务清单，让模型面对复杂多步任务先拆解再逐项执行；配 nag reminder（连续多轮未更新则临时提醒，不污染 history）
-- **任务系统（Task System）**：可持久化到 `.tasks/{id}.json` 的依赖任务图（对齐 Learn Claude Code s12）；`task_create` 建任务并声明 `blockedBy` 依赖、`task_claim` 认领（依赖未完成则拒绝）、`task_complete` 完成并自动解锁下游、`task_list`/`task_get` 查看。与 todo_write 并存：todo_write 是会话内清单，任务系统跨会话保留、有依赖图，适合有依赖 / 需恢复的多步任务
+- **任务系统（Task System）**：可持久化到 `.tasks/{id}.json` 的依赖任务图（对齐 Learn Claude Code s12）；`task_create` 建任务并声明 `blockedBy` 依赖、`task_claim` 认领（依赖未完成则拒绝，原子锁防并发重复认领）、`task_complete` 完成并自动解锁下游、`task_list`/`task_get` 查看。与 todo_write 并存：todo_write 是会话内清单，任务系统跨会话保留、有依赖图，适合有依赖 / 需恢复的多步任务
+- **看板并行处理（task_run_parallel）**：在任务系统之上做 s12 多 Agent 并行协作——`task_run_parallel` 自动从看板认领「可开始」任务、用有界并发（maxWorkers）派子 Agent 执行、完成一个即解锁下游，直到看板清空（对齐 s12 并行处理）
 - **配置持久化**：`~/.config/agent-cli/config.json`，优先级 CLI 参数 > 环境变量 > 配置文件 > 默认值
 - **首次运行向导**：无配置文件时交互式收集 API Key / BaseURL / Model 并持久化，下次免输入
 - **会话持久化**：`/save` `/load`、跨会话恢复、历史浏览
@@ -156,6 +157,7 @@ pnpm lint        # eslint
 - [第 17 期：Multi-Agent](./docs/phase17.md)
 - [第 23 期：Subagent（task 工具，对齐 s06）](./docs/phase23.md)
 - [第 24 期：Task System（任务系统，对齐 s12）](./docs/phase24.md)
+- [第 25 期：看板并行处理（task_run_parallel，对齐 s12 并行）](./docs/phase25.md)
 - [记忆增强设计（Phase 20）：自动提取 + LLM 语义召回](./docs/memory-enhancement-design.md)
 
 ---

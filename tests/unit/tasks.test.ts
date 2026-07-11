@@ -40,12 +40,12 @@ describe('Phase 24 · TaskStore 持久化与 ID', () => {
 });
 
 describe('Phase 24 · 依赖图与 can_start', () => {
-  it('blockedBy 未完成时 claim 被拒绝、canStart=false；完成后解锁', () => {
+  it('blockedBy 未完成时 claim 被拒绝、canStart=false；完成后解锁', async () => {
     const schema = store.createTask({ subject: 'setup schema' });
     const api = store.createTask({ subject: 'create api', blockedBy: [schema.id] });
 
     expect(store.canStart(api.id)).toBe(false);
-    const rejected = store.claimTask(api.id);
+    const rejected = await store.claimTask(api.id);
     expect(rejected.ok).toBe(false);
     expect(rejected.msg).toContain('Blocked by');
 
@@ -54,7 +54,7 @@ describe('Phase 24 · 依赖图与 can_start', () => {
     expect(done.unblocked).toContain('create api');
     expect(store.canStart(api.id)).toBe(true);
 
-    const claimed = store.claimTask(api.id);
+    const claimed = await store.claimTask(api.id);
     expect(claimed.ok).toBe(true);
     expect(store.getTask(api.id)!.status).toBe('in_progress');
     expect(store.getTask(api.id)!.owner).toBe('agent');
@@ -66,18 +66,18 @@ describe('Phase 24 · 依赖图与 can_start', () => {
     expect(store.getTask(schema.id)!.blocks).toContain(api.id);
   });
 
-  it('缺失的依赖视为 blocked', () => {
+  it('缺失的依赖视为 blocked', async () => {
     const orphan = store.createTask({ subject: 'x', blockedBy: ['999'] });
     expect(store.canStart(orphan.id)).toBe(false);
-    const r = store.claimTask(orphan.id);
+    const r = await store.claimTask(orphan.id);
     expect(r.ok).toBe(false);
     expect(r.msg).toContain('999');
   });
 
-  it('已认领（非 pending）的任务再次 claim 被拒绝', () => {
+  it('已认领（非 pending）的任务再次 claim 被拒绝', async () => {
     const t = store.createTask({ subject: 't' });
-    expect(store.claimTask(t.id).ok).toBe(true);
-    const again = store.claimTask(t.id);
+    expect((await store.claimTask(t.id)).ok).toBe(true);
+    const again = await store.claimTask(t.id);
     expect(again.ok).toBe(false);
     expect(again.msg).toContain('in_progress');
   });
