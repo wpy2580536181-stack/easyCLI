@@ -70,6 +70,69 @@ describe('Phase 16 · 自动上下文检索', () => {
   });
 });
 
+/** 返回预设 CompleteResult 的假模型（不联网） */
+class FakeModel implements ChatModel {
+  readonly id = 'mock:semantic';
+  calls = 0;
+  constructor(private readonly queue: CompleteResult[]) {}
+  async complete(): Promise<CompleteResult> {
+    const r = this.queue[this.calls % this.queue.length]!;
+    this.calls++;
+    return r;
+  }
+}
+
+describe('Phase 20 · LLM 语义召回', () => {
+  it('多词 query + 候选过多时走语义路径，按模型选择注入 topN', async () => {
+    const mem = new MemoryStore(':memory:');
+    for (let i = 0; i < 12; i++) mem.remember(`记忆条目${i}：内容${i}`);
+    // 候选池按 id DESC 排序（listAll），索引 0/1/2 对应 id 最大三条 = 记忆条目11/10/9
+    const model = new FakeModel([{ content: '[0,1,2]', toolCalls: [] }]);
+    const res = await buildAutoContext('部署流程和上线注意事项', { memory: mem, model });
+    expect(model.calls).toBe(1); // 确实走了语义路径
+    expect(res.memoryCount).toBe(3);
+    expect(res.text).toContain('记忆条目11');
+    expect(res.text).toContain('记忆条目10');
+    expect(res.text).toContain('记忆条目9');
+  });
+
+  it('候选 ≤ limit 时不调模型，直接关键词检索', async () => {
+    const mem = new MemoryStore(':memory:');
+    mem.remember('用户偏好 TypeScript');
+    const model = new FakeModel([{ content: 'SHOULD_NOT_BE_USED', toolCalls: [] }]);
+    const res = await buildAutoContext('TypeScript', { memory: mem, model });
+    expect(model.calls).toBe(0);
+    expect(res.memoryCount).toBe(1);
+    expect(res.text).toContain('TypeScript');
+  });
+
+  it('单词 query 不触发语义，回退关键词', async () => {
+    const mem = new MemoryStore(':memory:');
+    mem.remember('用户偏好 TypeScript 严格模式');
+    const model = new FakeModel([{ content: 'SHOULD_NOT_BE_USED', toolCalls: [] }]);
+    const res = await buildAutoContext('TypeScript', { memory: mem, model });
+    expect(model.calls).toBe(0);
+    expect(res.memoryCount).toBe(1);
+  });
+
+  it('语义召回失败降级关键词检索，仍输出结果', async () => {
+    const mem = new MemoryStore(':memory:');
+    for (let i = 0; i < 12; i++) mem.remember(`TypeScript 配置说明${i}`);
+    const model = new FakeModel([{ content: 'NOT JSON', toolCalls: [] }]);
+    const res = await buildAutoContext('TypeScript 配置', { memory: mem, model });
+    expect(res.memoryCount).toBeGreaterThan(0);
+    expect(res.text).toContain('TypeScript');
+  });
+
+  it('未提供 model 时自动回退关键词检索', async () => {
+    const mem = new MemoryStore(':memory:');
+    mem.remember('用户偏好中文回复');
+    const res = await buildAutoContext('中文', { memory: mem });
+    expect(res.memoryCount).toBe(1);
+    expect(res.text).toContain('中文回复');
+  });
+});
+
 describe('Phase 16 · lastUserText', () => {
   it('返回最近一条 user 消息的纯文本', () => {
     const h: ChatMessage[] = [
