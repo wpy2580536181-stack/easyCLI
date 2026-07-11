@@ -55,6 +55,13 @@ export interface AgentOptions extends AgentHooks {
    * 为空/不提供则不注入。
    */
   autoContext?: string;
+  /**
+   * 任务规划 nag（Phase 21）：连续 N 轮有工具调用但未更新任务清单（todo_write）时，
+   * 注入**一次**临时提醒，促使模型复核/更新清单状态（参照 s05 的 reminder 机制）。
+   * 默认 3；设为 0 关闭。仅当注册表里存在 todo_write 工具时才生效。
+   * 提醒只注入到「发给模型的临时副本」，不写入持久 history（保持历史干净、缓存友好）。
+   */
+  todoReminderEveryRounds?: number;
 }
 
 /** 默认摘要器：用当前模型把中间历史压成中文摘要（无工具，纯文本总结） */
@@ -138,6 +145,10 @@ export async function runAgent(
   const cwd = opts.cwd ?? process.cwd();
   // 应急压缩重试上限（prompt_too_long / 413 时 reactive 一回）
   let reactiveRetries = 0;
+  // Phase 21：任务规划 nag——仅当注册了 todo_write 时启用；连续多轮未更新清单则提醒一次。
+  const todoNagEvery = opts.todoReminderEveryRounds ?? 3;
+  const todoNagEnabled = todoNagEvery > 0 && opts.tools.has('todo_write');
+  let roundsSinceTodo = 0;
 
   for (let i = 0; i < maxIter; i++) {
     if (opts.signal?.aborted) break;
@@ -185,6 +196,18 @@ export async function runAgent(
       }
       if (lastUser >= 0) messages.splice(lastUser, 0, acMsg);
       else messages.push(acMsg);
+    }
+
+    // Phase 21：任务规划 nag——连续多轮未调 todo_write 时，追加一条**临时**提醒（不入 history）。
+    // 首轮（roundsSinceTodo=0）不触发，先给模型自主规划的机会。
+    if (todoNagEnabled && roundsSinceTodo >= todoNagEvery) {
+      if (messages === history) messages = [...history];
+      messages.push({
+        role: 'user',
+        content:
+          '<reminder>你已连续多轮未更新任务清单。如果当前任务是多步的，请调用 todo_write 复核并更新各步骤状态（已完成的置 completed、正在做的置 in_progress）。</reminder>',
+      });
+      roundsSinceTodo = 0;
     }
 
     // 工具顺序固定（按名排序）：工具定义属稳定前缀，顺序变化会令前缀失效、缓存击穿
@@ -256,6 +279,12 @@ export async function runAgent(
 
     // 2) 没有工具调用 → 最终答案，结束循环
     if (!hasToolCall) break;
+
+    // Phase 21：更新 nag 计数——本轮调过 todo_write 则清零，否则累加。
+    if (todoNagEnabled) {
+      const usedTodo = result.toolCalls.some((tc) => tc.name === 'todo_write');
+      roundsSinceTodo = usedTodo ? 0 : roundsSinceTodo + 1;
+    }
 
     // 3) 执行工具（读并行/写串行 + 权限 + 事件），结果以 role:'tool' 回注历史
     const results = await executeTools(result.toolCalls, {

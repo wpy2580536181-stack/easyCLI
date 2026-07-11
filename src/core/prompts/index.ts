@@ -41,7 +41,7 @@ const behaviorBlock = (): string =>
   '用简洁、准确的中文回答用户的问题；优先动手用工具解决，而不是只给建议。';
 
 /** 语义上需单独给「使用时机」指引的工具（名称属项目契约）；其余工具直接列入「优先可用的工具」 */
-const NON_GENERAL_TOOLS = new Set(['web_search', 'web_fetch', 'rag_search', 'use_skill']);
+const NON_GENERAL_TOOLS = new Set(['web_search', 'web_fetch', 'rag_search', 'use_skill', 'todo_write']);
 
 const toolPolicyBlock = (toolNames: string[]): string => {
   const parts: string[] = ['需要完成任务时，优先调用可用工具，而不是只给建议。'];
@@ -61,6 +61,13 @@ const toolPolicyBlock = (toolNames: string[]): string => {
   }
   if (toolNames.includes('use_skill')) {
     parts.push('若下方列出「可用技能」，在任务匹配时应调用 use_skill 获取其详细指令并严格遵循。');
+  }
+  if (toolNames.includes('todo_write')) {
+    parts.push(
+      '已提供 todo_write（任务规划）：面对需要多步、跨多个文件、或先探索再执行的复杂任务时，' +
+        '应先调用 todo_write 把任务拆成有状态的步骤（初始 pending），开始某步前置为 in_progress、完成后立即置 completed，' +
+        '始终保持同一时刻至多一个 in_progress；执行中随进展持续更新清单。简单的单步任务无需使用。',
+    );
   }
   return parts.join('');
 };

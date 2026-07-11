@@ -19,6 +19,7 @@
 - **MCP 协议**：客户端（stdio，JSON-RPC 状态机）+ 服务端（暴露 tools/resources，可选 Streamable HTTP）
 - **RAG 检索增强**：纯手写嵌入（TF-IDF）+ SQLite 向量检索，可插拔 API 嵌入器
 - **Skill 系统**：三层加载（builtin/user/project）+ 渐进式披露，保护 Prompt Cache
+- **任务规划（todo_write）**：带状态（pending/in_progress/completed）的可追踪任务清单，让模型面对复杂多步任务先拆解再逐项执行；配 nag reminder（连续多轮未更新则临时提醒，不污染 history）
 - **配置持久化**：`~/.config/agent-cli/config.json`，优先级 CLI 参数 > 环境变量 > 配置文件 > 默认值
 - **首次运行向导**：无配置文件时交互式收集 API Key / BaseURL / Model 并持久化，下次免输入
 - **会话持久化**：`/save` `/load`、跨会话恢复、历史浏览
@@ -124,6 +125,7 @@ pnpm lint        # eslint
 | 18 | 联网搜索工具（web_search / web_fetch，Provider 无关：Tavily 正式 API + DuckDuckGo 零 key 兜底） | ✅ 完成 |
 | 19 | Browser（CDP） | ⏳ 待做 |
 | 20 | 记忆增强：自动提取（每轮从对话被动记忆）+ LLM 语义召回（topN 选择，降级关键词） | ✅ 完成 |
+| 21 | 任务规划（todo_write）：带状态的可追踪任务清单 + nag reminder（复杂多步任务先拆解再逐项执行） | ✅ 完成 |
 
 ---
 

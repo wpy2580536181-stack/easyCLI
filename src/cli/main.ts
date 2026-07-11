@@ -25,6 +25,7 @@ import { getRagTools } from '../core/rag/tools';
 import { createEmbedder } from '../core/rag/embedder';
 import { SkillLoader, getSkillTools, type SkillSource } from '../core/skill';
 import { getWebTools } from '../core/tools/web';
+import { TodoStore, getPlanningTools } from '../core/tools/planning';
 import type { CompressOptions } from '../core/memory/compressor';
 import { createCounter } from '../core/observability/tokenizer';
 import { CostTracker } from '../core/observability';
@@ -195,6 +196,11 @@ program
     ];
     const skillLoader = new SkillLoader(skillSources);
     tools.registerAll(getSkillTools(skillLoader));
+
+    // Phase 21：任务规划（todo_write）——会话内任务表，让模型先拆解复杂任务再逐项执行。
+    // 与 memory/skill 同级，走同一 registerAll 装配；工具本身只读（无代码库副作用）。
+    const todoStore = new TodoStore();
+    tools.registerAll(getPlanningTools(todoStore));
 
     // Phase 5：连接并注册 MCP Server 工具（与内置工具进同一张表）
     const mcpClients: McpClient[] = await connectMcpServers(

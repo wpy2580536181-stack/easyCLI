@@ -1,12 +1,18 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runAgent } from '../../src/core/agent';
 import { createToolRegistry } from '../../src/core/tools/registry';
+import { TodoStore, getPlanningTools } from '../../src/core/tools/planning';
 import type {
   ChatMessage,
   ChatModel,
   CompleteResult,
   ToolCall,
 } from '../../src/core/chatmodel/types';
+
+/** 每次收到的 messages 里是否含 todo nag 提醒 */
+function hasReminder(msgs: ChatMessage[]): boolean {
+  return msgs.some((m) => typeof m.content === 'string' && m.content.includes('<reminder>'));
+}
 
 /** 脚本化模型：按预定序列循环返回 CompleteResult，模拟「先要工具、后给答案」 */
 class ScriptedModel implements ChatModel {
@@ -117,5 +123,85 @@ describe('runAgent ReAct 循环', () => {
     const prev = history[history.length - 2]!;
     expect(prev.role).toBe('assistant');
     expect(last.role).toBe('tool');
+  });
+});
+
+describe('Phase 21：todo_write nag reminder', () => {
+  /** 记录每次 complete 收到的 messages 快照 */
+  class CapturingModel implements ChatModel {
+    readonly id = 'mock:capture';
+    calls = 0;
+    seen: ChatMessage[][] = [];
+    constructor(private readonly queue: CompleteResult[]) {}
+    async complete(o: { messages: ChatMessage[] }): Promise<CompleteResult> {
+      this.seen.push([...o.messages]);
+      const r = this.queue[this.calls % this.queue.length];
+      this.calls++;
+      return r ?? { content: '（兜底）', toolCalls: [] };
+    }
+  }
+
+  it('连续 N 轮未调 todo_write → 第 N+1 轮注入一次提醒（不写入 history）', async () => {
+    const tools = createToolRegistry();
+    tools.registerAll(getPlanningTools(new TodoStore()));
+    const read: ToolCall = { id: 'r', name: 'read_file', arguments: { path: 'a.txt' } };
+    // 永远请求 read_file（从不 todo_write）
+    const model = new CapturingModel([{ content: '', toolCalls: [read] }]);
+    const history: ChatMessage[] = [sys, user];
+
+    await runAgent(history, {
+      model,
+      tools,
+      maxIterations: 5,
+      todoReminderEveryRounds: 3,
+      cwd: process.cwd(),
+    });
+
+    // 前 3 次调用不含提醒，第 4 次（roundsSinceTodo 累到 3）含提醒
+    expect(hasReminder(model.seen[0]!)).toBe(false);
+    expect(hasReminder(model.seen[1]!)).toBe(false);
+    expect(hasReminder(model.seen[2]!)).toBe(false);
+    expect(hasReminder(model.seen[3]!)).toBe(true);
+    // 提醒是临时注入，不落持久 history
+    expect(hasReminder(history)).toBe(false);
+  });
+
+  it('每轮都调 todo_write → 永不提醒', async () => {
+    const tools = createToolRegistry();
+    tools.registerAll(getPlanningTools(new TodoStore()));
+    const todo: ToolCall = {
+      id: 't',
+      name: 'todo_write',
+      arguments: { todos: [{ content: 'x', status: 'in_progress' }] },
+    };
+    const model = new CapturingModel([{ content: '', toolCalls: [todo] }]);
+    const history: ChatMessage[] = [sys, user];
+
+    await runAgent(history, {
+      model,
+      tools,
+      maxIterations: 5,
+      todoReminderEveryRounds: 3,
+      cwd: process.cwd(),
+    });
+
+    expect(model.seen.every((m) => !hasReminder(m))).toBe(true);
+  });
+
+  it('未注册 todo_write 时 nag 不生效', async () => {
+    const tools = createToolRegistry(); // 无 planning 工具
+    const read: ToolCall = { id: 'r', name: 'read_file', arguments: { path: 'a.txt' } };
+    const model = new CapturingModel([{ content: '', toolCalls: [read] }]);
+    const history: ChatMessage[] = [sys, user];
+
+    await runAgent(history, {
+      model,
+      tools,
+      maxIterations: 5,
+      todoReminderEveryRounds: 3,
+      cwd: process.cwd(),
+    });
+
+    expect(model.seen.every((m) => !hasReminder(m))).toBe(true);
   });
 });
