@@ -43,7 +43,11 @@ export function getMemoryTools(store: MemoryStore): ToolDef[] {
         const rows = query ? store.search(query, limit) : store.recall(limit);
         if (rows.length === 0) return { ok: true, output: '（记忆库为空或无可匹配项）' };
         const text = rows
-          .map((r) => `#${r.id} [${r.createdAt.slice(0, 10)}] ${r.fact}`)
+          .map((r) => {
+            const typeTag = r.type && r.type !== 'user' ? `[${r.type}] ` : '';
+            const nameTag = r.name ? `${r.name}： ` : '';
+            return `#${r.id} [${r.createdAt.slice(0, 10)}] ${typeTag}${nameTag}${r.fact}`;
+          })
           .join('\n');
         return { ok: true, output: text };
       },

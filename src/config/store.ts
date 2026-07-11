@@ -40,6 +40,10 @@ export interface UserConfig {
   statusline?: boolean;
   /** 模型上下文窗口（token）；不设置则由 provider/model 推导默认 */
   contextWindow?: number;
+  /** Phase 20：每轮自动记忆提取开关（默认开） */
+  autoMemory?: boolean;
+  /** Phase 20：LLM 语义召回开关（默认开） */
+  semanticRecall?: boolean;
 }
 
 const mcpServerSchema = z.object({
@@ -79,6 +83,8 @@ const userConfigSchema = z.object({
     .optional(),
   statusline: z.boolean().optional(),
   contextWindow: z.number().int().positive().optional(),
+  autoMemory: z.boolean().optional(),
+  semanticRecall: z.boolean().optional(),
   search: z
     .object({
       provider: z.enum(['tavily', 'duckduckgo']).optional(),

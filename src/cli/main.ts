@@ -84,6 +84,8 @@ program
   .option('--search-key <key>', '联网搜索服务 API key（tavily 需要；可用 AGENTCLI_SEARCH_API_KEY 注入）')
   .option('--search-max-results <n>', '联网搜索单次返回结果数上限（默认 5）')
   .option('--context-window <n>', '模型上下文窗口 token 数（不传则由 provider/model 推导默认）')
+  .option('--no-auto-memory', '关闭每轮自动从对话提取记忆（Phase 20，默认开启）')
+  .option('--no-semantic-recall', '关闭 LLM 语义召回、回退关键词匹配（Phase 20，默认开启）')
   .action(async () => {
     const opts = program.opts<
       ConfigOverrides & {
@@ -138,6 +140,9 @@ program
           opts.searchMaxResults !== undefined ? Number(opts.searchMaxResults) : undefined,
         // 上下文窗口：CLI --context-window <n>（token）；不传由 provider/model 推导
         contextWindow: opts.contextWindow !== undefined ? Number(opts.contextWindow) : undefined,
+        // Phase 20：记忆增强开关（--no-auto-memory / --no-semantic-recall）
+        autoMemory: opts.autoMemory === false ? false : undefined,
+        semanticRecall: opts.semanticRecall === false ? false : undefined,
       },
       fileCfg,
     );
@@ -238,10 +243,40 @@ program
     process.on('SIGINT', () => void shutdownMcp());
 
     if (opts.prompt) {
-      await runOnce(model, opts.prompt, tools, permission, bus, tracker, compress, ragStore, skillLoader, memory, opts.autoContext, opts.plan);
+      await runOnce(
+        model,
+        opts.prompt,
+        tools,
+        permission,
+        bus,
+        tracker,
+        compress,
+        ragStore,
+        skillLoader,
+        memory,
+        opts.autoContext,
+        opts.plan,
+        opts.autoMemory === false ? false : undefined,
+        opts.semanticRecall === false ? false : undefined,
+      );
       await shutdownMcp();
     } else {
-      await startRepl(config, model, tools, permission, bus, tracker, compress, ragStore, skillLoader, memory, opts.autoContext, opts.resume);
+      await startRepl(
+        config,
+        model,
+        tools,
+        permission,
+        bus,
+        tracker,
+        compress,
+        ragStore,
+        skillLoader,
+        memory,
+        opts.autoContext,
+        opts.resume,
+        opts.autoMemory === false ? false : undefined,
+        opts.semanticRecall === false ? false : undefined,
+      );
       await shutdownMcp();
     }
   });

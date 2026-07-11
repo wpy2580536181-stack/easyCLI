@@ -10,6 +10,7 @@ import { compressHistory, createDefaultSummarizer, type CompressOptions, estimat
 import { MemoryStore } from '../core/memory/store';
 import { RagStore } from '../core/rag/store';
 import { buildAutoContext, lastUserText, type AutoContextResult } from '../core/context';
+import { extractMemories } from '../core/memory/extractor';
 import { SkillLoader } from '../core/skill';
 import { SessionStore, extractConversation, withSystem, AUTOSAVE_NAME } from '../core/session/store';
 import { runAgent } from '../core/agent';
@@ -76,6 +77,8 @@ export async function runOnce(
   memory?: MemoryStore | null,
   autoContextEnabled?: boolean,
   planMode?: boolean,
+  autoMemory?: boolean,
+  semanticRecall?: boolean,
 ): Promise<void> {
   const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown });
   // 前缀缓存命中率：从 token 事件回填到状态栏（让优化「肉眼可见」）
@@ -101,9 +104,14 @@ export async function runOnce(
   status.setHeader(header);
   status.setUserTurn([paintInputBox(ui.prompt + prompt, process.stdout.columns ?? 80)]);
   // Phase 16：单次模式也自动注入上下文（基于 prompt 检索记忆/知识库）
+  const semanticRecallEnabled = semanticRecall ?? true;
   let autoContext: string | undefined;
   if (autoContextEnabled ?? true) {
-    const ac = await buildAutoContext(prompt, { memory, ragStore });
+    const ac = await buildAutoContext(prompt, {
+      memory,
+      ragStore,
+      model: semanticRecallEnabled ? model : null,
+    });
     if (ac.text) autoContext = ac.text;
   }
   // 非交互模式无 HITL 提示：默认只读工具放行，写/危险操作被拒（安全默认）
@@ -142,6 +150,8 @@ export async function startRepl(
   memory?: MemoryStore | null,
   autoContextEnabled?: boolean,
   resume?: boolean,
+  autoMemory?: boolean,
+  semanticRecall?: boolean,
 ): Promise<void> {
   /**
    * 自定义控制台：TTY 下，斜杠命令（/sessions、/help、/tools…）的 console_.log 输出
@@ -283,6 +293,9 @@ export async function startRepl(
   let planCheckpoint = 0;
   // Phase 16：自动上下文注入开关（默认开；可用 /autoctx 切换）
   let autoCtxEnabled = autoContextEnabled ?? true;
+  // Phase 20：自动记忆增强开关（默认开；可从 config/CLI 关闭）
+  const autoMemoryEnabled = autoMemory ?? true;
+  const semanticRecallEnabled = semanticRecall ?? true;
 
   /** 切换运行模式：替换 system 消息内容（normal <-> plan），其余 history 不动 */
   function setMode(m: AgentMode): void {
@@ -327,7 +340,11 @@ export async function startRepl(
     if (!autoCtxEnabled) return undefined;
     const q = lastUserText(history);
     if (!q) return undefined;
-    const res = await buildAutoContext(q, { memory, ragStore });
+    const res = await buildAutoContext(q, {
+      memory,
+      ragStore,
+      model: semanticRecallEnabled ? model : null,
+    });
     return res.text ? res : undefined;
   }
 
@@ -346,6 +363,8 @@ export async function startRepl(
     // 始终非空、可用来 refresh() 重绘历史。
     const status = currentStatus;
     let turnError = false;
+    // Phase 20：本轮是否显式调过 remember（用于自动提取的来源门控，避免重复）
+    let turnUsedRemember = false;
     // 把历史正文 + 本轮用户输入交给状态行，从顶行统一重绘（避免向上吞掉已提交输入框）
     status.setHeader(transcript);
     status.setUserTurn(userTurn);
@@ -370,7 +389,10 @@ export async function startRepl(
         autoContext: ac?.text,
         // 状态行动画：流式正文 + 实时 tokens/秒数；工具调用时显示工具名
         onText: (c) => status.pushText(c),
-        onToolCall: (call) => status.toolStart(call.name),
+        onToolCall: (call) => {
+          if (call.name === 'remember') turnUsedRemember = true;
+          status.toolStart(call.name);
+        },
         onToolResult: (call, res) => status.toolDone(call.name, res.ok),
         onCompact: (info) => status.setLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
       });
@@ -384,6 +406,17 @@ export async function startRepl(
     }
     if (!turnError) {
       void persistAutosave();
+      // Phase 20：自动记忆提取——本轮若未显式 remember，则从对话被动提取稳定事实写入记忆库。
+      // fire-and-forget：不阻塞、失败静默，与 persistAutosave 同一约定。
+      if (autoMemoryEnabled && memory && !turnUsedRemember) {
+        void extractMemories(history, { model, store: memory })
+          .then((n) => {
+            if (n > 0) transcript.push(chalk.gray(`🧠 已自动记住 ${n} 条事实`));
+          })
+          .catch(() => {
+            /* 静默 */
+          });
+      }
       // Phase 14：每轮结束展示本轮 + 累计成本（并入 transcript，下一轮可见）
       const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
       transcript.push(...userTurn, ...status.getBodyLines(), costLine);
@@ -398,6 +431,7 @@ export async function startRepl(
   async function runPlan(userTurn: string[]): Promise<void> {
     const status = currentStatus;
     let turnError = false;
+    let turnUsedRemember = false;
     status.setHeader(transcript);
     status.setUserTurn(userTurn);
     tracker.beginTurn();
@@ -419,7 +453,10 @@ export async function startRepl(
         planMode: true,
         autoContext: ac?.text,
         onText: (c) => status.pushText(c),
-        onToolCall: (call) => status.setLabel(`🔍 规划探测 ${call.name}`),
+        onToolCall: (call) => {
+          if (call.name === 'remember') turnUsedRemember = true;
+          status.setLabel(`🔍 规划探测 ${call.name}`);
+        },
         onToolResult: (call, res) => status.setLabel(`${res.ok ? '✓' : '✗'} ${call.name}`),
         onBatch: (info) =>
           status.setLabel(`⚡ 并行探测 ${info.readCount} 个只读工具（峰值并发 ${info.maxConcurrency}）`),
@@ -433,6 +470,15 @@ export async function startRepl(
     }
     if (!turnError) {
       void persistAutosave();
+      if (autoMemoryEnabled && memory && !turnUsedRemember) {
+        void extractMemories(history, { model, store: memory })
+          .then((n) => {
+            if (n > 0) transcript.push(chalk.gray(`🧠 已自动记住 ${n} 条事实`));
+          })
+          .catch(() => {
+            /* 静默 */
+          });
+      }
       const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
       // 计划批注（空行 + 提示）并入 transcript，下一轮可见
       const notes = [

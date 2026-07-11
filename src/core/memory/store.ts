@@ -22,6 +22,18 @@ export interface MemoryRecord {
   fact: string;
   source: string;
   createdAt: string;
+  /** 结构化字段（Phase 20 增强，旧行可能为 undefined） */
+  name?: string;
+  description?: string;
+  /** user | feedback | project | reference（默认 'user'） */
+  type?: string;
+}
+
+/** remember 的可选结构化元数据 */
+export interface MemoryMeta {
+  name?: string;
+  description?: string;
+  type?: string;
 }
 
 /**
@@ -33,6 +45,7 @@ export interface MemoryRecord {
  * - 生产路径默认 ~/.config/agent-cli/memory.db；
  * - 只存「事实」，检索靠最近 N 条或_like_ 模糊搜索，足够学习项目；
  *   语义检索（向量/RAG）已在第 6 期实现，见 src/core/rag。
+ * - Phase 20：表结构向前兼容扩展 name/description/type 三列（幂等 ALTER）。
  */
 export class MemoryStore {
   private readonly db: SqliteDb;
@@ -48,19 +61,38 @@ export class MemoryStore {
         created_at TEXT NOT NULL
       )`,
     );
+    // Phase 20：向前兼容迁移——旧库缺列才 ALTER（O(1) 元数据操作，安全幂等）
+    this.migrateSchema();
   }
 
-  /** 记住一条事实，返回自增 id */
-  remember(fact: string, source = 'agent'): number {
-    const stmt = this.db.prepare('INSERT INTO memory (fact, source, created_at) VALUES (?, ?, ?)');
-    const res = stmt.run(fact, source, new Date().toISOString());
+  private migrateSchema(): void {
+    const cols = this.db.prepare('PRAGMA table_info(memory)').all() as { name: string }[];
+    const has = (c: string) => cols.some((x) => x.name === c);
+    if (!has('name')) this.db.exec("ALTER TABLE memory ADD COLUMN name TEXT DEFAULT ''");
+    if (!has('description')) this.db.exec("ALTER TABLE memory ADD COLUMN description TEXT DEFAULT ''");
+    if (!has('type')) this.db.exec("ALTER TABLE memory ADD COLUMN type TEXT DEFAULT 'user'");
+  }
+
+  /** 记住一条事实，返回自增 id。meta 提供结构化字段（name/description/type） */
+  remember(fact: string, source = 'agent', meta?: MemoryMeta): number {
+    const stmt = this.db.prepare(
+      'INSERT INTO memory (fact, source, created_at, name, description, type) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+    const res = stmt.run(
+      fact,
+      source,
+      new Date().toISOString(),
+      meta?.name ?? '',
+      meta?.description ?? '',
+      meta?.type ?? 'user',
+    );
     return Number(res.lastInsertRowid);
   }
 
   /** 取最近 limit 条（倒序） */
   recall(limit = 20): MemoryRecord[] {
     const rows = this.db
-      .prepare('SELECT id, fact, source, created_at FROM memory ORDER BY id DESC LIMIT ?')
+      .prepare('SELECT id, fact, source, created_at, name, description, type FROM memory ORDER BY id DESC LIMIT ?')
       .all(limit) as MemoryRow[];
     return rows.map(toRecord);
   }
@@ -68,8 +100,33 @@ export class MemoryStore {
   /** 模糊搜索（fact 包含 query 子串） */
   search(query: string, limit = 20): MemoryRecord[] {
     const rows = this.db
-      .prepare('SELECT id, fact, source, created_at FROM memory WHERE fact LIKE ? ORDER BY id DESC LIMIT ?')
+      .prepare(
+        'SELECT id, fact, source, created_at, name, description, type FROM memory WHERE fact LIKE ? ORDER BY id DESC LIMIT ?',
+      )
       .all(`%${query}%`, limit) as MemoryRow[];
+    return rows.map(toRecord);
+  }
+
+  /**
+   * 取全部记忆的轻量目录（id/name/description/type），供自动提取去重与语义召回清单。
+   * 不取 fact 全文，省 token。
+   */
+  listAll(limit = 200): Pick<MemoryRecord, 'id' | 'name' | 'description' | 'type'>[] {
+    const rows = this.db
+      .prepare('SELECT id, name, description, type FROM memory ORDER BY id DESC LIMIT ?')
+      .all(limit) as Array<{ id: number; name: string; description: string; type: string }>;
+    return rows.map((r) => ({ id: r.id, name: r.name, description: r.description, type: r.type }));
+  }
+
+  /** 按 id 批量取全文（语义召回选中后读取 body） */
+  getByIds(ids: number[]): MemoryRecord[] {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(
+        `SELECT id, fact, source, created_at, name, description, type FROM memory WHERE id IN (${placeholders})`,
+      )
+      .all(...ids) as MemoryRow[];
     return rows.map(toRecord);
   }
 
@@ -84,8 +141,19 @@ interface MemoryRow {
   fact: string;
   source: string;
   created_at: string;
+  name?: string;
+  description?: string;
+  type?: string;
 }
 
 function toRecord(r: MemoryRow): MemoryRecord {
-  return { id: r.id, fact: r.fact, source: r.source, createdAt: r.created_at };
+  return {
+    id: r.id,
+    fact: r.fact,
+    source: r.source,
+    createdAt: r.created_at,
+    name: r.name,
+    description: r.description,
+    type: r.type,
+  };
 }

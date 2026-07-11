@@ -166,6 +166,8 @@ describe('Phase 8 配置持久化（store + 文件层）', () => {
       embedder: { type: 'tfidf' },
       search: { provider: 'duckduckgo' },
       statusline: true,
+      autoMemory: true,
+      semanticRecall: true,
     });
     expect(uc).toEqual({
       provider: 'openai',

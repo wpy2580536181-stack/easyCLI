@@ -54,3 +54,37 @@ describe('记忆工具 remember / recall', () => {
     expect(recall.isReadOnly).toBe(true);
   });
 });
+
+describe('MemoryStore (Phase 20 迁移 + 结构化字段)', () => {
+  it('新列存在且默认填充；listAll / getByIds 可用', () => {
+    const s = new MemoryStore(':memory:');
+    s.remember('旧事实');
+    const r = s.recall(1)[0]!;
+    expect(r.name).toBe(''); // 旧式写入 name 默认空
+    expect(r.type).toBe('user'); // type 默认 user
+    expect(s.listAll(10)).toHaveLength(1);
+    expect(s.getByIds([r.id]).length).toBe(1);
+  });
+
+  it('remember 带 meta 写入结构化字段', () => {
+    const s = new MemoryStore(':memory:');
+    const id = s.remember('用户偏好用 tab 缩进', 'auto', {
+      name: 'tab 缩进',
+      description: '用 tab 而非空格',
+      type: 'feedback',
+    });
+    const r = s.getByIds([id])[0]!;
+    expect(r.name).toBe('tab 缩进');
+    expect(r.description).toBe('用 tab 而非空格');
+    expect(r.type).toBe('feedback');
+    expect(r.source).toBe('auto');
+  });
+
+  it('listAll 只返回轻量字段（无 fact 全文）', () => {
+    const s = new MemoryStore(':memory:');
+    s.remember('一条很长的事实正文'.repeat(20), 'agent', { name: '长记忆', description: '描述' });
+    const list = s.listAll(10);
+    expect(list[0]!.name).toBe('长记忆');
+    expect(list[0]!).not.toHaveProperty('fact');
+  });
+});

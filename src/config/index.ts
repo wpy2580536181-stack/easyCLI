@@ -57,6 +57,10 @@ export interface AppConfig {
   statusline: boolean;
   /** 模型上下文窗口（token）；不设置则由 provider/model 推导默认（见 chatmodel/contextWindow） */
   contextWindow?: number;
+  /** Phase 20：每轮结束自动从对话提取记忆（fire-and-forget），默认开 */
+  autoMemory: boolean;
+  /** Phase 20：记忆召回使用 LLM 语义选择（替代纯关键词），默认开（有 model 时） */
+  semanticRecall: boolean;
 }
 
 export interface ConfigOverrides {
@@ -78,6 +82,10 @@ export interface ConfigOverrides {
   statusline?: boolean;
   /** 模型上下文窗口（token）；CLI --context-window 传入，不传则由 provider/model 推导 */
   contextWindow?: number;
+  /** Phase 20：关闭每轮自动记忆提取（--no-auto-memory） */
+  autoMemory?: boolean;
+  /** Phase 20：关闭 LLM 语义召回、回退关键词（--no-semantic-recall） */
+  semanticRecall?: boolean;
   /** Phase 18：搜索服务实现（CLI --search-provider），如 'tavily' | 'duckduckgo' */
   searchProvider?: string;
   /** Phase 18：搜索服务 API key（CLI --search-key） */
@@ -229,6 +237,26 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
       ? contextWindow
       : defaultContextWindow(provider, model);
 
+  // Phase 20：记忆增强开关。优先级 CLI > env(=0/false 关闭) > 文件 > 默认开。
+  const amRaw =
+    overrides.autoMemory !== undefined
+      ? String(overrides.autoMemory)
+      : process.env.AGENTCLI_AUTO_MEMORY !== undefined
+        ? process.env.AGENTCLI_AUTO_MEMORY
+        : file?.autoMemory !== undefined
+          ? String(file.autoMemory)
+          : 'true';
+  const autoMemory = !(amRaw === 'false' || amRaw === '0');
+  const srRaw =
+    overrides.semanticRecall !== undefined
+      ? String(overrides.semanticRecall)
+      : process.env.AGENTCLI_SEMANTIC_RECALL !== undefined
+        ? process.env.AGENTCLI_SEMANTIC_RECALL
+        : file?.semanticRecall !== undefined
+          ? String(file.semanticRecall)
+          : 'true';
+  const semanticRecall = !(srRaw === 'false' || srRaw === '0');
+
   // Phase 18：联网搜索配置。优先级：CLI > env > 文件 > 默认（零 key 的 duckduckgo）。
   // 默认 provider=duckduckgo（开箱即用，无需 key）；maxResults 默认 5；timeoutMs 默认 15000。
   const searchProvider = firstNonEmpty(
@@ -275,6 +303,8 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
     search,
     statusline,
     contextWindow: ctxFinal,
+    autoMemory,
+    semanticRecall,
   };
 }
 
@@ -313,6 +343,9 @@ export function appConfigToUserConfig(cfg: AppConfig): UserConfig {
   if (cfg.contextWindow && cfg.contextWindow !== defaultContextWindow(cfg.provider, cfg.llm.model)) {
     out.contextWindow = cfg.contextWindow;
   }
+  // Phase 20：两个记忆增强默认开，仅当显式关闭时落盘，避免冗余配置
+  if (cfg.autoMemory === false) out.autoMemory = false;
+  if (cfg.semanticRecall === false) out.semanticRecall = false;
   return out;
 }
 
