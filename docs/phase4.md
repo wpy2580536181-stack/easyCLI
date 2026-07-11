@@ -43,14 +43,14 @@ export AGENTCLI_API_KEY=你的Key
 pnpm dev                      # 长会话自动压缩；可用 remember/recall 工具
 pnpm dev -p "记住：用户偏好中文；然后回忆你记住的事实"   # 单次模式验证记忆
 ```
-默认压缩配置：`budgetTokens: 8000`、`keepRecentTurns: 4`、`maxToolOutputChars: 1500`。
+默认压缩配置（Phase 4 基线）：`budgetTokens: 8000`、`keepRecentTurns: 4`、`maxToolOutputChars: 1500`。**注意**：当前 `budgetTokens` 已改为「窗口相对」（不再固定 8000，见 §12）；`keepRecentTurns: 4` / `maxToolOutputChars: 1500` 仍沿用，另新增 `keepRecentToolResults: 3`（保留最近 3 条 tool 结果完整）。
 
 ---
 
 ## 2. 核心概念速览（先看这个）
 
 - **上下文压缩（Context Compression）**：Agent 每轮要把整段历史发给模型，历史越长 token 越贵、噪声越多。压缩=在「发给模型的副本」上做减法，但不改规范 `history`（工具结果回注的正确性依赖规范历史完整）。
-- **4 级渐进压缩**（Claude Code 同款思路，§8.1）：① 裁剪（截掉超长工具/助手输出）→ ② 去重（相邻相同工具结果）→ ③ 折叠（旧工具结果替换为占位，保留 `tool_call` 配对）→ ④ 摘要（用模型把中间轮压成一条）。**每级都可能释放足够空间，不必走到最后一级**——这是「渐进」的关键。
+- **渐进压缩**（Claude Code 同款思路，§8.1）：① 裁剪 → ② 去重 → ③ 折叠 → ④ 摘要的 4 级基线（详见 §3.2）；**当前已增强为 5 层（新增 L0.5 大结果落盘）+ 窗口相对预算，见 §12**。**每级都可能释放足够空间，不必走到最后一级**——这是「渐进」的关键。
 - **`tool_call ↔ tool_result` 配对不变量**：OpenAI 要求 `assistant(tool_calls)` 后必须有对应 `role:'tool'`。压缩必须以「整轮」为原子单位操作，绝不能把配对拆散，否则 API 报错。
 - **长期记忆（Long-term Memory）**：压缩管「本次会话发给模型的视图」，记忆管「跨会话该记住的事实」（用户偏好、项目约定）。两者正交（决策 7）。记忆用 SQLite 持久化，Agent 可随时 `recall` 取回、`remember` 写入。
 - **压缩副本 vs 规范历史**：循环压缩的是「发给模型的副本」，规范 `history` 不被动——避免重复摘要、保证工具结果回注正确（详见 §3.4）。
@@ -146,7 +146,7 @@ sequenceDiagram
 
 | 方案 | 压缩质量 | 依赖 | 说明 |
 |---|---|---|---|
-| **A. 本项目：4 级渐进 + 副本 + SQLite 记忆（本期）** | 高，渐进且保配对 | 零（Node 内置） | 能讲清每级触发条件、配对不变量、记忆正交性 |
+| **A. 本项目：5 层渐进（窗口相对）+ 副本 + SQLite 记忆** | 高，渐进且保配对、护缓存 | 零（Node 内置） | 能讲清每级触发条件、配对不变量、记忆正交性；§12 增强后支持大结果落盘/选择性裁剪/缓存友好摘要/413 兜底 |
 | B. 只截断旧消息（简单滑动窗口） | 低，易丢关键信息、可能拆散配对 | 零 | 实现快但长会话丢上下文、可能破坏 tool 配对 |
 | C. 每次都全文摘要（无分级） | 中，但每次多一次模型调用 | 零 | 贵；且摘要本身累积成新噪声 |
 | D. 向量库做长期记忆（RAG 化） | 语义检索强 | 需向量库/embedding | 第 6 期方向；本期用 LIKE 模糊检索足够 |
@@ -158,7 +158,7 @@ sequenceDiagram
 ## 6. 面试话术（30 秒版 + 详版）
 
 **30 秒版**：
-> 第 4 期我给 Agent 加了「记忆与节制」。两条独立能力线：一是上下文压缩，用 4 级渐进策略（裁剪超长输出→去重→折叠旧工具结果→模型摘要中间轮），每级达标就提前返回，避免每轮都调模型；压缩只产生「发给模型的副本」，规范历史不动，保证工具结果回注的 `tool_call↔tool_result` 配对不被拆散。二是长期记忆，用 Node 22 内置的 `node:sqlite` 持久化跨会话事实，Agent 通过 `remember`/`recall` 工具读写。两者正交——压缩管视图、记忆管事实。
+> 第 4 期我给 Agent 加了「记忆与节制」。两条独立能力线：一是上下文压缩，用 4 级渐进策略（裁剪超长输出→去重→折叠旧工具结果→模型摘要中间轮），每级达标就提前返回，避免每轮都调模型；压缩只产生「发给模型的副本」，规范历史不动，保证工具结果回注的 `tool_call↔tool_result` 配对不被拆散。二是长期记忆，用 Node 22 内置的 `node:sqlite` 持久化跨会话事实，Agent 通过 `remember`/`recall` 工具读写。两者正交——压缩管视图、记忆管事实。（注：当前压缩实现已增强为 5 层 + 窗口相对预算 + 413 兜底，详见 §12。）
 
 **详版（被追问时）**：
 > - 为什么压缩副本而不改规范历史？因为工具结果要按配对回注给模型，规范历史必须完整；且副本方案避免下轮对「已摘要内容」重复摘要。
@@ -235,6 +235,66 @@ sequenceDiagram
 
 - **延伸阅读**：Claude Code 真实架构中「4 级渐进压缩 / 上下文窗口管理」一节（how-claude-code-works，§8.1）；OpenAI 关于 `tool_calls` 与消息序列合法性的文档；Node 22 `node:sqlite` 文档。
 - **第 5 期预告 —— MCP 客户端**：用 `child_process.spawn` + JSON-RPC 2.0 连 MCP Server（`initialize`→`tools/list`→`tools/call`），stdio 优先；工具将动态并入 `ToolRegistry`，与内置工具同一套执行/安全检查。
-- **本期可后续增强（非必须）**：① 规范 `history` 也做「惰性归档」（超长会话把最旧轮落盘，进一步省内存）；② 记忆升级为向量检索（第 6 期 RAG 复用）；③ 压缩摘要缓存以省重复摘要开销（呼应决策 12 的 prompt cache）。
+- **本期可后续增强（非必须）**：① 规范 `history` 也做「惰性归档」（超长会话把最旧轮落盘，进一步省内存）；② 记忆升级为向量检索（第 6 期 RAG 复用）；③ 压缩摘要缓存——**已在 §12 落地**（L4 按中间内容哈希缓存，同时护住 prompt cache 命中率）。
+
+## 12. 后续增强：窗口相对预算 + 5 层压缩 + 413 兜底（对第 4 期的重写）
+
+> 背景：对照 Claude Code 教学版（s08）与 mini-claude（第 7 章）复盘后，发现原 4 级压缩有 4 处不合理，已重写为更贴近生产实现的版本。提交中标记为「Phase 19」——它是对**第 4 期压缩的增强**，不是路线图的新一期（路线图 Phase 19 仍为 Browser）。
+
+### 12.1 改了什么（对照原 4 级）
+
+| # | 原问题 | 增强 |
+|---|---|---|
+| ① | 压缩预算硬编码 `8000`，不随模型窗口变化（200K 模型下 4% 就压） | 改为**窗口相对预算**：`resolveCompressBudget(win)=win - max(maxOut,16384) - 20000`（下限 8000） |
+| ② | 缺大结果落盘层；L1 对所有工具输出 blanket 截断（含最近结果），不可恢复 | 新增 **L0.5 落盘**：>30KB 工具结果写磁盘 + `<persisted-output path>` 预览标记（可 re-read 恢复）；L1 改为**选择性裁剪**（保留最近 3 条 tool 结果完整，只裁旧的） |
+| ③ | L4 摘要非确定性且每轮重跑 → 破坏 P0 前缀缓存命中率 | L4 仅 **turn boundary**（agent 循环首轮）触发，按中间内容 `simpleHash` 缓存，使摘要确定性、不每轮重写缓存前缀 |
+| ④ | 压缩每轮 agent 循环都跑；缺 transcript/熔断/413 兜底 | 加 **transcript 落盘 + 熔断计数**（连续失败 3 次转纯折叠）+ `reactiveCompact` 纯函数（413 紧急兜底，折叠旧轮、重试一次） |
+
+### 12.2 上下文窗口推导（`src/core/chatmodel/contextWindow.ts`）
+
+- `defaultContextWindow(provider, model)`：provider 默认 anthropic 200k / openai 128k / ollama 32k；已知模型覆盖 deepseek-chat / deepseek-reasoner → 64k；都无则回退 128k。
+- `resolveCompressBudget(contextWindow, maxOutputTokens=4096)`：`effective = win - max(maxOut, 16384) - 20000`，取 `max(8000, effective)`。
+- 解析优先级：`CLI --context-window` > 环境变量 > `config.json` > `defaultContextWindow`；仅在偏离默认值时持久化到 `config.json`（避免噪音配置）。
+
+### 12.3 当前 5 层渐进压缩流水线
+
+```mermaid
+flowchart TD
+  IN[history] --> WIN[推导窗口 → resolveCompressBudget<br>budget 窗口相对]
+  WIN --> P0[第0.5级 落盘<br>大于30KB tool 结果写盘+预览标记]
+  P0 --> L1[第1级 选择性裁剪<br>截旧输出,保留最近3条tool结果]
+  L1 --> Q1{低于预算?}
+  Q1 -->|是| OUT1[返回]
+  Q1 -->|否| L2[第2级 去重<br>相邻相同tool结果]
+  L2 --> Q2{低于预算?}
+  Q2 -->|是| OUT2[返回]
+  Q2 -->|否| L3[第3级 折叠<br>中间tool结果→占位,保留配对]
+  L3 --> Q3{低于预算?}
+  Q3 -->|是| OUT3[返回]
+  Q3 -->|否| L4[第4级 摘要<br>turn boundary + 哈希缓存;失败/熔断→折叠]
+  L4 --> OUT4[system + 摘要 + 最近轮 + pinned]
+```
+
+关键点（不变式）：
+- **压缩仍只产生「副本」**，规范 history 不改写（同 §3.4）。
+- system 永远原样；`protected` 消息（用户 pinned 的关键指令）在 L0.5 / L1 / 摘要中均豁免。
+- L4 摘要确定性：同一中间内容哈希命中即复用缓存，跨回合不重写缓存前缀 → 护住 P0 前缀缓存命中率。
+- 熔断：`summaryFailures >= maxSummaryFailures(3)` 后不再调模型摘要，只折叠。
+- 413 兜底：`loop.ts` 检测 `isPromptTooLong`（status===413 或正则 `/prompt too long|context ... limit|maximum context|too many tokens/`）→ `reactiveCompact` 折叠旧轮后重试一次。
+
+### 12.4 代码索引（增强部分）
+
+| 想看什么 | 去哪 |
+|---|---|
+| 窗口推导 / 窗口相对预算 | `src/core/chatmodel/contextWindow.ts` → `defaultContextWindow` / `resolveCompressBudget` |
+| L0.5 落盘 / L1 选择性裁剪 / L4 缓存友好摘要 / 熔断 | `src/core/memory/compressor.ts` → `persistLargeResults` / `trimMessage` / `compressHistory` |
+| 413 响应式兜底 | `src/core/memory/compressor.ts` → `reactiveCompact`；`src/core/agent/loop.ts` → `isPromptTooLong` |
+| CLI 接线（共享 summaryCache / summaryFailures / persistDir / transcriptDir） | `src/cli/main.ts` / `src/cli/repl.ts` |
+| 配置透传（`--context-window`） | `src/config/index.ts` / `src/config/store.ts` |
+
+### 12.5 验证
+
+- `tsc --noEmit` 干净；`vitest` 全量 342 通过（含新增 `contextWindow.test.ts` 6 + `config` 推导 3 + `compressor` 大幅扩展）。
+- `--context-window <n>` 出现在 `--help`。
 
 > 文档模板约定（后续各期沿用）：定位 → 交付物 → 概念 → 设计原理(图) → 设计权衡 → 方案对比 → 面试话术 → **常见面试题** → 代码索引 → 踩坑 → 自测题 → 延伸。

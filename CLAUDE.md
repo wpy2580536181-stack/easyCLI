@@ -91,7 +91,7 @@ pnpm typecheck      # tsc --noEmit
 
 | # | 分支 | 结论 |
 |---|---|---|
-| 7 | 上下文压缩 | **独立于长期记忆**，作为贯穿性关注点；Phase 1 定义 `ContentBlock` 时即需为「可被裁剪/折叠/摘要」预留 |
+| 7 | 上下文压缩 | **独立于长期记忆**，作为贯穿性关注点；压缩预算按上下文窗口推导（窗口相对，见 `contextWindow.ts`），5 层渐进（L0.5 落盘→L1 选择性裁剪→L2 去重→L3 折叠→L4 缓存友好摘要），并被 413 响应式兜底保护（决策 10） |
 | 8 | 工具并发模型 | `ToolDef` 从 Day 1 带 `isReadOnly`/`isDestructive` 标记；执行器**只读并行、写串行** |
 | 9 | 可观测/扩展 | 预留**轻量事件总线/钩子**（`onToolCall`/`onError`/`onCompact`），审计与可观测性统一挂载，避免后期推翻结构 |
 | 10 | 错误恢复 | 规划故障恢复策略：上下文超限自动压缩、max-tokens 续写、API 错误指数退避、可选 fallback model |
@@ -107,7 +107,7 @@ pnpm typecheck      # tsc --noEmit
 | 1 | 脚手架 + REPL + 流式对话 + ChatModel/OpenAI 适配器 | ✅ 完成 |
 | 2 | ReAct 循环 + Tool Calling + **最小内置工具**（read_file/bash，循环才非空转） | ✅ 完成 |
 | 3 | 内置工具扩展 + 安全围栏（`isReadOnly/isDestructive` 标记；**读并行/写串行**；三级权限+围栏+黑名单+HITL+审计挂事件总线） | ✅ 完成 |
-| 4 | **上下文压缩**（裁剪/去重/折叠/摘要）+ 长期记忆（SQLite） | ✅ 已完成 |
+| 4 | **上下文压缩**（5 层渐进 + 窗口相对预算 + 413 兜底）+ 长期记忆（SQLite） | ✅ 已完成（压缩于后续增强，见 `docs/phase4.md` §12） |
 | 5 | MCP 客户端（stdio，JSON-RPC 连接状态机） | ✅ 已完成 |
 | 6 | RAG（检索增强生成，纯手写嵌入 + SQLite 向量检索） | ✅ 已完成 |
 | 7 | Skill 系统（三层加载 + **渐进式披露**保护 cache） | ✅ 已完成 |
@@ -136,7 +136,7 @@ pnpm typecheck      # tsc --noEmit
 - **配置**：`CLI 参数 > 环境变量 > 配置文件 > 默认值`，空字符串视为未设置（`firstNonEmpty`，高优先级排在候选最前）；文件为「持久化默认」层，启动即生效但可被单次旗标/环境变量临时覆盖（详见 `docs/phase8.md` §4）。
 - **权限/安全**：三级模型 + 路径围栏/命令黑名单硬 gate；写操作/bash 默认 `ask`；审计日志挂事件总线。
 - **事件总线/钩子（预留）**：工具执行、错误、压缩等关键节点发事件（`onToolCall`/`onError`/`onCompact`），审计与可观测性统一挂载（决策9），避免后期推翻结构。
-- **上下文压缩（贯穿）**：压缩策略（裁剪/去重/折叠/摘要）约束 `ChatMessage`/`ContentBlock` 结构，Phase 1 定义类型时即需为「可被折叠/摘要」预留（决策7）。
+- **上下文压缩（贯穿）**：压缩预算由上下文窗口推导（窗口相对，见 `src/core/chatmodel/contextWindow.ts`），5 层渐进（L0.5 大结果落盘 → L1 选择性裁剪 → L2 去重 → L3 折叠 → L4 仅在 turn boundary 的缓存友好摘要），约束 `ChatMessage`/`ContentBlock` 结构（决策7）；413 超限走 `reactiveCompact` 兜底（决策 10）。
 - **Multi-Agent 文件隔离**：子 Agent 各自独立 worktree/沙箱，避免并发改写同一文件冲突（决策11）。
 
 目录骨架：
@@ -209,8 +209,9 @@ flowchart TD
 > 来源：对 Claude Code 真实架构（50 万行，见 how-claude-code-works）与 PaiCLI 的横向评审。以下**不是每期必做**，而是「未来升级 / 面试加分」的方向清单——在对应期实现时应主动借鉴，优先级由低到高。
 
 ### 8.1 上下文与成本
-- **Prompt Cache 命中率**：Skill 渐进式披露（按需加载，不一次性塞满 System Prompt）、`CLAUDE.md` 缓存、压缩后保留最近若干文件——直接降成本、降延迟。→ 落地期：Skill（期7）、压缩（期4）。
-- **4 级渐进压缩**：裁剪（截旧工具输出）→ 去重 → 折叠（不删原文，可展开）→ 摘要（子 Agent 总结）。每级都可能释放足够空间，不必走到最后一级。→ 落地期：期4。
+- **上下文窗口与压缩预算**：预算不再硬编码（旧为绝对 8000），改为「窗口相对」——`defaultContextWindow(provider, model)` 按 provider/model 推导默认窗口（anthropic 200k / openai 128k / ollama 32k，deepseek 64k），`resolveCompressBudget(win) = win - max(maxOut,16384) - 20000`（下限 8000）；用户可用 `--context-window` 覆盖。→ 落地：压缩后续增强（`src/core/chatmodel/contextWindow.ts`）。
+- **Prompt Cache 命中率**：Skill 渐进式披露、压缩后保留最近若干文件——直接降成本、降延迟；**L4 摘要特意「缓存友好」**：仅在 turn boundary 触发、按中间内容哈希缓存，使压缩副本确定性、不每轮重写缓存前缀（否则会把 P0 前缀缓存命中率打回 0%）。→ 落地：Skill（期7）、压缩（期4 → 后续增强护缓存）。
+- **5 层渐进压缩**：L0.5 落盘（>30KB 工具结果写磁盘 + 预览标记，可 re-read 恢复）→ L1 选择性裁剪（截旧工具/助手输出，保留最近 3 条 tool 结果完整）→ L2 去重（相邻相同工具结果）→ L3 折叠（中间工具结果换占位，保留 `tool_call` 配对）→ L4 摘要（模型把中间轮压成一条；仅 turn boundary + 哈希缓存；连续失败 3 次熔断转纯折叠）。每级都可能释放足够空间，不必走到最后一级。→ 落地：期4 → 后续增强（L0.5 / L1 选择性 / L4 护缓存）。
 
 ### 8.2 性能与体验
 - **工具预执行**：模型还在流式输出时就解析并执行 `tool_calls`，把约 1s 的工具延迟藏进模型思考窗口。当前 `complete()` 等全流结束才返回，未来可在流式阶段并行预执行只读工具。→ 升级期：期3/期10。
@@ -222,7 +223,7 @@ flowchart TD
 
 ### 8.4 错误恢复（「用起来稳」的关键）
 Claude Code 有约 7 种「继续」策略，大部分错误用户无感：
-- 上下文超限 → 自动压缩后重试
+- 上下文超限（413 / prompt_too_long）→ 常规压缩；仍超限则 `reactiveCompact` 纯函数兜底（折叠旧轮、保留 system/最近轮/受保护消息，重试一次）
 - max output tokens → 自动续写（最多 3 次）
 - API 错误 → 指数退避
 - 可选 fallback model 切换

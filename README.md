@@ -14,7 +14,7 @@
 - **ReAct 循环 + Tool Calling**：模型可调用内置/外部工具，循环直至给出最终答案
 - **内置工具**：`read_file` / `write_file` / `edit_file` / `list_dir` / `glob` / `grep` / `bash`
 - **安全围栏**：`isReadOnly`/`isDestructive` 标记，读并行 / 写串行；三级权限 + 围栏 + 黑名单 + HITL 人工确认 + 审计日志（挂事件总线）
-- **上下文压缩 + 长期记忆**（SQLite）：超预算自动裁剪 / 去重 / 折叠 / 摘要
+- **上下文压缩 + 长期记忆**（SQLite）：窗口相对预算 + 5 层渐进压缩（大结果落盘 / 选择性裁剪 / 去重 / 折叠 / 缓存友好摘要）+ 413 响应式兜底
 - **MCP 协议**：客户端（stdio，JSON-RPC 状态机）+ 服务端（暴露 tools/resources，可选 Streamable HTTP）
 - **RAG 检索增强**：纯手写嵌入（TF-IDF）+ SQLite 向量检索，可插拔 API 嵌入器
 - **Skill 系统**：三层加载（builtin/user/project）+ 渐进式披露，保护 Prompt Cache
@@ -106,7 +106,7 @@ pnpm lint        # eslint
 | 1 | 脚手架 + REPL + 流式对话 + ChatModel/OpenAI 适配器 | ✅ 完成 |
 | 2 | ReAct 循环 + Tool Calling + 最小内置工具（read_file/bash） | ✅ 完成 |
 | 3 | 内置工具扩展 + 安全围栏（isReadOnly/isDestructive；读并行/写串行；三级权限+围栏+黑名单+HITL+审计） | ✅ 完成 |
-| 4 | 上下文压缩（裁剪/去重/折叠/摘要）+ 长期记忆（SQLite） | ✅ 完成 |
+| 4 | 上下文压缩（5 层渐进 + 窗口相对预算 + 413 兜底）+ 长期记忆（SQLite） | ✅ 完成 |
 | 5 | MCP 客户端（stdio，JSON-RPC 连接状态机） | ✅ 完成 |
 | 6 | RAG（检索增强生成，纯手写嵌入 + SQLite 向量检索） | ✅ 完成 |
 | 7 | Skill 系统（三层加载 + 渐进式披露保护 cache） | ✅ 完成 |
@@ -155,7 +155,7 @@ src/core/chatmodel/   ChatModel 接口 + 适配器（OpenAI 兼容 / Anthropic /
 src/core/agent/       ReAct 循环（决策核心，不依赖 REPL）
 src/core/tools/       工具系统（含 isReadOnly/isDestructive 标记）
 src/core/mcp/         McpClient（期5）/ McpServer（期12）
-src/core/memory/      上下文压缩 + SQLite 长期记忆
+src/core/memory/      上下文压缩（5 层）+ SQLite 长期记忆；窗口推导见 src/core/chatmodel/contextWindow.ts
 src/core/rag/         向量检索（期6）
 src/core/skill/       三层加载 + 渐进式披露（期7）
 src/core/multiagent/  Orchestrator（期17，worktree 隔离）
