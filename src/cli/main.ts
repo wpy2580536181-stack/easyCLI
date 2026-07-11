@@ -87,6 +87,7 @@ program
   .option('--context-window <n>', '模型上下文窗口 token 数（不传则由 provider/model 推导默认）')
   .option('--no-auto-memory', '关闭每轮自动从对话提取记忆（Phase 20，默认开启）')
   .option('--no-semantic-recall', '关闭 LLM 语义召回、回退关键词匹配（Phase 20，默认开启）')
+  .option('--skill-autoinject <list>', 'Skill 自动注入：逗号分隔的技能名列表，其正文每轮自动拼入系统提示（Phase 22）')
   .action(async () => {
     const opts = program.opts<
       ConfigOverrides & {
@@ -144,6 +145,8 @@ program
         // Phase 20：记忆增强开关（--no-auto-memory / --no-semantic-recall）
         autoMemory: opts.autoMemory === false ? false : undefined,
         semanticRecall: opts.semanticRecall === false ? false : undefined,
+        // Phase 22：Skill 自动注入（--skill-autoinject <逗号分隔技能名>）
+        skillAutoinject: opts.skillAutoinject,
       },
       fileCfg,
     );
@@ -264,6 +267,7 @@ program
         opts.plan,
         opts.autoMemory === false ? false : undefined,
         opts.semanticRecall === false ? false : undefined,
+        config.skills.autoInject,
       );
       await shutdownMcp();
     } else {
@@ -282,6 +286,7 @@ program
         opts.resume,
         opts.autoMemory === false ? false : undefined,
         opts.semanticRecall === false ? false : undefined,
+        config.skills.autoInject,
       );
       await shutdownMcp();
     }

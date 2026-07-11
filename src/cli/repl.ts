@@ -79,6 +79,7 @@ export async function runOnce(
   planMode?: boolean,
   autoMemory?: boolean,
   semanticRecall?: boolean,
+  autoInjectNames?: string[],
 ): Promise<void> {
   const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown });
   // 前缀缓存命中率：从 token 事件回填到状态栏（让优化「肉眼可见」）
@@ -91,8 +92,11 @@ export async function runOnce(
   // ⚠ 前缀缓存：sysCtx 在本函数内只构造一次 → now 被冻结在「会话起点」。
   // 这样含时间/cwd/git 的 system 提示在整段会话里逐字节稳定（前缀匹配才能命中）。
   // 若想刷新运行上下文，应显式 /clear 或重建会话，而非每轮 new Date()。
-  const sysCtx = { cwd: process.cwd(), skillsMenu: skillLoader?.menuText() ?? undefined, toolNames: tools.list().map((t) => t.name), now: new Date() };
-  const sys = planMode ? buildPlanSystemPrompt(sysCtx) : buildAgentSystemPrompt(sysCtx);
+  const sysCtx = { cwd: process.cwd(), skillsMenu: autoInjectNames && autoInjectNames.length ? skillLoader?.menuTextExcluding(autoInjectNames) ?? undefined : skillLoader?.menuText() ?? undefined, toolNames: tools.list().map((t) => t.name), now: new Date() };
+  // Phase 22：Skill 自动注入——把指定技能正文拼入稳定 system 前缀（不被压缩、缓存友好）。
+  const autoInjectBlock = autoInjectNames && autoInjectNames.length ? skillLoader?.autoInjectBlock(autoInjectNames) ?? '' : '';
+  const baseSys = planMode ? buildPlanSystemPrompt(sysCtx) : buildAgentSystemPrompt(sysCtx);
+  const sys = autoInjectBlock ? `${baseSys}\n\n${autoInjectBlock}` : baseSys;
   const history: ChatMessage[] = [
     { role: 'system', content: sys },
     { role: 'user', content: prompt },
@@ -152,6 +156,7 @@ export async function startRepl(
   resume?: boolean,
   autoMemory?: boolean,
   semanticRecall?: boolean,
+  autoInjectNames?: string[],
 ): Promise<void> {
   /**
    * 自定义控制台：TTY 下，斜杠命令（/sessions、/help、/tools…）的 console_.log 输出
@@ -279,16 +284,23 @@ export async function startRepl(
   // 进入/退出规划模式时只替换 history[0].content，不另起引擎。
   // ⚠ 前缀缓存：sysCtx 在会话内只构造一次 → now 冻结在会话起点，
   // 使含时间/cwd/git 的 system 提示整段稳定（前缀匹配才能命中）。
-  const sysCtx = { cwd: process.cwd(), skillsMenu: skillLoader?.menuText() ?? undefined, toolNames: tools.list().map((t) => t.name), now: new Date() };
+  const sysCtx = { cwd: process.cwd(), skillsMenu: autoInjectNames && autoInjectNames.length ? skillLoader?.menuTextExcluding(autoInjectNames) ?? undefined : skillLoader?.menuText() ?? undefined, toolNames: tools.list().map((t) => t.name), now: new Date() };
+  // Phase 22：Skill 自动注入块——构造一次、会话内稳定，作为 system 前缀的一部分（缓存友好、不被压缩）。
+  const autoInjectBlock = autoInjectNames && autoInjectNames.length ? skillLoader?.autoInjectBlock(autoInjectNames) ?? '' : '';
+  /** 按模式构造系统提示：基础提示 + 自动注入块（若开启）。normal/plan 共用，保证切换一致。 */
+  function makeSys(m: AgentMode): string {
+    const base = m === 'plan' ? buildPlanSystemPrompt(sysCtx) : buildAgentSystemPrompt(sysCtx);
+    return autoInjectBlock ? `${base}\n\n${autoInjectBlock}` : base;
+  }
   const history: ChatMessage[] = [
     {
       role: 'system',
-      content: buildAgentSystemPrompt(sysCtx),
+      content: makeSys('normal'),
     },
   ];
   // 模式与批准状态（Phase 15）
   let mode: AgentMode = 'normal';
-  let normalSys = buildAgentSystemPrompt(sysCtx);
+  let normalSys = makeSys('normal');
   let awaitingApproval = false;
   let planCheckpoint = 0;
   // Phase 16：自动上下文注入开关（默认开；可用 /autoctx 切换）
@@ -300,7 +312,7 @@ export async function startRepl(
   /** 切换运行模式：替换 system 消息内容（normal <-> plan），其余 history 不动 */
   function setMode(m: AgentMode): void {
     mode = m;
-    const content = m === 'plan' ? buildPlanSystemPrompt(sysCtx) : normalSys;
+    const content = makeSys(m);
     if (history[0] && typeof history[0].content === 'string') history[0].content = content;
   }
   // Phase 9：会话存储 + 跨会话恢复。每轮结束自动写 autosave，--resume 时恢复。
@@ -311,8 +323,9 @@ export async function startRepl(
       const systemContent = typeof history[0]?.content === 'string' ? history[0].content : '';
       history.length = 0;
       history.push(...withSystem(loaded, systemContent));
-      // 恢复后把 normalSys 同步成实际 system，保证 /plan→/discard 切换时 system 不丢
-      if (typeof history[0]?.content === 'string') normalSys = history[0].content;
+      // 恢复后重建 normalSys（含 Phase 22 自动注入块），保证 /plan→/discard 切换时 system 一致
+      normalSys = makeSys('normal');
+      if (typeof history[0]?.content === 'string') history[0].content = normalSys;
       console_.log(chalk.gray(`⟳ 已从自动保存的会话恢复（${loaded.length} 条消息）`));
     }
   }

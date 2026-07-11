@@ -56,6 +56,31 @@ describe('loadConfig 配置合并', () => {
     const config = loadConfig();
     expect(config.llm.apiKey).toBe('fallback-key');
   });
+
+  it('Phase 22：skills.autoInject 默认空（关闭自动注入）', () => {
+    const config = loadConfig();
+    expect(config.skills.autoInject).toEqual([]);
+  });
+
+  it('Phase 22：CLI --skill-autoinject 覆盖并解析为数组', () => {
+    const config = loadConfig({ skillAutoinject: 'greet, review ,web-access' });
+    expect(config.skills.autoInject).toEqual(['greet', 'review', 'web-access']);
+  });
+
+  it('Phase 22：环境变量 AGENTCLI_SKILL_AUTOINJECT 经逗号解析', () => {
+    vi.stubEnv('AGENTCLI_SKILL_AUTOINJECT', 'a,b');
+    const config = loadConfig();
+    expect(config.skills.autoInject).toEqual(['a', 'b']);
+  });
+
+  it('Phase 22：文件 skills.autoInject 生效；appConfigToUserConfig 仅在非空时落盘', () => {
+    const config = loadConfig({}, { skills: { autoInject: ['explain-code'] } });
+    expect(config.skills.autoInject).toEqual(['explain-code']);
+    const uc = appConfigToUserConfig(config);
+    expect(uc.skills).toEqual({ autoInject: ['explain-code'] });
+    // 空列表不落盘
+    expect(appConfigToUserConfig(loadConfig()).skills).toBeUndefined();
+  });
 });
 
 describe('Phase 8 配置持久化（store + 文件层）', () => {
@@ -168,6 +193,7 @@ describe('Phase 8 配置持久化（store + 文件层）', () => {
       statusline: true,
       autoMemory: true,
       semanticRecall: true,
+      skills: { autoInject: [] },
     });
     expect(uc).toEqual({
       provider: 'openai',

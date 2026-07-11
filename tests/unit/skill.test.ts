@@ -164,6 +164,43 @@ describe('SkillLoader 三层加载 + 同名覆盖', () => {
   });
 });
 
+describe('autoInjectBlock（Phase 22：Skill 自动注入）', () => {
+  const makeSources = (): SkillSource[] => [
+    { layer: 'builtin', dir: builtinDir },
+    { layer: 'user', dir: userDir },
+    { layer: 'project', dir: projectDir },
+  ];
+
+  it('空列表返回空串（关闭状态）', () => {
+    const loader = new SkillLoader(makeSources());
+    expect(loader.autoInjectBlock([])).toBe('');
+    expect(loader.autoInjectBlock(['  '])).toBe('');
+  });
+
+  it('拼入指定技能正文，且取项目层覆盖后的正文', () => {
+    const loader = new SkillLoader(makeSources());
+    const block = loader.autoInjectBlock(['greet', 'review']);
+    expect(block).toContain('始终生效的技能指令');
+    // greet 取 project 层覆盖后的正文
+    expect(block).toContain('这是项目层技能正文');
+    expect(block).toContain('必须先说「你好」');
+    // review 正文
+    expect(block).toContain('审查步骤：1) 读改动');
+    // 每个技能作为独立 ### 块出现
+    expect(block).toContain('### 技能：greet');
+    expect(block).toContain('### 技能：review');
+  });
+
+  it('不存在的技能名被静默跳过（不报错、不阻断）', () => {
+    const loader = new SkillLoader(makeSources());
+    const block = loader.autoInjectBlock(['review', 'ghost']);
+    expect(block).toContain('### 技能：review');
+    expect(block).not.toContain('ghost');
+    // 仅 review 一个块
+    expect(block.match(/### 技能：/g)).toHaveLength(1);
+  });
+});
+
 describe('use_skill 经执行器跑通一轮（渐进披露触发）', () => {
   class ScriptedModel implements ChatModel {
     readonly id = 'mock:test';

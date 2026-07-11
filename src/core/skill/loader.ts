@@ -86,7 +86,16 @@ export class SkillLoader {
    * 轻量且随技能集合稳定变化，有利于 prompt cache 命中。
    */
   menuText(): string {
-    const list = this.index();
+    return this.menuTextExcluding([]);
+  }
+
+  /**
+   * 渐进式披露文本，但排除指定技能名（Phase 22：已被自动注入正文的技能不再列入菜单，
+   * 避免系统提示既「常驻正文」又「要求 use_skill 按需加载」造成重复触发与回合浪费）。
+   */
+  menuTextExcluding(exclude: string[]): string {
+    const skip = new Set(exclude.map((n) => n.trim()).filter(Boolean));
+    const list = this.index().filter((s) => !skip.has(s.name));
     if (list.length === 0) return '';
     const lines = list.map((s) => `- ${s.name}：${s.description}`);
     return `可用技能（按需调用 use_skill 获取详细指令）：\n${lines.join('\n')}`;
@@ -95,6 +104,27 @@ export class SkillLoader {
   /** 当前已索引的技能名列表（/skills 命令用） */
   list(): SkillMeta[] {
     return this.index();
+  }
+
+  /**
+   * Phase 22：自动注入块。
+   * 把指定技能的正文拼成一段系统提示文本——是「渐进式披露（按需 use_skill）」的对称：
+   * 这些技能的正文每轮自动进系统提示，无需模型主动调用。
+   * 仅拼入实际存在的技能正文；不存在 / 正文为空的 name 静默跳过（不报错、不阻断启动）。
+   * 返回空串表示没有任何技能可注入。
+   */
+  autoInjectBlock(names: string[]): string {
+    const blocks = names
+      .map((n) => n.trim())
+      .filter(Boolean)
+      .map((n) => this.load(n))
+      .filter((s): s is Skill => !!s && !!s.body.trim())
+      .map((s) => `### 技能：${s.name}\n${s.body.trim()}`);
+    if (blocks.length === 0) return '';
+    return (
+      '【始终生效的技能指令】（以下技能正文已每轮自动注入、直接生效；你必须严格遵循其中的全部指令与输出格式，无需再调用 use_skill）\n' +
+      blocks.join('\n\n')
+    );
   }
 }
 

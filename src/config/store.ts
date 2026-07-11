@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import type { McpServerSpec } from '../core/mcp/client';
-import type { EmbedderConfig, FallbackConfig, SearchConfig } from '../config';
+import type { EmbedderConfig, FallbackConfig, SearchConfig, SkillConfig } from '../config';
 
 /** 配置文件绝对路径（跨平台：~/.config/agent-cli/config.json） */
 export const CONFIG_PATH = join(homedir(), '.config', 'agent-cli', 'config.json');
@@ -44,6 +44,8 @@ export interface UserConfig {
   autoMemory?: boolean;
   /** Phase 20：LLM 语义召回开关（默认开） */
   semanticRecall?: boolean;
+  /** Phase 22：Skill 自动注入配置（可选；默认关闭，不写即不自动注入） */
+  skills?: SkillConfig;
 }
 
 const mcpServerSchema = z.object({
@@ -85,6 +87,11 @@ const userConfigSchema = z.object({
   contextWindow: z.number().int().positive().optional(),
   autoMemory: z.boolean().optional(),
   semanticRecall: z.boolean().optional(),
+  skills: z
+    .object({
+      autoInject: z.array(z.string()).optional(),
+    })
+    .optional(),
   search: z
     .object({
       provider: z.enum(['tavily', 'duckduckgo']).optional(),

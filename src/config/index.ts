@@ -40,6 +40,14 @@ export interface SearchConfig {
   timeoutMs?: number;
 }
 
+/** Phase 22：Skill 自动注入配置。
+ *  autoInject 列出「每轮系统提示都自动拼入正文」的技能名（无需模型调 use_skill）。
+ *  适合每轮必用、触发规律可预测的高频技能；正文进稳定 system 前缀（缓存友好、不被压缩）。 */
+export interface SkillConfig {
+  /** 自动注入的技能名列表（按 SkillLoader 三层加载解析）；默认空 = 关闭 */
+  autoInject: string[];
+}
+
 export interface AppConfig {
   provider: string;
   llm: LlmConfig;
@@ -61,6 +69,8 @@ export interface AppConfig {
   autoMemory: boolean;
   /** Phase 20：记忆召回使用 LLM 语义选择（替代纯关键词），默认开（有 model 时） */
   semanticRecall: boolean;
+  /** Phase 22：Skill 自动注入配置（默认关闭 autoInject=[]） */
+  skills: SkillConfig;
 }
 
 export interface ConfigOverrides {
@@ -86,6 +96,8 @@ export interface ConfigOverrides {
   autoMemory?: boolean;
   /** Phase 20：关闭 LLM 语义召回、回退关键词（--no-semantic-recall） */
   semanticRecall?: boolean;
+  /** Phase 22：Skill 自动注入的技能名列表（逗号分隔字符串；CLI --skill-autoinject 传入） */
+  skillAutoinject?: string;
   /** Phase 18：搜索服务实现（CLI --search-provider），如 'tavily' | 'duckduckgo' */
   searchProvider?: string;
   /** Phase 18：搜索服务 API key（CLI --search-key） */
@@ -257,6 +269,20 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
           : 'true';
   const semanticRecall = !(srRaw === 'false' || srRaw === '0');
 
+  // Phase 22：Skill 自动注入。优先级 CLI > env(逗号串) > 文件 > 默认[]（关闭）。
+  const skillAutoInjectRaw = firstNonEmpty(
+    '',
+    overrides.skillAutoinject,
+    process.env.AGENTCLI_SKILL_AUTOINJECT,
+    file?.skills?.autoInject?.join(',') ?? '',
+  );
+  const skillAutoInject = skillAutoInjectRaw
+    ? skillAutoInjectRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+
   // Phase 18 + Phase 20：联网搜索配置。优先级：CLI > env > 文件 > 默认（零 key 的 bing）。
   // 默认 provider=bing（受限网络/代理下通常可达，无需 key）；maxResults 默认 5；timeoutMs 默认 15000。
   const searchProvider = firstNonEmpty(
@@ -308,6 +334,7 @@ export function loadConfig(overrides: ConfigOverrides = {}, fileConfig?: UserCon
     contextWindow: ctxFinal,
     autoMemory,
     semanticRecall,
+    skills: { autoInject: skillAutoInject },
   };
 }
 
@@ -349,6 +376,8 @@ export function appConfigToUserConfig(cfg: AppConfig): UserConfig {
   // Phase 20：两个记忆增强默认开，仅当显式关闭时落盘，避免冗余配置
   if (cfg.autoMemory === false) out.autoMemory = false;
   if (cfg.semanticRecall === false) out.semanticRecall = false;
+  // Phase 22：仅当配置了自动注入技能（非空）时才落盘，避免把默认空数组写进文件
+  if (cfg.skills.autoInject.length) out.skills = { autoInject: cfg.skills.autoInject };
   return out;
 }
 
