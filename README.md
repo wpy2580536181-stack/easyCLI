@@ -28,6 +28,7 @@
 - **Token / 成本统计与可观测性**：挂事件总线统一观测
 - **动态上下文注入**：当前时间、cwd、git 分支、OS 自动注入 System Prompt
 - **Multi-Agent**：Planner / Worker / Reviewer，文件隔离（git worktree）+ 事件总线
+- **Subagent（task 工具）**：主 Agent 在 ReAct 循环内可**自主派发**子 Agent（对齐 Learn Claude Code s06）；子 Agent 共享主 cwd（文件副作用保留），但拥有全新 `messages[]`（上下文隔离），只把结论回传，工具集剔除 `task` 防递归
 - **联网搜索**：`web_search`（实时检索标题/链接/摘要）+ `web_fetch`（网页正文提取）；Provider 无关（Tavily 正式 API + DuckDuckGo 零 key 兜底），配置纳入 `config.json` 的 `search`
 
 ---
@@ -127,6 +128,7 @@ pnpm lint        # eslint
 | 20 | 记忆增强：自动提取（每轮从对话被动记忆）+ LLM 语义召回（topN 选择，降级关键词） | ✅ 完成 |
 | 21 | 任务规划（todo_write）：带状态的可追踪任务清单 + nag reminder（复杂多步任务先拆解再逐项执行） | ✅ 完成 |
 | 22 | Skill 自动注入：指定技能正文每轮自动拼入系统提示（无需 use_skill），菜单同步排除避免重复触发 | ✅ 完成 |
+| 23 | Subagent（task 工具）：主 Agent 循环内自主派发子 Agent（全新上下文隔离 + 只回传结论 + 防递归），对齐 s06 | ✅ 完成 |
 
 ---
 
@@ -150,6 +152,7 @@ pnpm lint        # eslint
 - [第 15 期：Plan 模式 + 异步并行](./docs/phase15.md)
 - [第 16 期：记忆与检索自动注入](./docs/phase16.md)
 - [第 17 期：Multi-Agent](./docs/phase17.md)
+- [第 23 期：Subagent（task 工具，对齐 s06）](./docs/phase23.md)
 - [记忆增强设计（Phase 20）：自动提取 + LLM 语义召回](./docs/memory-enhancement-design.md)
 
 ---

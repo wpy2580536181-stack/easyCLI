@@ -41,7 +41,7 @@ const behaviorBlock = (): string =>
   '用简洁、准确的中文回答用户的问题；优先动手用工具解决，而不是只给建议。';
 
 /** 语义上需单独给「使用时机」指引的工具（名称属项目契约）；其余工具直接列入「优先可用的工具」 */
-const NON_GENERAL_TOOLS = new Set(['web_search', 'web_fetch', 'rag_search', 'use_skill', 'todo_write']);
+const NON_GENERAL_TOOLS = new Set(['web_search', 'web_fetch', 'rag_search', 'use_skill', 'todo_write', 'task']);
 
 const toolPolicyBlock = (toolNames: string[]): string => {
   const parts: string[] = ['需要完成任务时，优先调用可用工具，而不是只给建议。'];
@@ -67,6 +67,13 @@ const toolPolicyBlock = (toolNames: string[]): string => {
       '已提供 todo_write（任务规划）：面对需要多步、跨多个文件、或先探索再执行的复杂任务时，' +
         '应先调用 todo_write 把任务拆成有状态的步骤（初始 pending），开始某步前置为 in_progress、完成后立即置 completed，' +
         '始终保持同一时刻至多一个 in_progress；执行中随进展持续更新清单。简单的单步任务无需使用。',
+    );
+  }
+  if (toolNames.includes('task')) {
+    parts.push(
+      '已提供 task（派发子 Agent）：当某个子任务可以独立完成时，可调用 task 把它派给一个拥有独立上下文的子 Agent，' +
+        '它只把最终结论回传给你（中间过程不回传，不污染主对话上下文）。适合需要探索 / 调研 / 生成代码、' +
+        '但不想让冗长过程冲淡主对话注意力的子任务。琐碎的单步操作无需派发子 Agent。',
     );
   }
   return parts.join('');

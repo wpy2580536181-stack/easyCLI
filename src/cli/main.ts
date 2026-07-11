@@ -26,6 +26,7 @@ import { createEmbedder } from '../core/rag/embedder';
 import { SkillLoader, getSkillTools, type SkillSource } from '../core/skill';
 import { getWebTools } from '../core/tools/web';
 import { TodoStore, getPlanningTools } from '../core/tools/planning';
+import { getSubagentTools } from '../core/multiagent/subagent';
 import type { CompressOptions } from '../core/memory/compressor';
 import { createCounter } from '../core/observability/tokenizer';
 import { CostTracker } from '../core/observability';
@@ -217,6 +218,11 @@ program
     const bus = new EventBus();
     const permission = new PermissionManager({ registry: tools });
     permission.load(); // 加载已持久化的 allow/deny
+
+    // Phase 23：Subagent（task 工具）——对齐 s06，主 Agent 可在循环内自主派发子 Agent。
+    // 子 Agent 共享主 cwd（文件系统副作用保留，对齐 s06），但拥有全新 messages[]（上下文隔离）；
+    // 工具集剔除 task 自身防递归。工具标 isReadOnly=true（编排不改主目录，子 Agent 写操作仍各自经权限 gate）。
+    tools.registerAll(getSubagentTools({ model, permission, bus, cwd: process.cwd(), tools }));
     new AuditLogger(join(homedir(), '.config', 'agent-cli', 'audit.jsonl')).attach(bus);
     // Phase 14：成本/用量追踪器，同样挂在事件总线上统一观测
     const tracker = new CostTracker();
