@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { writeFile, mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ToolRegistry, createToolRegistry } from '../../src/core/tools/registry';
@@ -57,5 +57,52 @@ describe('内置工具执行', () => {
     const tool = getBuiltinTools().find((t) => t.name === 'bash')!;
     const res = await tool.execute!({ command: 'exit 3' }, { cwd: process.cwd() });
     expect(res.ok).toBe(false);
+  });
+});
+
+describe('grep 工具（ripgrep 后端）', () => {
+  it('匹配行返回 文件:行号:内容 格式', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'easycli-grep-'));
+    await writeFile(join(dir, 'app.ts'), 'const a = 1;\nconst needle = 2;\nconst b = 3;\n', 'utf8');
+    const tool = getBuiltinTools().find((t) => t.name === 'grep')!;
+    const res = await tool.execute!({ pattern: 'needle', path: '.' }, { cwd: dir });
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('app.ts:2:const needle = 2');
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('无匹配返回 (无匹配)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'easycli-grep-'));
+    await writeFile(join(dir, 'app.ts'), 'const a = 1;\n', 'utf8');
+    const tool = getBuiltinTools().find((t) => t.name === 'grep')!;
+    const res = await tool.execute!({ pattern: 'zzz_not_exist' }, { cwd: dir });
+    expect(res.ok).toBe(true);
+    expect(res.output).toBe('(无匹配)');
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('自动跳过 node_modules（.gitignore 感知）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'easycli-grep-'));
+    await writeFile(join(dir, '.gitignore'), 'node_modules/\n', 'utf8');
+    await writeFile(join(dir, 'app.ts'), 'const needle = 1;\n', 'utf8');
+    await mkdir(join(dir, 'node_modules', 'lib'), { recursive: true });
+    await writeFile(join(dir, 'node_modules', 'lib', 'index.js'), 'const needle = 2;\n', 'utf8');
+    const tool = getBuiltinTools().find((t) => t.name === 'grep')!;
+    const res = await tool.execute!({ pattern: 'needle', path: '.' }, { cwd: dir });
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain('app.ts:1:const needle = 1');
+    expect(res.output).not.toContain('node_modules');
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('匹配结果截断到 200 行', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'easycli-grep-'));
+    const content = Array.from({ length: 250 }, (_, i) => `line${i}: needle here`).join('\n') + '\n';
+    await writeFile(join(dir, 'big.ts'), content, 'utf8');
+    const tool = getBuiltinTools().find((t) => t.name === 'grep')!;
+    const res = await tool.execute!({ pattern: 'needle', path: '.' }, { cwd: dir });
+    expect(res.ok).toBe(true);
+    expect(res.output.split('\n').length).toBe(200);
+    await rm(dir, { recursive: true, force: true });
   });
 });

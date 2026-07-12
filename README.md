@@ -12,7 +12,7 @@
 
 - **终端 REPL 多轮对话**，支持 OpenAI 兼容模型的**流式输出**与欢迎面板（Splash）
 - **ReAct 循环 + Tool Calling**：模型可调用内置/外部工具，循环直至给出最终答案
-- **内置工具**：`read_file` / `write_file` / `edit_file` / `list_dir` / `glob` / `grep` / `bash`
+- **内置工具**：`read_file` / `write_file` / `edit_file` / `list_dir` / `glob` / `grep` / `bash`（`grep` 底层走 ripgrep，gitignore 感知、自动跳过 `node_modules`/二进制/超大文件；环境无 `rg` 时回退 JS 扫描）
 - **安全围栏**：`isReadOnly`/`isDestructive` 标记，读并行 / 写串行；三级权限 + 围栏 + 黑名单 + HITL 人工确认 + 审计日志（挂事件总线）
 - **上下文压缩 + 长期记忆**（SQLite）：窗口相对预算 + 5 层渐进压缩（大结果落盘 / 选择性裁剪 / 去重 / 折叠 / 缓存友好摘要）+ 413 响应式兜底
 - **记忆增强**：① 每轮结束自动从对话提取稳定事实写入记忆库（fire-and-forget）；② 记忆召回用 LLM 语义选择 topN（理解字面不同但语义相关，失败降级关键词）。开关 `--no-auto-memory` / `--no-semantic-recall`

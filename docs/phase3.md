@@ -35,7 +35,7 @@
 | 审计日志（脱敏） | `src/core/security/audit.ts` | `AuditLogger` 订阅总线，JSONL 落盘；`redact()` 遮蔽密钥 |
 | 事件总线 | `src/core/events/bus.ts` | `EventBus`：解耦循环与审计/可观测（决策 9 落地） |
 | 读并行/写串行执行器 | `src/core/tools/executor.ts` | `executeTools`：按权限决策 → 只读 `Promise.all`、写串行、被拒不执行 |
-| 内置工具扩展 | `src/core/tools/builtin.ts` | 7 个工具：read/write/edit/list_dir/glob/grep/bash，文件类统一走围栏 |
+| 内置工具扩展 | `src/core/tools/builtin.ts` | 7 个工具：read/write/edit/list_dir/glob/grep/bash，文件类统一走围栏；`grep` 走 ripgrep 后端（gitignore 感知、跳过二进制/超大文件，环境无 `rg` 时回退进程内 JS 扫描） |
 | 循环接入权限+总线 | `src/core/agent/loop.ts` | `runAgent` 委托 `executeTools`，仅负责「调模型 + 回注历史」 |
 | REPL + HITL 接线 | `src/cli/repl.ts` | `runOnce`（安全默认）/ `startRepl`（交互式 y/n/a 审批、新增 `/perm`） |
 | 组合根接线 | `src/cli/main.ts` | 构造 `EventBus`+`PermissionManager`+`AuditLogger` 并注入 |

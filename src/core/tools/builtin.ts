@@ -1,4 +1,5 @@
 import { readFile, writeFile, readdir } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { join, relative, resolve, sep } from 'node:path';
 import type { ToolContext, ToolDef, ToolResult } from '../chatmodel/types';
 import { resolveSafe } from '../security/path-fence';
@@ -110,31 +111,72 @@ async function globTool(args: Record<string, unknown>, ctx: ToolContext): Promis
   }
 }
 
+// ripgrep 是否可用（首次探测后缓存，避免每次查询都 fork 一次）
+let rgAvailable: boolean | null = null;
+function hasRipgrep(): boolean {
+  if (rgAvailable === null) {
+    try {
+      const r = spawnSync('rg', ['--version'], { encoding: 'utf8' });
+      rgAvailable = !r.error && (r.stdout || '').includes('ripgrep');
+    } catch {
+      rgAvailable = false;
+    }
+  }
+  return rgAvailable;
+}
+
+// 进程内 JS 扫描兜底（环境无 rg 时保持工具可用，行为与原实现一致）
+async function grepJS(pattern: string, path: string, ctx: ToolContext): Promise<string> {
+  const re = new RegExp(pattern);
+  const out: string[] = [];
+  for await (const f of walk(resolveSafe(ctx.cwd, path))) {
+    let text: string;
+    try {
+      text = await readFile(f, 'utf8');
+    } catch {
+      continue;
+    }
+    if (text.length > 1_000_000) continue;
+    const rel = relative(ctx.cwd, f);
+    text.split('\n').forEach((line, i) => {
+      if (re.test(line)) out.push(`${rel}:${i + 1}:${line}`);
+    });
+  }
+  return out.slice(0, 200).join('\n') || '(无匹配)';
+}
+
 // ── grep ──────────────────────────────────────────────────
+// 优先用 ripgrep：gitignore 感知、并行扫描、自动跳过二进制/超大文件，
+// 大仓库（尤其含 node_modules）下远快于纯 JS 扫描。环境无 rg 时回退 JS。
+// rg 默认退出码：0=有匹配，1=无匹配，2=报错（多为正则语法问题）。
 async function grepTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const pattern = typeof args.pattern === 'string' ? args.pattern : '';
   const path = typeof args.path === 'string' && args.path ? args.path : '.';
   if (!pattern) return fail('缺少参数 pattern');
-  try {
-    const re = new RegExp(pattern);
-    const out: string[] = [];
-    for await (const f of walk(resolveSafe(ctx.cwd, path))) {
-      let text: string;
-      try {
-        text = await readFile(f, 'utf8');
-      } catch {
-        continue;
+  if (hasRipgrep()) {
+    try {
+      const absRoot = resolveSafe(ctx.cwd, path);
+      const relRoot = relative(ctx.cwd, absRoot) || '.';
+      const r = spawnSync(
+        'rg',
+        ['-n', '-H', '--no-heading', '--no-require-git', '--max-filesize', '1M', '-e', pattern, relRoot],
+        { cwd: ctx.cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+      );
+      if (r.error) return ok(await grepJS(pattern, path, ctx)); // 中途不可用，回退
+      if (r.status === 0) {
+        const lines = (r.stdout || '').split('\n');
+        lines.pop(); // 去掉末尾空行
+        // rg 搜索根为 '.' 时路径带 ./ 前缀，剥掉以保持与原 JS 实现格式一致
+        const cleaned = lines.map((l) => l.replace(/^\.\//, ''));
+        return ok(cleaned.slice(0, 200).join('\n') || '(无匹配)');
       }
-      if (text.length > 1_000_000) continue;
-      const rel = relative(ctx.cwd, f);
-      text.split('\n').forEach((line, i) => {
-        if (re.test(line)) out.push(`${rel}:${i + 1}:${line}`);
-      });
+      if (r.status === 1) return ok('(无匹配)');
+      return fail(`grep 失败: ${(r.stderr || '').trim().split('\n')[0] || '未知错误'}`);
+    } catch {
+      return ok(await grepJS(pattern, path, ctx)); // 输出超限等异常，回退
     }
-    return ok(out.slice(0, 200).join('\n') || '(无匹配)');
-  } catch (e) {
-    return fail(`grep 失败: ${(e as Error).message}`);
   }
+  return ok(await grepJS(pattern, path, ctx));
 }
 
 // ── bash（命令黑名单硬 gate → 权限/HITL → 软 sandbox 资源限额） ──
@@ -217,7 +259,7 @@ export function getBuiltinTools(): ToolDef[] {
     },
     {
       name: 'grep',
-      description: '在工作区内递归搜索匹配正则的行，返回 文件:行号:内容。',
+      description: '在工作区内递归搜索匹配正则的行，返回 文件:行号:内容。底层用 ripgrep：自动跳过 node_modules/被 gitignore 的文件与二进制，大仓库下远快于普通 grep。',
       inputSchema: {
         type: 'object',
         properties: { pattern: { type: 'string' }, path: { type: 'string' } },
