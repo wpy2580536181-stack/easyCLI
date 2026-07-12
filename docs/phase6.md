@@ -26,10 +26,10 @@
 |---|---|---|
 | `src/core/rag/embed.ts` | **核心** | 纯手写分词（拉丁词 + 字符 unigram/bigram，兼顾中文）+ FNV-1a 哈希降维 + TF×IDF 加权 + L2 归一化 + 余弦相似度 |
 | `src/core/rag/chunk.ts` | 核心 | 重叠分块，尽量在自然句边界切断 |
-| `src/core/rag/store.ts` | 核心 | `RagStore`：复用 Phase 4 的 `node:sqlite`（向量存 BLOB），`reindex/search/status/addSource` |
+| `src/core/rag/store.ts` | 核心 | `RagStore`：复用 Phase 4 的 `node:sqlite`（向量存 BLOB），`reindex/search/status/addSource`，`syncIndex`（按 mtime/size 增量重建）/`ensureFresh`（懒加载门控） |
 | `src/core/rag/tools.ts` | 接入 | `getRagTools` 暴露 `rag_search` 工具（isReadOnly），接入统一 `ToolRegistry` |
 | `src/config/index.ts` | 改造 | 新增 `ragPath`（CLI `--rag` / 环境变量 `AGENTCLI_RAG_PATH`，逗号分隔多源） |
-| `src/cli/main.ts` | 改造 | 合成根：建 `RagStore`、建索引（空则 reindex）、注册 `rag_search` |
+| `src/cli/main.ts` | 改造 | 合成根：建 `RagStore`、注册 `rag_search`；索引**不在启动建**，首次检索/自动注入时经 `ensureFresh` 懒加载（增量 `syncIndex`） |
 | `src/cli/repl.ts` | 改造 | `/rag` 子命令：`search` / `ingest` / `reindex` / `status`；系统提示引导模型使用检索 |
 | `tests/unit/rag.test.ts` | 测试 | 12 个用例：分块/分词/嵌入确定性/相似度/RagStore 增查/rag_search 经执行器 |
 | `docs/phase6.md` | 文档 | 本文件 |
@@ -109,7 +109,7 @@ sequenceDiagram
 | 中文处理 | **字符 unigram/bigram** | 仅按空格分词 | 中文无空格，必须字符级 n-gram 才能度量语义重叠 |
 | 向量存储 | **SQLite BLOB**（复用 Phase 4） | 独立向量数据库 | 零新增依赖；与记忆库技术栈统一；学习项目数据量下足够 |
 | 检索算法 | **线性扫描 + 余弦** | HNSW/ANN 索引 | 数据规模小，线性扫描直观且正确；ANN 是第 14 期+的升级项 |
-| 索引时机 | **空则 reindex**（持久化） | 每次启动全量重建 | 避免每次启动重复建索引；`/rag reindex` 可强制刷新 |
+| 索引时机 | **懒加载 + 增量 `syncIndex`**（按 mtime/size 判脏，未变文件零重嵌入） | 每次启动全量重建 | 索引不在启动时建，首次 `search`/自动注入时才增量同步；未变动文件完全跳过，仅 API 嵌入器场景收益最大；`/rag reindex` 仍强制全量刷新 |
 | IDF 范围 | **全局（跨所有块）** | 逐文档 | 全局 IDF 更稳、更贴近标准 TF-IDF 定义 |
 
 ---
@@ -165,7 +165,7 @@ sequenceDiagram
 | 分词（中文 n-gram） | `src/core/rag/embed.ts` → `tokenize` |
 | 嵌入 / 余弦 | `src/core/rag/embed.ts` → `embed` / `cosine` / `computeIdf` |
 | 分块 | `src/core/rag/chunk.ts` → `chunkText` |
-| 索引/检索/持久化 | `src/core/rag/store.ts` → `RagStore.reindex` / `search` / `status` |
+| 索引/检索/持久化 | `src/core/rag/store.ts` → `RagStore.reindex` / `syncIndex` / `ensureFresh` / `search` / `status` |
 | 向量 BLOB 序列化 | `src/core/rag/store.ts` → `vecToBuffer` / `bufferToVec` |
 | 工具暴露 | `src/core/rag/tools.ts` → `getRagTools` |
 | 配置与接线 | `src/config/index.ts` / `src/cli/main.ts` / `src/cli/repl.ts`（`/rag`） |

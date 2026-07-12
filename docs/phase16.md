@@ -22,8 +22,8 @@ flowchart LR
 | `src/core/context/autoinject.ts` | **新增** | 核心：`buildAutoContext(query, sources, opts)` 从记忆库 + 知识库检索并拼接注入文本；`lastUserText(history)` 取最近一条 user 消息作检索 query；定义 `AutoContextSources` / `AutoContextResult` / `AutoContextOptions` 类型 |
 | `src/core/context/index.ts` | **新增** | barrel 导出，统一从 `../context` 引入 |
 | `src/core/agent/loop.ts` | 修改 | `AgentOptions` 新增 `autoContext?: string`；每轮模型调用前（压缩后）把该文本作为**临时系统消息** `prepend` 进 `messages` |
-| `src/cli/repl.ts` | 修改 | 引入 `autoCtxEnabled`（默认开）、`autoCtxForTurn()`（按最新用户输入检索）、`/autoctx` 开关命令；`runTurn` / `runPlan` 改为 async 并在调用 `runAgent` 前注入；REPL 与单次模式都打印 `⚡ 自动注入上下文：记忆 N 条 / 知识库 M 段` |
-| `src/cli/main.ts` | 修改 | 新增 `--no-auto-context`（commander `--no-` 前缀，`opts.autoContext===false`）；把 `memory` 与 `autoContextEnabled` 透传给 `runOnce` / `startRepl` |
+| `src/cli/repl.ts` | 修改 | 引入 `autoCtxEnabled`（**默认关**）、`autoCtxForTurn()`（按最新用户输入检索）、`/autoctx` 开关命令；`runTurn` / `runPlan` 改为 async 并在调用 `runAgent` 前注入；REPL 与单次模式都打印 `⚡ 自动注入上下文：记忆 N 条 / 知识库 M 段` |
+| `src/cli/main.ts` | 修改 | 新增 `--auto-context`（**默认关闭**；commander 自动提供 `--no-auto-context` 否定形式，`opts.autoContext` 缺省 `undefined`），把 `memory` 与 `autoContextEnabled` 透传给 `runOnce` / `startRepl`（由 `?? false` 取默认关闭） |
 | `tests/unit/autocontext.test.ts` | **新增** | 8 个单测覆盖：空源返回空、记忆命中（LIKE 子串）、空 query 走 `recall`、RAG 命中、`lastUserText` 取最近/无 user、`runAgent` 注入临时系统消息且**不污染**持久 history、无 `autoContext` 时不注入 |
 
 > 真机验证路径：全量测试 **215 个全绿**（Phase 15 后 207 + 本期 8），typecheck 干净，tsup 构建通过。`runAgent` 注入测试用 `CapturingModel` 断言「模型收到的首条消息即注入的系统消息、原始 `history` 内容保留在之后、且 `history` 本身没有被写入注入文本」；关闭 `autoContext` 时首条消息仍是原始 `history[0]`。
@@ -89,7 +89,7 @@ REPL 引入 `autoCtxEnabled`（默认 `true`）、`autoCtxForTurn()`、`/autoctx
 - `autoCtxForTurn()`：`if (!autoCtxEnabled) return`；取 `lastUserText(history)` 作 query（空则返回）；调 `buildAutoContext` 拿到结果（空文本则返回 undefined）。
 - `runTurn` / `runPlan` 改为 `async`：先 `await autoCtxForTurn()`，命中则打印 `⚡ 自动注入上下文：记忆 N 条 / 知识库 M 段`，再把 `ac?.text` 作为 `autoContext` 传给 `runAgent`（规划阶段同样注入，帮助模型理解既有记忆/知识）。
 - `/autoctx`：翻转 `autoCtxEnabled` 并打印开关状态。
-- `runOnce`（非交互 `-p` 单次）：基于 `prompt` 本身检索记忆/知识库并注入，并打印同样的 `⚡` 状态行；`--no-auto-context` 通过 commander `--no-` 前缀把 `opts.autoContext` 置 `false`，经 `?? true` 默认开、显式关。
+- `runOnce`（非交互 `-p` 单次）：基于 `prompt` 本身检索记忆/知识库并注入，并打印同样的 `⚡` 状态行；`--auto-context` 开启自动注入（commander 自动提供 `--no-auto-context` 否定关闭），`opts.autoContext` 缺省 `undefined`，经 `?? false` 默认关、显式 `--auto-context` 开启。
 
 ## 4. 为什么这样设计（设计权衡）
 
@@ -109,7 +109,7 @@ REPL 引入 `autoCtxEnabled`（默认 `true`）、`autoCtxForTurn()`、`/autoctx
 | 检索触发 | 每轮基于最近 user 输入自动检索 | 通常也「主动检索注入」 | 思路一致；本期直接复用 Phase 4/6 存储，零新增依赖 |
 | 注入持久性 | 临时（不写 history，每轮重算） | 多数也走 ephemeral context | 避免历史污染；本期用「引擎层 prepend + 不写回」实现，逻辑最简 |
 | 解耦度 | 引擎层收口，工具层无感知 | 同（中间件/拦截器） | 注入对工具调用透明；测试可单测「注入进了 model 输入但未污染 history」 |
-| 可关可控 | `/autoctx` + `--no-auto-context` | 一般也有 feature flag | 本期把开关从 REPL 透传到单次模式，`?? true` 默认开、显式可关 |
+| 可关可控 | `/autoctx` + `--auto-context`（默认关闭） | 一般也有 feature flag | 本期把开关从 REPL 透传到单次模式，`?? false` 默认关、`--auto-context` 显式开 |
 | 依赖 | 纯手写（复用既有 SQLite/TF-IDF） | 可能引 LangChain 之类 | 符合「纯手写、依赖克制」的项目基调 |
 
 ## 6. 面试话术（30 秒版 + 详版）
@@ -122,7 +122,7 @@ REPL 引入 `autoCtxEnabled`（默认 `true`）、`autoCtxForTurn()`、`/autoctx
 > 注入点为什么放引擎层？这样所有调用 `runAgent` 的路径（REPL、单次、未来 Multi-Agent）自动获得注入，工具层完全无感知——解耦。
 > 记忆为什么区分 search/recall？有用户输入时语义搜索才有意义；空 query（比如开场）用 `recall` 取最近事实兜底，保证「哪怕没新问题也带点记忆」。
 > RAG 为什么只在 query 非空时检索？向量检索需要锚点，空 query 检索「最近文档」是灌水，无意义。
-> 怎么关？`autoCtxEnabled` 闭包变量 + `/autoctx` 命令；单次模式用 commander 的 `--no-` 前缀，`opts.autoContext===false` 显式关，默认 `?? true` 开。
+> 怎么开/关？`autoCtxEnabled` 闭包变量 + `/autoctx` 命令；单次模式用 commander 的 `--auto-context`（默认关闭），`opts.autoContext` 缺省 `undefined`、`?? false` 默认关，`--auto-context` 显式开（`--no-auto-context` 显式关）。
 
 ## 7. 常见面试题（附答题要点）
 
@@ -155,7 +155,7 @@ REPL 引入 `autoCtxEnabled`（默认 `true`）、`autoCtxForTurn()`、`/autoctx
 | REPL 开关/检索 | `src/cli/repl.ts` → `autoCtxEnabled` / `autoCtxForTurn` / `/autoctx` |
 | REPL 注入（交互/规划） | `src/cli/repl.ts` → `runTurn` / `runPlan`（async，注入 + `⚡` 状态行） |
 | 单次模式注入 | `src/cli/repl.ts` → `runOnce(... memory, autoContextEnabled ...)` |
-| 命令行开关 | `src/cli/main.ts` → `--no-auto-context` + 透传 `memory` / `autoContext` |
+| 命令行开关 | `src/cli/main.ts` → `--auto-context`（默认关闭）+ 透传 `memory` / `autoContext` |
 | 单测 | `tests/unit/autocontext.test.ts` |
 
 ## 9. 踩坑与细节（来自真实实现）
@@ -170,7 +170,7 @@ REPL 引入 `autoCtxEnabled`（默认 `true`）、`autoCtxForTurn()`、`/autoctx
 
 5. **`runTurn`/`runPlan` 要改成 async**：因为要在调用 `runAgent` 前 `await autoCtxForTurn()`。若保持同步签名，就无法 await 检索结果；这处从 `Promise<void>` 返回值链改成了 `async` 函数体，周边 `.then(...)` 链式调用也同步改成了 `await` + 顺序语句。
 
-6. **commander `--no-` 前缀的语义**：`--no-auto-context` 会让 `opts.autoContext` 为 `false`（而非 `undefined`）。REPL/runOnce 里用 `autoContextEnabled ?? true` 取默认——显式 `false` 时（用户关）正确关掉，未传时默认开。
+6. **commander `--auto-context` 的语义**：定义为 `--auto-context` 后，commander 自动提供 `--no-auto-context` 否定形式；未传时 `opts.autoContext` 为 `undefined`（而非 `true`）。REPL/runOnce 用 `autoContextEnabled ?? false` 取默认——未传时默认关闭，`--auto-context` 显式开、`--no-auto-context` 显式关。
 
 7. **HEADER 的两重作用**：既给模型标注「这是参考资料、无需复述」，又给单测/调试一个稳定的字符串锚点（测试断言 `model.captured[0][0].content` 含 `【自动上下文】`）。不要用随机/动态内容做断言锚点。
 

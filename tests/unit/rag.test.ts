@@ -132,6 +132,78 @@ describe('RagStore 向量检索（SQLite :memory:）', () => {
   });
 });
 
+describe('RagStore 增量 syncIndex + 懒加载', () => {
+  it('syncIndex 对未变文件不重嵌入（changed:false，chunks 不变）', async () => {
+    const store = new RagStore(':memory:');
+    store.setSources([join(dir, 'a.txt'), join(dir, 'b.txt')]);
+    const r0 = await store.reindex();
+    const r1 = await store.syncIndex();
+    expect(r1.changed).toBe(false);
+    expect(r1.chunks).toBe(r0.chunks);
+    expect(r1.docs).toBe(2);
+  });
+
+  it('修改文件后 syncIndex 只动脏文件、不重建全量', async () => {
+    const store = new RagStore(':memory:');
+    store.setSources([join(dir, 'a.txt'), join(dir, 'b.txt')]);
+    await store.reindex();
+    // 改 a.txt 内容（长度变化以触发 size 判脏），b.txt 不动
+    await writeFile(
+      join(dir, 'a.txt'),
+      'easyCLI 从零手写，新增了 MCP SDK v1.29 客户端门面，支持 stdio 与 HTTP 两种传输，并对断开做了归一化错误处理。',
+      'utf8',
+    );
+    const r = await store.syncIndex();
+    expect(r.changed).toBe(true);
+    expect(r.docs).toBe(2); // 文档数不变，仅更新脏文件
+    const top = await store.search('MCP SDK 客户端门面', 3);
+    expect(top.some((t) => t.text.includes('MCP SDK'))).toBe(true);
+    // 还原文件，避免影响其它测试
+    await writeFile(
+      join(dir, 'a.txt'),
+      'easyCLI 是一个从零手写的命令行 Agent。它实现了 ReAct 循环与工具调用，并把 MCP 工具归一进统一注册表。',
+      'utf8',
+    );
+  });
+
+  it('删除源文件后 syncIndex 清理其索引', async () => {
+    const store = new RagStore(':memory:');
+    store.setSources([join(dir, 'a.txt'), join(dir, 'b.txt')]);
+    await store.reindex();
+    const beforeDocs = store.status().docs;
+    // 移出 a.txt 作为源（模拟「源被移出配置」）
+    store.setSources([join(dir, 'b.txt')]);
+    const r = await store.syncIndex();
+    expect(r.changed).toBe(true);
+    expect(r.docs).toBe(beforeDocs - 1);
+    expect(store.getSources()).toEqual([join(dir, 'b.txt')]);
+  });
+
+  it('ensureFresh 节流：连续调用只真正同步一次', async () => {
+    const store = new RagStore(':memory:');
+    let syncCount = 0;
+    const orig = store.syncIndex.bind(store);
+    store.syncIndex = async (...a: unknown[]) => {
+      syncCount++;
+      return orig(...(a as []));
+    };
+    store.setSources([join(dir, 'a.txt')]);
+    await store.ensureFresh(1000); // 首次：同步
+    await store.ensureFresh(1000); // 节流窗口内：跳过
+    await store.ensureFresh(1000); // 节流窗口内：跳过
+    expect(syncCount).toBe(1);
+  });
+
+  it('search 触发懒加载：空库首次 search 自动建索引', async () => {
+    const store = new RagStore(':memory:');
+    store.setSources([join(dir, 'a.txt')]);
+    expect(store.status().chunks).toBe(0); // 启动未建索引（懒加载）
+    const top = await store.search('ReAct 循环', 3);
+    expect(top.length).toBeGreaterThan(0);
+    expect(store.status().chunks).toBeGreaterThan(0); // 首次 search 已自动建
+  });
+});
+
 describe('rag_search 工具经执行器/权限跑通一轮', () => {
   class ScriptedModel implements ChatModel {
     readonly id = 'mock:test';

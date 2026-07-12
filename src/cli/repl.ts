@@ -110,7 +110,7 @@ export async function runOnce(
   // Phase 16：单次模式也自动注入上下文（基于 prompt 检索记忆/知识库）
   const semanticRecallEnabled = semanticRecall ?? true;
   let autoContext: string | undefined;
-  if (autoContextEnabled ?? true) {
+  if (autoContextEnabled ?? false) {
     const ac = await buildAutoContext(prompt, {
       memory,
       ragStore,
@@ -303,8 +303,8 @@ export async function startRepl(
   let normalSys = makeSys('normal');
   let awaitingApproval = false;
   let planCheckpoint = 0;
-  // Phase 16：自动上下文注入开关（默认开；可用 /autoctx 切换）
-  let autoCtxEnabled = autoContextEnabled ?? true;
+  // Phase 16：自动上下文注入开关（默认关；可用 /autoctx 切换，或 --auto-context 开启）
+  let autoCtxEnabled = autoContextEnabled ?? false;
   // Phase 20：自动记忆增强开关（默认开；可从 config/CLI 关闭）
   const autoMemoryEnabled = autoMemory ?? true;
   const semanticRecallEnabled = semanticRecall ?? true;

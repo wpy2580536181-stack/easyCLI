@@ -17,7 +17,7 @@
 - **上下文压缩 + 长期记忆**（SQLite）：窗口相对预算 + 5 层渐进压缩（大结果落盘 / 选择性裁剪 / 去重 / 折叠 / 缓存友好摘要）+ 413 响应式兜底
 - **记忆增强**：① 每轮结束自动从对话提取稳定事实写入记忆库（fire-and-forget）；② 记忆召回用 LLM 语义选择 topN（理解字面不同但语义相关，失败降级关键词）。开关 `--no-auto-memory` / `--no-semantic-recall`
 - **MCP 协议**：客户端（基于官方 SDK `Client` 的 stdio 门面，保留连接状态机/超时/错误归一契约）+ 服务端（基于官方 SDK 低层 `Server`，暴露 tools/resources，Streamable HTTP 传输由 SDK 提供完整 SSE/会话能力）
-- **RAG 检索增强**：纯手写嵌入（TF-IDF）+ SQLite 向量检索，可插拔 API 嵌入器
+- **RAG 检索增强**：纯手写嵌入（TF-IDF）+ SQLite 向量检索，可插拔 API 嵌入器；索引**懒加载** + 按 mtime/size **增量重建**（syncIndex），启动零开销。每轮自动上下文注入（Phase 16）由 `--auto-context` 开启，**默认关闭**
 - **Skill 系统**：三层加载（builtin/user/project）+ 渐进式披露，保护 Prompt Cache；支持 `skills.autoInject` 指定技能每轮自动注入正文
 - **任务规划（todo_write）**：带状态（pending/in_progress/completed）的可追踪任务清单，让模型面对复杂多步任务先拆解再逐项执行；配 nag reminder（连续多轮未更新则临时提醒，不污染 history）
 - **任务系统（Task System）**：可持久化到 `.tasks/{id}.json` 的依赖任务图（对齐 Learn Claude Code s12）；`task_create` 建任务并声明 `blockedBy` 依赖、`task_claim` 认领（依赖未完成则拒绝，原子锁防并发重复认领）、`task_complete` 完成并自动解锁下游、`task_list`/`task_get` 查看。与 todo_write 并存：todo_write 是会话内清单，任务系统跨会话保留、有依赖图，适合有依赖 / 需恢复的多步任务

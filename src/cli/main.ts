@@ -81,7 +81,7 @@ program
   .option('--save-config', '把本次生效配置写入 ~/.config/agent-cli/config.json（持久化）')
   .option('--resume', '恢复上次自动保存的会话（跨会话继续）')
   .option('--plan', '规划模式：只生成执行计划、不执行（搭配 -p 单次使用）')
-  .option('--no-auto-context', '关闭每轮自动注入记忆/知识库上下文（Phase 16，默认开启）')
+  .option('--auto-context', '开启每轮自动注入记忆/知识库上下文（Phase 16，默认关闭；知识库索引懒加载）')
   .option('--no-statusline', '关闭底部状态栏（statusline，默认开启）')
   .option('--search-provider <provider>', '联网搜索服务：bing | duckduckgo | tavily（默认 bing，零 key）')
   .option('--search-key <key>', '联网搜索服务 API key（tavily 需要；可用 AGENTCLI_SEARCH_API_KEY 注入）')
@@ -181,10 +181,8 @@ program
       const embedder = createEmbedder(config.embedder ?? { type: 'tfidf' });
       ragStore = new RagStore(join(homedir(), '.config', 'agent-cli', 'rag.db'), embedder);
       ragStore.setSources(ragSources);
-      if (ragStore.status().chunks === 0) {
-        const { docs, chunks } = await ragStore.reindex();
-        console.log(`[RAG] 已索引 ${docs} 个文档 / ${chunks} 个片段`);
-      }
+      // 索引懒加载：不在启动时全量重建，首次检索/自动注入时才增量 syncIndex
+      // （见 RagStore.ensureFresh），避免无谓的启动开销。
       tools.registerAll(getRagTools(ragStore));
     }
 

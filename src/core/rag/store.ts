@@ -97,6 +97,12 @@ export class RagStore {
        CREATE TABLE IF NOT EXISTS rag_idf (
         term TEXT PRIMARY KEY,
         val REAL NOT NULL
+      );
+       CREATE TABLE IF NOT EXISTS rag_file_meta (
+        source TEXT PRIMARY KEY,
+        mtime INTEGER NOT NULL,
+        size INTEGER NOT NULL,
+        doc_id INTEGER NOT NULL
       );`,
     );
   }
@@ -106,10 +112,11 @@ export class RagStore {
     this.sources = sources;
   }
 
-  /** 追加一个源并重索引（/rag ingest 用） */
+  /** 追加一个源并增量索引（/rag ingest 用） */
   async addSource(path: string): Promise<{ docs: number; chunks: number }> {
     if (!this.sources.includes(path)) this.sources.push(path);
-    return this.reindex();
+    const r = await this.syncIndex();
+    return { docs: r.docs, chunks: r.chunks };
   }
 
   /** 当前已配置的来源列表 */
@@ -117,9 +124,11 @@ export class RagStore {
     return [...this.sources];
   }
 
-  /** 清空索引（docs/chunks/idf） */
+  /** 清空索引（docs/chunks/idf/file_meta） */
   clear(): void {
-    this.db.exec('DELETE FROM rag_docs; DELETE FROM rag_chunks; DELETE FROM rag_idf;');
+    this.db.exec(
+      'DELETE FROM rag_docs; DELETE FROM rag_chunks; DELETE FROM rag_idf; DELETE FROM rag_file_meta;',
+    );
   }
 
   /** 把一组源（文件/目录）全量重建索引：分块 → 全局 IDF → 嵌入 → 落库 */
@@ -170,6 +179,9 @@ export class RagStore {
     const insIdf = this.db.prepare('INSERT OR REPLACE INTO rag_idf (term, val) VALUES (?, ?)');
 
     let cursor = 0;
+    const insMeta = this.db.prepare(
+      'INSERT OR REPLACE INTO rag_file_meta (source, mtime, size, doc_id) VALUES (?, ?, ?, ?)',
+    );
     for (const d of docs) {
       const res = insDoc.run(d.source, d.source.split('/').pop() ?? d.source, new Date().toISOString());
       const docId = Number(res.lastInsertRowid);
@@ -178,10 +190,168 @@ export class RagStore {
         const vec = vectors[cursor++]!;
         insChunk.run(docId, i, d.source, pieces[i]!, vecToBuffer(vec));
       }
+      // 记录源文件 mtime/size，供后续增量 syncIndex 判脏
+      try {
+        const fs = statSync(d.source);
+        insMeta.run(d.source, Math.floor(fs.mtimeMs), fs.size, docId);
+      } catch {
+        insMeta.run(d.source, 0, 0, docId);
+      }
     }
     for (const [term, val] of idf) insIdf.run(term, val);
 
     return { docs: docs.length, chunks: chunks.length };
+  }
+
+  /**
+   * 增量重建索引：只重新嵌入「新增 / 修改（mtime 或 size 变化）/ 删除」的文件，
+   * 未变动的文件复用既有向量，避免每次启动或每次查询都全量重嵌入。
+   * 默认手写 TF-IDF 重嵌入成本尚可，但换成 API 嵌入器后全量重建会非常贵——这正是
+   * 增量 syncIndex 的主要收益点。靠 rag_file_meta 表记录每个源文件的 mtime/size 判脏。
+   *
+   * - 没有任何变动时直接返回（changed:false），零嵌入开销；
+   * - 有变动时仅基于「未变的既有块文本 + 脏文件新文本」重算全局 IDF（只分词、不重嵌入），
+   *   然后只嵌入脏文件。
+   */
+  async syncIndex(): Promise<{ docs: number; chunks: number; changed: boolean }> {
+    const meta = this.loadMeta();
+    const st = this.status();
+    // 旧库兼容：已有块但无元信息（老版本没 file_meta 表）→ 全量重建以补齐 meta，之后走增量
+    if (meta.size === 0 && st.chunks > 0) {
+      await this.reindex();
+      const s = this.status();
+      return { docs: s.docs, chunks: s.chunks, changed: true };
+    }
+
+    const disk = this.listSourceFiles();
+    const diskMap = new Map(disk.map((d) => [d.source, d]));
+    const dirty = disk.filter((d) => {
+      const m = meta.get(d.source);
+      return !m || m.mtime !== d.mtime || m.size !== d.size;
+    });
+    const removed = [...meta.keys()].filter((s) => !diskMap.has(s));
+
+    if (dirty.length === 0 && removed.length === 0) {
+      return { docs: st.docs, chunks: st.chunks, changed: false };
+    }
+
+    // 1) 删除已移除 / 已变更文件的旧块与文档行（+meta）
+    const delDoc = this.db.prepare('DELETE FROM rag_docs WHERE id = ?');
+    const delChunk = this.db.prepare('DELETE FROM rag_chunks WHERE doc_id = ?');
+    const delMeta = this.db.prepare('DELETE FROM rag_file_meta WHERE source = ?');
+    for (const s of removed) {
+      const m = meta.get(s)!;
+      delChunk.run(m.docId);
+      delDoc.run(m.docId);
+      delMeta.run(s);
+    }
+    for (const d of dirty) {
+      const m = meta.get(d.source);
+      if (m) {
+        delChunk.run(m.docId);
+        delDoc.run(m.docId);
+        delMeta.run(d.source);
+      }
+    }
+
+    // 2) 重算全局 IDF（基于「未变的既有块文本 + 脏文件新文本」，仅分词不计嵌入）
+    const idf = this.computeIdfOverCorpus(dirty);
+
+    // 3) 仅嵌入并插入脏文件
+    const insDoc = this.db.prepare('INSERT INTO rag_docs (source, title, ctime) VALUES (?, ?, ?)');
+    const insChunk = this.db.prepare(
+      'INSERT INTO rag_chunks (doc_id, idx, source, text, vec) VALUES (?, ?, ?, ?, ?)',
+    );
+    const insMeta = this.db.prepare(
+      'INSERT OR REPLACE INTO rag_file_meta (source, mtime, size, doc_id) VALUES (?, ?, ?, ?)',
+    );
+    for (const d of dirty) {
+      let text: string;
+      try {
+        text = readFileSync(d.source, 'utf8');
+      } catch {
+        continue;
+      }
+      const pieces = chunkText(text);
+      const res = insDoc.run(d.source, d.source.split('/').pop() ?? d.source, new Date().toISOString());
+      const docId = Number(res.lastInsertRowid);
+      const vecs = await Promise.all(pieces.map((p) => this.embedder.embed(p, idf)));
+      pieces.forEach((p, i) => insChunk.run(docId, i, d.source, p, vecToBuffer(vecs[i]!)));
+      insMeta.run(d.source, d.mtime, d.size, docId);
+    }
+
+    const s = this.status();
+    return { docs: s.docs, chunks: s.chunks, changed: true };
+  }
+
+  /** 懒加载门控：距上次同步超过 maxAgeMs 才真正 syncIndex，避免每次查询/每轮都扫盘 */
+  private lastSyncAt = 0;
+  async ensureFresh(maxAgeMs = 30_000): Promise<void> {
+    const now = Date.now();
+    if (this.lastSyncAt === 0 || now - this.lastSyncAt > maxAgeMs) {
+      await this.syncIndex();
+      this.lastSyncAt = Date.now();
+    }
+  }
+
+  private loadMeta(): Map<string, { mtime: number; size: number; docId: number }> {
+    const rows = this.db
+      .prepare('SELECT source, mtime, size, doc_id FROM rag_file_meta')
+      .all() as { source: string; mtime: number; size: number; doc_id: number }[];
+    const m = new Map<string, { mtime: number; size: number; docId: number }>();
+    for (const r of rows) m.set(r.source, { mtime: r.mtime, size: r.size, docId: r.doc_id });
+    return m;
+  }
+
+  /** 展开所有源（文件/目录）为「文件路径 → mtime/size」清单 */
+  private listSourceFiles(): { source: string; mtime: number; size: number }[] {
+    const out: { source: string; mtime: number; size: number }[] = [];
+    for (const src of this.sources) {
+      let st: ReturnType<typeof statSync> | undefined;
+      try {
+        st = statSync(src);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) {
+        for (const f of walk(src)) {
+          try {
+            const fs = statSync(f);
+            out.push({ source: f, mtime: Math.floor(fs.mtimeMs), size: fs.size });
+          } catch {
+            /* 跳过不可读 */
+          }
+        }
+      } else if (st.isFile()) {
+        out.push({ source: src, mtime: Math.floor(st.mtimeMs), size: st.size });
+      }
+    }
+    return out;
+  }
+
+  /** 基于「未变的既有块文本 + 脏文件新文本」重算全局 IDF，并写回 rag_idf 表 */
+  private computeIdfOverCorpus(dirty: { source: string }[]): Map<string, number> {
+    const termSets: Set<string>[] = [];
+    const existing = this.db
+      .prepare('SELECT text FROM rag_chunks')
+      .all() as { text: string }[];
+    for (const r of existing) termSets.push(new Set(tokenize(r.text)));
+    for (const d of dirty) {
+      let text: string;
+      try {
+        text = readFileSync(d.source, 'utf8');
+      } catch {
+        continue;
+      }
+      for (const piece of chunkText(text)) termSets.push(new Set(tokenize(piece)));
+    }
+    const df = new Map<string, number>();
+    for (const set of termSets) for (const t of set) df.set(t, (df.get(t) ?? 0) + 1);
+    const idf = computeIdf(df, termSets.length);
+    this.db.exec('DELETE FROM rag_idf;');
+    const insIdf = this.db.prepare('INSERT OR REPLACE INTO rag_idf (term, val) VALUES (?, ?)');
+    for (const [term, val] of idf) insIdf.run(term, val);
+    return idf;
   }
 
   private loadIdf(): Map<string, number> {
@@ -198,6 +368,7 @@ export class RagStore {
    * @param threshold 余弦阈值（默认 0，即返回所有候选里最高的 k 条）
    */
   async search(query: string, k = 5, threshold = 0): Promise<RagChunk[]> {
+    await this.ensureFresh(); // 懒加载：首次/过期时才增量同步，平时零成本
     const qVec = await this.embedder.embed(query, this.loadIdf());
     const rows = this.db
       .prepare('SELECT id, source, text, vec FROM rag_chunks')
