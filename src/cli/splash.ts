@@ -102,10 +102,14 @@ export function renderSplash(opts: SplashOptions = {}): string[] {
   const ctx = gatherContext(cwdRaw); // 复用动态上下文采集，取 git 分支（失败静默降级）
   const model = opts.modelId ?? 'unknown';
 
-  // 盒子外宽（含左右方角 ┌ ┐ 两列）= W。clamp 到 [70,90]，但永远 ≤ cols，
-  // 否则整条框线宽于 Ink 渲染容器会被换行拆断（之前 W+2 的越界 bug）。
+  // 盒子外宽（含左右方角 ┌ ┐ 两列）= W。
+  // ⚠ 关键约束：W 必须严格 < cols（至少留 1 列余量）。
+  // 若 W == cols，整条框线正好占满终端「最后一列」，多数终端在写满末列后会自动
+  // 换到下一行（auto-wrap at last column）→ 顶/底边框被拆成多行。这正是真机 70~90 列
+  // 复现「┌ / 长横 / ┐ 三行」的根因；而 ink-testing-library 写死 100 列（有富余）复现不出。
+  // 因此这里留 2 列余量（左右各 ≥1），上限仍 clamp 到 90，下限 20 防退化。
   const cols = process.stdout.columns ?? 80;
-  const W = cols < 70 ? cols : Math.min(90, cols);
+  const W = Math.max(20, Math.min(90, cols - 2));
   // 主体行 = 左竖线(1) + 左栏(LW) + 中竖线(1) + 右栏(RW) + 右竖线(1) = W
   // ⇒ LW + RW = W - 3。顶/底行 = ┌ + ─×(W-2) + ┐ = W。
   const LW = Math.floor((W - 3) / 2); // 左栏内容宽

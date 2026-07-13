@@ -70,21 +70,31 @@ describe('printSplash（启动欢迎框）', () => {
     expect(all).toContain('Multi-Agent collaboration');
   });
 
-  it('框宽不超出终端：超窄收缩到 cols、超宽 clamp 到 90（不再因 +2 越界换行）', () => {
+  it('框外宽严格 < 终端列数：窄终端留边距（防末列自动换行拆边框）、宽终端 clamp 到 90', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     let narrow: string[] = [];
+    let mid: string[] = [];
     let wide: string[] = [];
     withColumns(40, () => {
       narrow = printSplash({ modelId: 'm' });
+    });
+    withColumns(80, () => {
+      mid = printSplash({ modelId: 'm' });
     });
     withColumns(200, () => {
       wide = printSplash({ modelId: 'm' });
     });
     spy.mockRestore();
 
-    // 顶边去掉前导居中空格后的可视宽度 = 整框外宽，须 ≤ 终端列数且不溢出。
+    // 整框行（含前导居中空格）的可视宽度必须严格 < cols：
+    // 若 == cols，终端写满最后一列会自动换行，边框被拆成多行（真机 70~90 列根因）。
+    const fullVisible = (l: string | undefined) => visibleLen(l ?? '');
+    expect(fullVisible(narrow[0])).toBeLessThan(40); // 40 列：留边距不占满末列
+    expect(fullVisible(mid[0])).toBeLessThan(80); //   80 列（最常见）：不再拆行
+    expect(fullVisible(wide[0])).toBeLessThan(200); // 宽终端同样留边距
+
+    // 顶边去掉前导居中空格后 = 框外宽 W：宽终端 clamp 到 90。
     const topVisible = (l: string | undefined) => visibleLen((l ?? '').replace(/^\s+/, ''));
-    expect(topVisible(narrow[0])).toBeLessThanOrEqual(40); // 窄终端：框收缩到 cols
-    expect(topVisible(wide[0])).toBe(90); //                   宽终端：clamp 到 90
+    expect(topVisible(wide[0])).toBe(90);
   });
 });

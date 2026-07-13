@@ -27,6 +27,7 @@ export interface TranscriptProps {
 
 export function Transcript({ store, markdown, reservedRows = 0 }: TranscriptProps): React.ReactElement {
   const transcriptLines = useAppStore(store, (s) => s.transcriptLines);
+  const splashCount = useAppStore(store, (s) => s.splashCount);
   const userTurn = useAppStore(store, (s) => s.userTurn);
   const assistantBuffer = useAppStore(store, (s) => s.assistantBuffer);
   const width = useAppStore(store, (s) => s.width);
@@ -41,12 +42,21 @@ export function Transcript({ store, markdown, reservedRows = 0 }: TranscriptProp
   const maxRows = Math.max(1, height - reservedRows);
   const visible = buildVisibleLines({ transcriptLines, userTurn, bodyLines, maxRows });
 
+  // 计算裁剪后仍可见的 splash 行数：splash 位于 transcriptLines 最前，超高时从顶部裁剪，
+  // 故最先滚出。visible 的前 visibleSplash 行即 splash，需用 truncate 防拆行。
+  const total = transcriptLines.length + userTurn.length + bodyLines.length;
+  const removedFromTop = Math.max(0, total - maxRows);
+  const visibleSplash = Math.max(0, splashCount - removedFromTop);
+
   return (
     <Box flexDirection="column" flexGrow={1}>
       {visible.map((line, i) => (
-        // 行内容已含 ANSI 样式（splash/markdown），直接透传给 <Text>。
-        // index 作 key（行序即身份）。
-        <Text key={i}>{line}</Text>
+        // 行内容已含 ANSI 样式（splash/markdown），直接透传给 <Text>。index 作 key（行序即身份）。
+        // splash 行（前 visibleSplash 行）用 wrap="truncate"：定宽 ASCII 框即便与真实终端
+        // 有宽度误差也只右截断，绝不换行拆成多行；普通正文用默认 wrap 保证不丢内容。
+        <Text key={i} wrap={i < visibleSplash ? 'truncate' : 'wrap'}>
+          {line}
+        </Text>
       ))}
     </Box>
   );

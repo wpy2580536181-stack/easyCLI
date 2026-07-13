@@ -37,6 +37,12 @@ export interface AppState {
    * 等价于旧 repl.ts 的 `transcript: string[]`——是渲染态而非语义态，Transcript 直接铺屏。
    */
   transcriptLines: string[];
+  /**
+   * transcriptLines 开头属于「启动 splash 面板」的行数。这些行是定宽 ASCII 框，
+   * 需由 Transcript 用 <Text wrap="truncate"> 渲染——即便框宽与真实终端有误差也只
+   * 右侧截断，绝不换行拆成多行（防「边框拆行」）。普通 AI 正文仍用默认 wrap 保证可读。
+   */
+  splashCount: number;
   userTurn: string[];
   assistantBuffer: string;
   // —— 状态栏 ——
@@ -145,6 +151,8 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
     // —— 初始状态 ——
     history: opts.initialHistory ?? [],
     transcriptLines: opts.initialTranscript ?? [],
+    // 初始 transcript 即为 splash 面板（repl 传入 renderSplash() 结果）。
+    splashCount: opts.initialTranscript?.length ?? 0,
     userTurn: [],
     assistantBuffer: '',
     model: opts.model ?? '',
