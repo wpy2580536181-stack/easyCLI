@@ -3,6 +3,7 @@ import type { EventBus } from '../events/bus';
 import type { PermissionManager } from '../security/permission';
 import type { ToolCall, ToolDef, ToolResult } from '../chatmodel/types';
 import type { ToolRegistry } from './registry';
+import { validateArgs } from './schema-validate';
 
 /** 一批工具调用执行完毕后的并发画像（Phase 15 异步并行可观测） */
 export interface ToolBatchInfo {
@@ -165,10 +166,22 @@ async function runOne(p: Planned, opts: ExecutorOptions): Promise<ToolResult> {
   } else if (!p.tool || !p.tool.execute) {
     res = { ok: false, output: `未知或未实现工具: ${p.call.name}` };
   } else {
-    try {
-      res = await p.tool.execute(p.call.arguments, { cwd: opts.cwd, signal: opts.signal });
-    } catch (e) {
-      res = { ok: false, output: `工具执行异常: ${(e as Error).message}` };
+    // 入口处按工具 inputSchema 校验实参：非法参数在执行前即拦截，避免「跑一半才报错」。
+    // 仅当 schema 非空才校验；校验器对未知关键字 fail-open，绝不误拒合法调用。
+    const schema = p.tool.inputSchema;
+    let preErr: string | undefined;
+    if (schema && typeof schema === 'object' && Object.keys(schema).length > 0) {
+      const v = validateArgs(schema as Record<string, unknown>, p.call.arguments);
+      if (!v.ok) preErr = `工具入参校验失败: ${v.error}`;
+    }
+    if (preErr) {
+      res = { ok: false, output: preErr };
+    } else {
+      try {
+        res = await p.tool.execute(p.call.arguments, { cwd: opts.cwd, signal: opts.signal });
+      } catch (e) {
+        res = { ok: false, output: `工具执行异常: ${(e as Error).message}` };
+      }
     }
   }
 

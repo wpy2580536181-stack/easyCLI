@@ -109,3 +109,49 @@ describe('executeTools 事件总线与钩子', () => {
     expect(results).toEqual(['done:r1']);
   });
 });
+
+describe('executeTools 入参校验（P1 / 差异3）', () => {
+  const schemaTool: ToolDef = {
+    name: 'need_path',
+    description: '',
+    inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    isReadOnly: true,
+    execute: async (args) => ({ ok: true, output: `got:${String((args as Record<string, unknown>).path)}` }),
+  };
+
+  it('合法参数正常执行', async () => {
+    const reg = fakeRegistry([schemaTool]);
+    const res = await executeTools(
+      [{ id: '1', name: 'need_path', arguments: { path: 'a.txt' } }],
+      { registry: reg, cwd: '.' },
+    );
+    expect(res[0]!.ok).toBe(true);
+    expect(res[0]!.output).toBe('got:a.txt');
+  });
+
+  it('缺失必填字段被入口拦截（不执行工具）', async () => {
+    let executed = false;
+    const t: ToolDef = {
+      ...schemaTool,
+      execute: async () => {
+        executed = true;
+        return { ok: true, output: 'x' };
+      },
+    };
+    const reg = fakeRegistry([t]);
+    const res = await executeTools(
+      [{ id: '1', name: 'need_path', arguments: {} }],
+      { registry: reg, cwd: '.' },
+    );
+    expect(executed).toBe(false);
+    expect(res[0]!.ok).toBe(false);
+    expect(res[0]!.output).toContain('工具入参校验失败');
+  });
+
+  it('空 schema 的工具跳过校验', async () => {
+    const tap: Tap = { starts: [], inflight: 0, max: 0, executed: [] };
+    const reg = fakeRegistry([makeTool('r1', true, tap)]);
+    const res = await executeTools([call('1', 'r1')], { registry: reg, cwd: '.' });
+    expect(res[0]!.ok).toBe(true);
+  });
+});
