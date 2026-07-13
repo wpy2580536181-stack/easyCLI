@@ -17,6 +17,7 @@ import { StatusBar } from './components/StatusBar';
 import { InputBox } from './components/InputBox';
 import { Approval } from './components/Approval';
 import { SplashTitle } from './components/SplashTitle';
+import { AppTheme } from './theme';
 
 export interface AppProps {
   store: AppStoreApi;
@@ -67,7 +68,8 @@ export function App({
   }, [store, stdout]);
 
   return (
-    <Box flexDirection="column" width={width}>
+    <AppTheme>
+      <Box flexDirection="column" width={width}>
       <SplashTitle />
       <Transcript store={store} markdown={markdown} reservedRows={4} />
       <StatusLine store={store} />
@@ -82,7 +84,8 @@ export function App({
         onExit={onExit}
       />
       {approval && <Approval store={store} />}
-    </Box>
+      </Box>
+    </AppTheme>
   );
 }
 

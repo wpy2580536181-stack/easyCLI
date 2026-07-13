@@ -11,6 +11,7 @@
 
 import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { Alert } from '@inkjs/ui';
 import type { AppStoreApi } from '../store';
 import { useAppStore } from '../hooks';
 
@@ -61,8 +62,10 @@ export function Approval({ store }: ApprovalProps): React.ReactElement | null {
 
   return (
     <Box flexDirection="column">
-      <Text color="yellow">需要审批：</Text>
-      <Text color="gray">{approval.question}</Text>
+      <Alert variant="warning">
+        <Text bold>需要审批：</Text>
+        <Text color="gray"> {approval.question}</Text>
+      </Alert>
       <Box>
         <Text color="gray">{'  '}</Text>
         <Text color="yellow">{buffer}</Text>

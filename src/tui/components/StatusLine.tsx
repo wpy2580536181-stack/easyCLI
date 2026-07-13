@@ -14,11 +14,21 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
 import Spinner from 'ink-spinner';
+import { Badge } from '@inkjs/ui';
 import type { AppStoreApi } from '../store';
 import { useAppStore } from '../hooks';
 
 // 本地动画帧：驱动秒数刷新（idle 时不计费）。spinner 字形由 ink-spinner 自身动画提供。
 const FRAME_MS = 120;
+
+// 状态模式短标签（Badge 用，青色 chip）。
+// 注意 @inkjs/ui 的 Badge 会强制把 children toUpperCase()，
+// 故这里用中文标签，避免把右侧工具名（如 read_file）变成大写 READ_FILE 的观感问题。
+const MODE_BADGE: Record<string, string> = {
+  think: '思考中',
+  tool: '调用工具',
+  stream: '生成中',
+};
 
 export interface StatusLineProps {
   store: AppStoreApi;
@@ -55,6 +65,8 @@ export function StatusLine({ store }: StatusLineProps): React.ReactElement | nul
   return (
     <Box>
       <Spinner type="dots" />
+      <Text> </Text>
+      <Badge color="cyan">{MODE_BADGE[mode] ?? mode}</Badge>
       <Text> </Text>
       <Text bold color="gray">{label}</Text>
       <Text> </Text>
