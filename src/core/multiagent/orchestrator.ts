@@ -29,6 +29,7 @@ import type {
   Subtask,
   WorkerResult,
 } from './types';
+import { z } from 'zod';
 
 export interface MultiAgentHooks {
   onAgentSpawn?: (info: { role: AgentRole; id?: string; label: string }) => void;
@@ -96,24 +97,41 @@ function lastAssistantText(history: ChatMessage[]): string {
   return '';
 }
 
+/**
+ * 计划 JSON 的结构化 schema（差异3 / PaiCLI「zod 运行时校验」对齐项）。
+ * LLM 返回的计划结构不可控，用 zod 做运行时校验而非裸 JSON.parse + 手工推断，
+ * 畸形 JSON 会被 safeParse 捕获并走退化兜底，而不是静默成单子任务或崩。
+ */
+const SubtaskSchema = z.object({
+  id: z.union([z.string(), z.number()]).optional(),
+  title: z.string().optional(),
+  description: z.string().optional(),
+});
+const PlanSchema = z.object({
+  goal: z.string().optional(),
+  subtasks: z.array(SubtaskSchema).optional(),
+});
+
 /** 从模型文本中解析出计划 JSON（兼容 ```json 围栏 或 裸 JSON） */
 function parsePlan(text: string): MultiAgentPlan {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const raw = fenced ? fenced[1]! : text.match(/\{[\s\S]*\}/)?.[0];
   if (raw) {
     try {
-      const obj = JSON.parse(raw) as {
-        goal?: string;
-        subtasks?: Array<{ id?: string; title?: string; description?: string }>;
-      };
-      const subtasks: Subtask[] = (obj.subtasks ?? []).map((s, i) => ({
-        id: String(s.id ?? `s${i + 1}`),
-        title: String(s.title ?? ''),
-        description: String(s.description ?? ''),
-      }));
-      return { goal: String(obj.goal ?? ''), subtasks };
+      const parsed = JSON.parse(raw);
+      const result = PlanSchema.safeParse(parsed);
+      if (result.success) {
+        const data = result.data;
+        const subtasks: Subtask[] = (data.subtasks ?? []).map((s, i) => ({
+          id: String(s.id ?? `s${i + 1}`),
+          title: String(s.title ?? ''),
+          description: String(s.description ?? ''),
+        }));
+        return { goal: String(data.goal ?? ''), subtasks };
+      }
+      // schema 不匹配（字段缺失/类型错）→ 仍按原逻辑退化，但已是结构化校验后的判定
     } catch {
-      // 解析失败 → 退化成单子任务
+      // 非 JSON（解析失败）→ 退化成单子任务
     }
   }
   return {
