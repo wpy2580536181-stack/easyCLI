@@ -9,8 +9,17 @@
 //    fetch 的 dispatcher，使 web 工具走与模型 API 相同的出口代理；并对 localhost/私网/NO_PROXY
 //    目标自动绕过代理、网络失败时回退直连，避免把本机请求误送代理或单点失败。
 
-import { ProxyAgent, type Dispatcher } from 'undici';
 import { classifyFetchError, ModelRequestError } from '../../chatmodel/errors';
+import {
+  dispatcherForUrl,
+  getProxyDispatcher,
+  shouldBypassProxy,
+  type FetchInit,
+} from '../../http/proxy';
+
+// 代理辅助函数已抽到共享模块 src/core/http/proxy.ts（供 chatmodel 适配器与 web 工具复用），
+// 此处重新导出以保持对外 API 稳定。
+export { getProxyDispatcher, shouldBypassProxy, type FetchInit } from '../../http/proxy';
 
 /**
  * 合并用户中断信号与超时信号。
@@ -23,67 +32,11 @@ export function combinedSignal(userSignal: AbortSignal | undefined, ms: number):
 }
 
 // ───────────────────────────── 代理支持 ─────────────────────────────
+// 具体实现见 src/core/http/proxy.ts（已抽取为共享模块）。
 
-let cachedDispatcher: Dispatcher | undefined | null = null; // null = 尚未探测；undefined = 无代理
-let cachedProxyUrl: string | undefined | null = null; // 上次探测所用的代理 URL（用于感知 env 变化）
-
-function resolveProxyUrl(): string | undefined {
-  return (
-    process.env.HTTPS_PROXY ||
-    process.env.https_proxy ||
-    process.env.HTTP_PROXY ||
-    process.env.http_proxy ||
-    undefined
-  );
-}
-
-/** 返回缓存的代理 dispatcher（未配置代理则返回 undefined）。创建失败也安全降级为 undefined。
- *  缓存按「代理 URL」失效：env 可能在运行时变化（进程启动后才注入代理），若探测时的 URL
- *  与当前不一致则重新探测，避免「启动后才设 HTTPS_PROXY 却始终走直连」的隐性失效。 */
-export function getProxyDispatcher(): Dispatcher | undefined {
-  const url = resolveProxyUrl();
-  if (cachedDispatcher === null || cachedProxyUrl !== url) {
-    cachedProxyUrl = url;
-    try {
-      cachedDispatcher = url ? new ProxyAgent(url) : undefined;
-    } catch {
-      cachedDispatcher = undefined;
-    }
-  }
-  return cachedDispatcher;
-}
-
-/** 是否应绕过代理（localhost / 私网 / 命中 NO_PROXY）。 */
-export function shouldBypassProxy(targetUrl: string): boolean {
-  let host: string | undefined;
-  try {
-    host = new URL(targetUrl).hostname;
-  } catch {
-    return false;
-  }
-  if (!host) return false;
-  const h = host.toLowerCase();
-  if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '0.0.0.0') return true;
-  if (/^10\./.test(h)) return true;
-  if (/^192\.168\./.test(h)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
-  if (/^169\.254\./.test(h)) return true;
-  // NO_PROXY：逗号/空格/分号分隔，支持前导点后缀匹配（.example.com 匹配 a.example.com）与精确匹配
-  const noProxy = process.env.NO_PROXY || process.env.no_proxy;
-  if (noProxy) {
-    for (const entry of noProxy.split(/[,\s;]+/).filter(Boolean)) {
-      const e = entry.toLowerCase();
-      if (e === h || (e.startsWith('.') && (h === e.slice(1) || h.endsWith(e)))) return true;
-    }
-  }
-  return false;
-}
-
-/** 计算目标 URL 实际要用的 dispatcher：有代理且未绕过则用代理，否则直连（undefined）。 */
-function dispatcherFor(url: string): Dispatcher | undefined {
-  const d = getProxyDispatcher();
-  if (!d) return undefined;
-  return shouldBypassProxy(url) ? undefined : d;
+/** 计算目标 URL 实际要用的 dispatcher（兼容旧内部名，转发到共享模块）。 */
+function dispatcherFor(url: string) {
+  return dispatcherForUrl(url);
 }
 
 export interface FetchSearchOpts {
@@ -99,8 +52,6 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-type FetchInit = RequestInit & { dispatcher?: Dispatcher };
-
 /**
  * 发起一次搜索用 fetch，返回 Response（已确认 !res.ok 之外的成功响应）。
  * - 若配置了代理且目标非绕过列表，优先走代理；代理网络失败时回退直连一次。
@@ -114,7 +65,9 @@ export async function fetchSearch(
   opts: FetchSearchOpts,
 ): Promise<Response> {
   const dispatcher = dispatcherFor(url);
-  const modes: Array<Dispatcher | undefined> = dispatcher ? [dispatcher, undefined] : [undefined];
+  const modes: Array<ReturnType<typeof dispatcherForUrl>> = dispatcher
+    ? [dispatcher, undefined]
+    : [undefined];
   const retries = opts.retries ?? 1;
   let lastErr: unknown;
 
@@ -162,7 +115,9 @@ export async function fetchViaProxy(
   op: string,
 ): Promise<Response> {
   const dispatcher = dispatcherFor(url);
-  const modes: Array<Dispatcher | undefined> = dispatcher ? [dispatcher, undefined] : [undefined];
+  const modes: Array<ReturnType<typeof dispatcherForUrl>> = dispatcher
+    ? [dispatcher, undefined]
+    : [undefined];
   let lastErr: unknown;
 
   for (const mode of modes) {

@@ -8,6 +8,7 @@ import type {
 } from './types';
 import { classifyFetchError, ModelRequestError } from './errors';
 import { historyBreakpointIndex, markLastContentBlock } from './cache';
+import { dispatcherForUrl, type FetchInit } from '../http/proxy';
 
 export interface OpenAIConfig {
   /** 例如 https://api.deepseek.com/v1 */
@@ -51,6 +52,9 @@ export class OpenAICompatibleAdapter implements ChatModel {
     const cacheSystem = opts.cache?.system !== false;
     const cacheTools = opts.cache?.tools !== false;
     const cacheHistory = opts.cache?.history === true;
+    // 代理出口：配置了 HTTPS_PROXY/HTTP_PROXY 时，让 LLM 请求走与 web 工具相同的出口代理
+    // （localhost/私网/NO_PROXY 目标会自动绕过，见 ./proxy）。
+    const dispatcher = dispatcherForUrl(this.config.baseURL);
     // 把消息翻译出来，便于在首个 system 块上打 cache_control 断点（OpenAI 兼容网关多忽略未知字段）
     const messages = toOpenAIMessages(opts.messages) as Array<Record<string, unknown>>;
     if (cacheSystem) {
@@ -102,7 +106,8 @@ export class OpenAICompatibleAdapter implements ChatModel {
           },
           body: JSON.stringify(nonStreamBody),
           signal: opts.signal,
-        });
+          dispatcher,
+        } as FetchInit);
       } catch (e) {
         throw classifyFetchError(e, `调用 ${this.config.model}`);
       }
@@ -144,7 +149,8 @@ export class OpenAICompatibleAdapter implements ChatModel {
         },
         body: JSON.stringify(body),
         signal: opts.signal,
-      });
+        dispatcher,
+      } as FetchInit);
     } catch (e) {
       throw classifyFetchError(e, `调用 ${this.config.model}`);
     }

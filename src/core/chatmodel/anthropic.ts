@@ -21,6 +21,7 @@ import type {
 } from './types';
 import { classifyFetchError, ModelRequestError } from './errors';
 import { historyBreakpointIndex } from './cache';
+import { dispatcherForUrl, type FetchInit } from '../http/proxy';
 
 export interface AnthropicConfig {
   apiKey: string;
@@ -54,6 +55,8 @@ export class AnthropicAdapter implements ChatModel {
     const cacheTools = opts.cache?.tools !== false;
     const cacheHistory = opts.cache?.history === true;
     const { system, messages } = toAnthropicMessages(opts.messages, cacheSystem, cacheHistory);
+    // 代理出口：同 OpenAI 适配器，使 LLM 请求在有代理环境下走出口代理。
+    const dispatcher = dispatcherForUrl(this.endpoint);
 
     const body: Record<string, unknown> = {
       model: this.config.model,
@@ -82,7 +85,8 @@ export class AnthropicAdapter implements ChatModel {
         },
         body: JSON.stringify(body),
         signal: opts.signal,
-      });
+        dispatcher,
+      } as FetchInit);
     } catch (e) {
       throw classifyFetchError(e, `调用 ${this.config.model}`);
     }
