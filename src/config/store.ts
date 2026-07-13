@@ -48,12 +48,21 @@ export interface UserConfig {
   skills?: SkillConfig;
 }
 
-const mcpServerSchema = z.object({
-  command: z.string(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string()).optional(),
-  cwd: z.string().optional(),
-});
+const mcpServerSchema = z
+  .object({
+    /** 传输方式：stdio(默认) | http；http 时 url 必填、command 可省 */
+    transport: z.enum(['stdio', 'http']).optional(),
+    command: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string()).optional(),
+    cwd: z.string().optional(),
+    /** http 传输的远程地址，如 https://host/mcp */
+    url: z.string().optional(),
+  })
+  .refine(
+    (s) => (s.transport === 'http' ? !!s.url : !!s.command),
+    { message: 'http 传输需提供 url，stdio 传输需提供 command' },
+  );
 
 const userConfigSchema = z.object({
   provider: z.string().optional(),

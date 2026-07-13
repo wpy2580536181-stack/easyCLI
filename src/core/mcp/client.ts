@@ -1,7 +1,10 @@
 // Phase 5：MCP 客户端 —— 基于官方 @modelcontextprotocol/sdk 的 Client 实现。
 //
 // 设计要点：
-// 1. 传输层：底层用 SDK 的 StdioClientTransport 拉起 MCP Server 子进程，
+// 1. 传输层：底层用 SDK 的 Transport 抽象，支持两种传输：
+//    - stdio：StdioClientTransport 拉起本地 MCP Server 子进程（默认）；
+//    - http ：StreamableHTTPClientTransport 连接远程 Streamable HTTP 端点
+//      （如 https://host/mcp，无需本地进程，直接接入云端/远程 MCP 生态）。
 //    JSON-RPC 配对、请求/响应 id 匹配、协议版本协商等全部由 SDK 负责。
 // 2. 门面（facade）：McpClient 在 SDK Client 之上保留「连接状态机」与对外方法
 //    （connect/listTools/callTool/disconnect），以最小化调用方与测试改动。
@@ -11,16 +14,22 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { ToolDef } from '../chatmodel/types';
 
 export type McpState = 'disconnected' | 'initializing' | 'ready' | 'closed';
 
-/** 一个 MCP Server 的启动规格（stdio：本地可执行命令） */
+/** 一个 MCP Server 的启动规格（stdio：本地命令；http：远程地址） */
 export interface McpServerSpec {
-  command: string;
+  /** 传输方式：stdio(默认，本地子进程) | http(远程 Streamable HTTP) */
+  transport?: 'stdio' | 'http';
+  /** stdio：本地可执行命令 */
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  /** http：远程服务地址，如 https://host/mcp */
+  url?: string;
 }
 
 export interface McpClientOptions {
@@ -55,7 +64,7 @@ interface Registrar {
 export class McpClient {
   private state: McpState = 'disconnected';
   private sdk: Client;
-  private transport?: StdioClientTransport;
+  private transport?: StdioClientTransport | StreamableHTTPClientTransport;
   private readonly inFlight = new Set<AbortController>();
 
   private readonly timeoutMs: number;
@@ -84,12 +93,26 @@ export class McpClient {
     }
     this.state = 'initializing';
 
-    const transport = new StdioClientTransport({
-      command: this.spec.command,
-      args: this.spec.args ?? [],
-      env: { ...process.env, ...(this.spec.env ?? {}) } as Record<string, string>,
-      cwd: this.spec.cwd,
-    });
+    // 按传输类型选择底层 Transport：stdio（本地子进程）或 http（远程 Streamable HTTP）
+    let transport: StdioClientTransport | StreamableHTTPClientTransport;
+    if (this.spec.transport === 'http') {
+      if (!this.spec.url) {
+        this.state = 'closed';
+        throw new Error('HTTP 传输的 MCP 服务必须提供 url');
+      }
+      transport = new StreamableHTTPClientTransport(new URL(this.spec.url));
+    } else {
+      if (!this.spec.command) {
+        this.state = 'closed';
+        throw new Error('stdio 传输的 MCP 服务必须提供 command');
+      }
+      transport = new StdioClientTransport({
+        command: this.spec.command,
+        args: this.spec.args ?? [],
+        env: { ...process.env, ...(this.spec.env ?? {}) } as Record<string, string>,
+        cwd: this.spec.cwd,
+      });
+    }
     this.transport = transport;
 
     // SDK 在 initialize 协商成功后会调用 transport.setProtocolVersion(negotiated)。
@@ -259,9 +282,13 @@ export async function connectMcpServers(
       const mcpTools = await client.listTools();
       registry.registerAll(mcpToolsToToolDefs(client, mcpTools));
       clients.push(client);
-      onWarn(`已连接 MCP 服务器 ${spec.command}: ${mcpTools.length} 个工具`);
+      const label =
+        spec.transport === 'http' ? spec.url ?? '(http)' : spec.command ?? '(stdio)';
+      onWarn(`已连接 MCP 服务器 ${label}: ${mcpTools.length} 个工具`);
     } catch (e) {
-      onWarn(`⚠ MCP 连接失败（${spec.command}）: ${(e as Error).message}`);
+      const label =
+        spec.transport === 'http' ? spec.url ?? '(http)' : spec.command ?? '(stdio)';
+      onWarn(`⚠ MCP 连接失败（${label}）: ${(e as Error).message}`);
       await client.disconnect().catch(() => undefined);
     }
   }
