@@ -4,7 +4,8 @@
 //   - 不再 `\x1b[1;1H\x1b[J` 整段重绘 + 手工算 footerRow；由 Yoga flex 定位。
 //   - 流式正文经 renderMarkdown(buffer,width) 产出 ANSI 行，按行透传给 <Text>
 //     （Phase 1：TTY 下着色由 markdown 渲染器自带 ANSI 保证；后续如需 Ink 原生着色再接 AnsiText）。
-//   - 超长从顶部裁剪（buildVisibleLines），早期内容滚出，与真实终端滚动一致。
+//   - 超长从顶部裁剪（buildVisibleLines）；scrollOffset>0 时视口上移，可回看历史
+//     （Ink 全屏 TUI 不进终端滚动缓冲区，鼠标上拖无效，故由 store.scrollOffset 自管滚动）。
 //
 // 设计依据：docs/tui-ink-design.md §4.2.3 / §7.3。
 
@@ -32,6 +33,7 @@ export function Transcript({ store, markdown, reservedRows = 0 }: TranscriptProp
   const assistantBuffer = useAppStore(store, (s) => s.assistantBuffer);
   const width = useAppStore(store, (s) => s.width);
   const height = useAppStore(store, (s) => s.height);
+  const scrollOffset = useAppStore(store, (s) => s.scrollOffset);
 
   const bodyLines = assistantBuffer
     ? markdown
@@ -40,13 +42,15 @@ export function Transcript({ store, markdown, reservedRows = 0 }: TranscriptProp
     : [];
 
   const maxRows = Math.max(1, height - reservedRows);
-  const visible = buildVisibleLines({ transcriptLines, userTurn, bodyLines, maxRows });
+  const visible = buildVisibleLines({ transcriptLines, userTurn, bodyLines, maxRows, scrollOffset });
 
-  // 计算裁剪后仍可见的 splash 行数：splash 位于 transcriptLines 最前，超高时从顶部裁剪，
-  // 故最先滚出。visible 的前 visibleSplash 行即 splash，需用 truncate 防拆行。
+  // 计算视口窗口起点（从顶部算的行号），用于判断 splash 行是否仍可见。
+  // 窗口 = [start, start+maxRows)；splash 位于 transcriptLines 最前（索引 0..splashCount）。
+  // scrollOffset>0 时窗口上移，splash 行可能整体滚出，此时 visibleSplash=0（不再需 truncate）。
   const total = transcriptLines.length + userTurn.length + bodyLines.length;
-  const removedFromTop = Math.max(0, total - maxRows);
-  const visibleSplash = Math.max(0, splashCount - removedFromTop);
+  const off = Math.max(0, Math.min(scrollOffset, Math.max(0, total - maxRows)));
+  const start = Math.max(0, total - off - maxRows);
+  const visibleSplash = Math.max(0, Math.min(splashCount, start + maxRows) - start);
 
   return (
     <Box flexDirection="column" flexGrow={1}>

@@ -62,6 +62,11 @@ export interface AppState {
   dropdown: CommandMeta[];
   state: InputState;
   approval: ApprovalState | null;
+  /**
+   * 滚动偏移：距底部上滚的行数。0 = 贴底、跟随最新输出；>0 = 向上滚了 N 行，
+   * 用于应用内回看历史（Ink 全屏 TUI 不进终端滚动缓冲区，鼠标上拖无效，故需自管滚动）。
+   */
+  scrollOffset: number;
   // —— 环境 ——
   statuslineEnabled: boolean;
   autoContext: boolean;
@@ -104,6 +109,10 @@ export interface AppActions {
   setInputState(s: InputState): void;
   requestApproval(question: string, opts?: { debounceMs?: number }): Promise<string>;
   resolveApproval(value: string): void;
+  /** 上滚/下滚（delta>0 上滚、<0 下滚）；按当前视口夹取到合法范围。 */
+  scrollBy(delta: number): void;
+  /** 回到贴底（scrollOffset=0），恢复跟随最新输出。 */
+  scrollToBottom(): void;
   tickClock(): void;
   setSize(w: number, h: number): void;
   reset(): void;
@@ -169,6 +178,7 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
     dropdown: [],
     state: 'input',
     approval: null,
+    scrollOffset: 0,
     statuslineEnabled: opts.statuslineEnabled ?? true,
     autoContext: opts.autoContext ?? false,
     width: opts.width ?? (process.stdout.columns || 80),
@@ -227,7 +237,8 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
         userTurn: lines,
         assistantBuffer: '',
         showCtx: false,
-        // 一轮开始：隐藏输入框，避免生成期间继续接键（由 <InputBox> 的 useInput 感知）。
+        // 新一轮开始：贴底并隐藏输入框（避免生成期间继续接键，由 <InputBox> 的 useInput 感知）。
+        scrollOffset: 0,
         state: 'hidden',
         anim: { mode: 'thinking', label: LABEL_THINKING, startedAt: Date.now(), estTokens: 0, cachePct: null },
       });
@@ -311,6 +322,22 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
       set({ clock: get().clock + 1 });
     },
 
+    scrollBy(delta) {
+      const s = get();
+      // 视口行数（与 Transcript 的 maxRows = height - reservedRows 对齐；reservedRows 默认 4）。
+      const maxRows = Math.max(1, s.height - 4);
+      // 估算总行：正文按换行粗估（精确切片由 Transcript 用 markdown 完成，此处只需夹取上限）。
+      const body = s.assistantBuffer ? s.assistantBuffer.split('\n').length : 0;
+      const total = s.transcriptLines.length + s.userTurn.length + body;
+      const maxOff = Math.max(0, total - maxRows);
+      const next = Math.max(0, Math.min(maxOff, s.scrollOffset + delta));
+      if (next !== s.scrollOffset) set({ scrollOffset: next });
+    },
+
+    scrollToBottom() {
+      if (get().scrollOffset !== 0) set({ scrollOffset: 0 });
+    },
+
     setSize(w, h) {
       set({ width: w, height: h });
     },
@@ -326,6 +353,7 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
         dropdown: [],
         state: 'input',
         approval: null,
+        scrollOffset: 0,
       });
     },
   }));

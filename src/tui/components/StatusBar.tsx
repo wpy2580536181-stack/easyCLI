@@ -31,6 +31,7 @@ export function StatusBar({ store }: StatusBarProps): React.ReactElement | null 
   const ctxPct = useAppStore(store, (s) => s.ctxPct);
   const startedAt = useAppStore(store, (s) => s.startedAt);
   const width = useAppStore(store, (s) => s.width);
+  const scrollOffset = useAppStore(store, (s) => s.scrollOffset);
   // 订阅 clock：useClock 每秒 tick，驱动时长刷新（等价旧类 setInterval 每秒 render）。
   useAppStore(store, (s) => s.clock);
 
@@ -51,6 +52,14 @@ export function StatusBar({ store }: StatusBarProps): React.ReactElement | null 
     );
   }
   left.push(<Text key="token" color="green">{tokenText}</Text>);
+  // 滚动回看提示：已上滚时显示偏移行数 + 回底快捷键（PageDown/End）。
+  if (scrollOffset > 0) {
+    left.push(
+      <Text key="scroll" color="gray">
+        {`↑ 上滚 ${scrollOffset} · PgDn回底`}
+      </Text>,
+    );
+  }
   left.push(<Text key="dur" color="gray">{formatDuration(Date.now() - startedAt)}</Text>);
 
   // 右端：模式指示（● 圆点 + 文案），正常绿 / 规划黄。

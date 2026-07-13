@@ -59,6 +59,13 @@ export function InputBox({
       const st = store.getState();
       // asking 交给 <Approval>；hidden（忙）忽略键入。
       if (st.state !== 'input') return;
+      // 已上滚时，若本次按键是「滚动键」（方向键/PageUp/PageDown/Home/End）则不打断滚动；
+      // 其余输入类操作（打字/回车/退格/制表/Esc）一律回底，避免「读历史时编辑」视口错位。
+      const k = key as any;
+      const isScrollKey =
+        st.scrollOffset > 0 &&
+        (key.upArrow || key.downArrow || k.pageUp || k.pageDown || k.home || k.end);
+      if (st.scrollOffset !== 0 && !isScrollKey) st.scrollToBottom();
 
       // —— 控制键 ——
       if (key.ctrl && ch === 'c') {
@@ -121,10 +128,13 @@ export function InputBox({
         return;
       }
 
-      // —— ↑/↓：斜杠菜单 or 历史 ——
+      // —— ↑/↓：斜杠菜单 / 滚动历史 / 历史翻页 ——
+      // 优先级：斜杠下拉菜单 > 已上滚则滚动历史 > 否则翻输入历史。
       if (key.upArrow) {
         if (isSlash && matches.length) {
           st.setSelIndex(wrapIndex(st.selIndex, -1, matches.length));
+        } else if (st.scrollOffset > 0) {
+          st.scrollBy(1); // 继续上滚看更早
         } else {
           navHistory(-1);
         }
@@ -133,6 +143,8 @@ export function InputBox({
       if (key.downArrow) {
         if (isSlash && matches.length) {
           st.setSelIndex(wrapIndex(st.selIndex, 1, matches.length));
+        } else if (st.scrollOffset > 0) {
+          st.scrollBy(-1); // 往下滚回最新
         } else {
           navHistory(1);
         }
