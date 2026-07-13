@@ -127,3 +127,19 @@
 4. **P3（风格/规范）**：差异 7（AsyncGenerator 包装）、差异 8（统一包管理器）。
 
 > 注：以上为分析 + 方案，未改动任何代码。如需，我可按 P0→P1 顺序逐条实现并补对应单测。
+
+---
+
+## 六、实施进度（已落地）
+
+| 阶段 | 差异 | 状态 | 关键改动 |
+|------|------|------|---------|
+| P0 | 差异 1 MCP 客户端 HTTP 传输 | ✅ 已合入 `origin/main` | `McpServerSpec` 增 `transport`/`url`；`connect` 选 `StreamableHTTPClientTransport`；`config/store.ts` schema 放开 |
+| P0 | 差异 2 fast-glob 替换手写 glob | ✅ 已合入 | `builtin.ts`/`skill/loader.ts`/`rag/store.ts` 三处 `walk` 改为 `fast-glob` |
+| **P1** | **差异 4 undici 代理接入 LLM** | ✅ 已完成（待提交） | 抽取共享 `src/core/http/proxy.ts`（`getProxyDispatcher`/`shouldBypassProxy`/`dispatcherForUrl`）；OpenAI + Anthropic 适配器 fetch 加 `dispatcher` |
+| **P1** | **差异 3 工具入参 zod 校验** | ✅ 已完成（待提交） | 新增轻量 JSON Schema 校验器 `src/core/tools/schema-validate.ts`（fail-open）；`executor.runOne` 执行前按 `inputSchema` 拦截非法参数 |
+| **P1** | **差异 3 计划 JSON 校验** | ✅ 已完成（待提交） | `orchestrator.parsePlan` 改用 zod `PlanSchema.safeParse` 结构化提取子任务，失败仍退化兜底 |
+
+**P1 验证**：`tsc --noEmit` 0 报错；`vitest run` 456 测试全绿（原 441 + 新增 15：executor 入参校验 3、schema-validate 8、proxy 4）；`tsup` 构建成功。
+**设计取舍**：差异 3 未引入 `json-schema-to-zod`（仓库无此依赖），改为零依赖的轻量 JSON Schema 校验器，对未知 schema 关键字 fail-open，绝不误拒合法调用。
+**P1 未覆盖**：差异 5（Multi-Agent 角色+依赖图）、差异 6（独立 Plan-and-Execute 模块）属 P2 功能对齐，差异 7/8 属 P3 风格/规范，均按计划暂缓。
