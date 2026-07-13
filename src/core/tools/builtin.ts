@@ -1,10 +1,11 @@
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { join, relative, resolve, sep } from 'node:path';
+import { join, relative } from 'node:path';
 import type { ToolContext, ToolDef, ToolResult } from '../chatmodel/types';
 import { resolveSafe } from '../security/path-fence';
 import { checkCommand } from '../security/command-blacklist';
 import { createSandbox } from '../security/sandbox';
+import fg from 'fast-glob';
 
 const sandbox = createSandbox();
 
@@ -15,29 +16,8 @@ function fail(output: string): ToolResult {
   return { ok: false, output };
 }
 
-async function* walk(dir: string, depth = 0): AsyncGenerator<string> {
-  if (depth > 12) return;
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const e of entries) {
-    const full = join(dir, e.name);
-    if (e.isDirectory()) yield* walk(full, depth + 1);
-    else if (e.isFile()) yield full;
-  }
-}
-
-function patternToRegExp(pat: string): RegExp {
-  const esc = pat
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*\//g, '§')
-    .replace(/\*/g, '[^/]*')
-    .replace(/§/g, '.*');
-  return new RegExp('^' + esc + '$');
-}
+// 文件枚举统一交给 fast-glob：支持 ** / * / ? / [abc] / {a,b} 等完整语法，
+// 走高效目录遍历，不再像旧版那样全量递归后再用正则过滤（大仓库下快几个数量级）。
 
 // ── read_file ──────────────────────────────────────────────
 async function readFileTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -97,15 +77,13 @@ async function listDirTool(args: Record<string, unknown>, ctx: ToolContext): Pro
 
 // ── glob ──────────────────────────────────────────────────
 async function globTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const pattern = typeof args.pattern === 'string' ? args.pattern : '*';
+  const pattern = typeof args.pattern === 'string' && args.pattern ? args.pattern : '*';
   try {
-    const re = patternToRegExp(pattern);
-    const out: string[] = [];
-    for await (const f of walk(resolveSafe(ctx.cwd, '.'))) {
-      const rel = relative(ctx.cwd, f).split(sep).join('/');
-      if (re.test(rel)) out.push(rel);
-    }
-    return ok(out.sort().join('\n') || '(无匹配)');
+    // 交给 fast-glob：完整支持 ** / * / ? / [abc] / {a,b} 语法，且只遍历匹配路径，
+    // 不再像旧版那样全量递归后再用正则过滤（大仓库下快几个数量级）。
+    const absRoot = resolveSafe(ctx.cwd, '.');
+    const out = fg.sync(pattern, { cwd: absRoot, dot: true, onlyFiles: true }).sort();
+    return ok(out.join('\n') || '(无匹配)');
   } catch (e) {
     return fail(`glob 失败: ${(e as Error).message}`);
   }
@@ -128,8 +106,12 @@ function hasRipgrep(): boolean {
 // 进程内 JS 扫描兜底（环境无 rg 时保持工具可用，行为与原实现一致）
 async function grepJS(pattern: string, path: string, ctx: ToolContext): Promise<string> {
   const re = new RegExp(pattern);
+  const absRoot = resolveSafe(ctx.cwd, path);
+  // 用 fast-glob 枚举全部文件（等价于旧版递归 walk），再在进程内做正则扫描
+  const files = fg.sync('**', { cwd: absRoot, dot: true, onlyFiles: true });
   const out: string[] = [];
-  for await (const f of walk(resolveSafe(ctx.cwd, path))) {
+  for (const relFromRoot of files) {
+    const f = join(absRoot, relFromRoot);
     let text: string;
     try {
       text = await readFile(f, 'utf8');

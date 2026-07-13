@@ -8,8 +8,9 @@
 // 线性扫描 O(N·D) 对学习项目足够；生产会用 ANN 索引（HNSW）或向量数据库。
 
 import { createRequire } from 'node:module';
-import { mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import fg from 'fast-glob';
 import { tokenize, cosine, computeIdf } from './embed';
 import { chunkText } from './chunk';
 import { HandwrittenEmbedder, type Embedder } from './embedder';
@@ -46,21 +47,6 @@ function vecToBuffer(v: Float32Array): Buffer {
 function bufferToVec(b: Uint8Array | Buffer): Float32Array {
   const u = b instanceof Buffer ? new Uint8Array(b) : b;
   return new Float32Array(u.buffer, u.byteOffset, u.byteLength / 4);
-}
-
-function* walk(dir: string, depth = 0): Generator<string> {
-  if (depth > 12) return;
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const e of entries) {
-    const full = join(dir, e.name);
-    if (e.isDirectory()) yield* walk(full, depth + 1);
-    else if (e.isFile()) yield full;
-  }
 }
 
 /**
@@ -139,7 +125,8 @@ export class RagStore {
       try {
         const st = statSync(src);
         if (st.isDirectory()) {
-          for (const f of walk(src)) {
+          for (const rel of fg.sync('**', { cwd: src, dot: true, onlyFiles: true })) {
+            const f = join(src, rel);
             try {
               docs.push({ source: f, text: readFileSync(f, 'utf8') });
             } catch {
@@ -314,8 +301,9 @@ export class RagStore {
         continue;
       }
       if (st.isDirectory()) {
-        for (const f of walk(src)) {
+        for (const rel of fg.sync('**', { cwd: src, dot: true, onlyFiles: true })) {
           try {
+            const f = join(src, rel);
             const fs = statSync(f);
             out.push({ source: f, mtime: Math.floor(fs.mtimeMs), size: fs.size });
           } catch {

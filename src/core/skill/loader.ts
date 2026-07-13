@@ -11,26 +11,12 @@
 //     命中 prompt cache、不撑爆上下文；
 //   - 正文指令（body）仅在模型真正调用 use_skill 时才加载，不预先塞满。
 
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import fg from 'fast-glob';
 import { parseFrontmatter, type Skill, type SkillLayer, type SkillMeta, type SkillSource } from './types';
 
 const LAYER_ORDER: SkillLayer[] = ['builtin', 'user', 'project'];
-
-function* walk(dir: string, depth = 0): Generator<string> {
-  if (depth > 8) return;
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const e of entries) {
-    const full = join(dir, e.name);
-    if (e.isDirectory()) yield* walk(full, depth + 1);
-    else if (e.isFile() && e.name.endsWith('.md')) yield full;
-  }
-}
 
 /**
  * 技能加载器：扫描三层来源、解析元数据、按需加载正文。
@@ -45,7 +31,8 @@ export class SkillLoader {
     for (const layer of LAYER_ORDER) {
       for (const src of this.sources.filter((s) => s.layer === layer)) {
         if (!existsSync(src.dir)) continue;
-        for (const file of walk(src.dir)) {
+        for (const rel of fg.sync('**/*.md', { cwd: src.dir, dot: true })) {
+          const file = join(src.dir, rel);
           let raw: string;
           try {
             raw = readFileSync(file, 'utf8');
