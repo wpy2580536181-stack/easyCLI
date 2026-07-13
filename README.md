@@ -1,8 +1,8 @@
 # easyCLI
 
-从零到一**纯手写**的仿 Claude Code 命令行 Agent CLI。目标是吃透 ReAct、Tool Calling、MCP、多模型适配、Prompt 工程、RAG、安全审计等底层模式，每一期完成一个小模块并配套学习文档。
+由 **AI 辅助编写**的仿 Claude Code 命令行 Agent CLI。目标是吃透 ReAct、Tool Calling、MCP、多模型适配、Prompt 工程、RAG、安全审计等底层模式，每一期完成一个小模块并配套学习文档。
 
-> 本项目为学习用途，**不 fork 任何参考实现**：核心 Agent 逻辑（ReAct / Tool Calling / 权限 / 记忆 / RAG 等）均从零手写；**MCP 客户端与服务端基于官方 `@modelcontextprotocol/sdk` 实现**（先手写学习、后迁移到 SDK，见 `docs/mcp-sdk-migration-plan.md`），协议层交由社区维护。
+> 本项目为学习用途，**不 fork 任何参考实现**：核心 Agent 逻辑（ReAct / Tool Calling / 权限 / 记忆 / RAG 等）由 AI 辅助编写并吃透原理；**MCP 客户端与服务端基于官方 `@modelcontextprotocol/sdk` 实现**（先手写学习、后迁移到 SDK，见 `docs/mcp-sdk-migration-plan.md`），协议层交由社区维护；终端界面层基于 **Ink（React 声明式 TUI）** 框架化重构（见 `docs/tui-ink-design.md`）。依赖按需引入、保持克制，不为"零依赖"而牺牲可维护性与架构合理性。
 
 ---
 

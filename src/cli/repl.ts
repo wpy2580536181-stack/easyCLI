@@ -1,5 +1,4 @@
 import chalk from 'chalk';
-import { LineEditor, paintInputBox } from './line-editor';
 import type { ChatMessage, ChatModel } from '../core/chatmodel';
 import { ModelRequestError } from '../core/chatmodel/errors';
 import { type AppConfig, saveUserConfig, appConfigToUserConfig, maskSecret, CONFIG_PATH } from '../config';
@@ -15,19 +14,14 @@ import { SkillLoader } from '../core/skill';
 import { SessionStore, extractConversation, withSystem, AUTOSAVE_NAME } from '../core/session/store';
 import { runAgent } from '../core/agent';
 import { buildAgentSystemPrompt, buildPlanSystemPrompt, type AgentMode } from '../core/prompts';
-import { formatSnapshot, formatTokens, formatUSD, type CostTracker, type TrackerSnapshot } from '../core/observability';
-import { StreamRenderer } from './renderer';
-import { StatusLine } from './status';
-import { StatusBar, type StatusBarState, type StatusMode } from './statusbar';
+import { formatSnapshot, formatTokens, formatUSD, type CostTracker } from '../core/observability';
 import { renderMarkdown } from './markdown';
 import { gatherContext } from '../core/prompts/context';
 import { HistoryStore } from './history';
 import { COMMANDS } from './commands';
-import { printSplash } from './splash';
+import { printSplash, renderSplash } from './splash';
 import { ui } from './theme';
-
-/** 多行粘贴判定的 debounce 窗口：窗口内连续到达的非 slash 行视为同一次粘贴 */
-const PASTE_DEBOUNCE_MS = 12;
+import { createInkView, createPlainView, type ReplView, type StatusPatch } from './repl-view';
 
 /**
  * 构造 HITL 审批器：交互式询问用户是否放行（y/n/a），a 表示持久预批准。
@@ -35,16 +29,19 @@ const PASTE_DEBOUNCE_MS = 12;
  *  - 操作预览摘要：把将要执行的完整命令（bash）或目标路径（文件工具）单独成行高亮，
  *    让用户看清再确认（对照「生产级」要求）；
  *  - 200ms 防抖：确认框刚渲染时忽略首回车，避免上一动作的残留/自动重复回车瞬间放行。
+ *
+ * 与旧版差异：不再依赖 LineEditor.ask（raw mode），改为 view.ask——
+ * TTY 走 store.requestApproval（<Approval> 覆盖层），非 TTY 走 readline.question。
  */
-function makeResolver(editor: LineEditor, permission: PermissionManager): Resolver {
+function makeResolver(view: ReplView, permission: PermissionManager): Resolver {
   const HITL_DEBOUNCE_MS = 200;
   return (tool: string, detail: string): Promise<Decision> => {
     const preview = detail ? '\n' + chalk.yellow('  › ' + detail) : '';
-    const prompt =
+    const question =
       chalk.yellow(`⚠ 允许执行 ${tool}?`) +
       preview +
       chalk.gray('  [y=允许 / n=拒绝 / a=总是允许] ');
-    return editor.ask(prompt, { debounceMs: HITL_DEBOUNCE_MS }).then((ans) => {
+    return view.ask(question, { debounceMs: HITL_DEBOUNCE_MS }).then((ans) => {
       const a = ans.trim().toLowerCase();
       if (a === 'a' || a === 'always') {
         permission.addAllow(tool);
@@ -54,14 +51,6 @@ function makeResolver(editor: LineEditor, permission: PermissionManager): Resolv
       return 'deny' as Decision;
     });
   };
-}
-
-/**
- * 把一条已提交的用户输入渲染成 transcript 的「本轮用户输入段」：提示符 + 输入（带
- * 输入框底色，与提交瞬间一致），其后跟一个空行作为与 AI 回复之间的留白（不再画分隔横线）。
- */
-function buildUserTurn(input: string, prompt: string): string[] {
-  return [paintInputBox(prompt + input, process.stdout.columns ?? 80), ''];
 }
 
 export async function runOnce(
@@ -81,20 +70,38 @@ export async function runOnce(
   semanticRecall?: boolean,
   autoInjectNames?: string[],
 ): Promise<void> {
-  const status = new StatusLine({ color: ui.assistant, markdown: renderMarkdown });
-  // 前缀缓存命中率：从 token 事件回填到状态栏（让优化「肉眼可见」）
+  // runOnce 是一次性非交互调用：始终用纯文本 StreamRenderer 后端，让回复留在滚动区
+  // （Ink 挂屏会在退出时清掉回复，反而丢失输出）。非 TTY 亦然。
+  const view = createPlainView({
+    prompt: ui.prompt,
+    history: [],
+    onSubmit: () => 'continue',
+    onInterrupt: () => {},
+    onExit: () => {},
+  });
+
+  // 前缀缓存命中率：从 token 事件回填到状态栏（让优化「肉眼可见」）。非 TTY 无状态栏，忽略。
   bus?.on('token', (e) => {
     const u = e as { cacheReadTokens?: number; promptTokens?: number };
     if (u.cacheReadTokens != null && (u.promptTokens ?? 0) > 0) {
-      status.setCache(Math.round((u.cacheReadTokens / u.promptTokens!) * 100));
+      view.setCache(Math.round((u.cacheReadTokens / u.promptTokens!) * 100));
     }
   });
+
   // ⚠ 前缀缓存：sysCtx 在本函数内只构造一次 → now 被冻结在「会话起点」。
   // 这样含时间/cwd/git 的 system 提示在整段会话里逐字节稳定（前缀匹配才能命中）。
-  // 若想刷新运行上下文，应显式 /clear 或重建会话，而非每轮 new Date()。
-  const sysCtx = { cwd: process.cwd(), skillsMenu: autoInjectNames && autoInjectNames.length ? skillLoader?.menuTextExcluding(autoInjectNames) ?? undefined : skillLoader?.menuText() ?? undefined, toolNames: tools.list().map((t) => t.name), now: new Date() };
+  const sysCtx = {
+    cwd: process.cwd(),
+    skillsMenu:
+      autoInjectNames && autoInjectNames.length
+        ? skillLoader?.menuTextExcluding(autoInjectNames) ?? undefined
+        : skillLoader?.menuText() ?? undefined,
+    toolNames: tools.list().map((t) => t.name),
+    now: new Date(),
+  };
   // Phase 22：Skill 自动注入——把指定技能正文拼入稳定 system 前缀（不被压缩、缓存友好）。
-  const autoInjectBlock = autoInjectNames && autoInjectNames.length ? skillLoader?.autoInjectBlock(autoInjectNames) ?? '' : '';
+  const autoInjectBlock =
+    autoInjectNames && autoInjectNames.length ? skillLoader?.autoInjectBlock(autoInjectNames) ?? '' : '';
   const baseSys = planMode ? buildPlanSystemPrompt(sysCtx) : buildAgentSystemPrompt(sysCtx);
   const sys = autoInjectBlock ? `${baseSys}\n\n${autoInjectBlock}` : baseSys;
   const history: ChatMessage[] = [
@@ -103,10 +110,8 @@ export async function runOnce(
   ];
   // 单次模式没有欢迎面板/历史，但本轮用户输入（提示符 + prompt）仍作为 userTurn 渲染，
   // 与 REPL 模式保持一致；规划模式额外把提示行作为 header 顶部。
-  const header: string[] = [];
-  if (planMode) header.push(chalk.bold.yellow('（规划模式：仅生成计划，不执行）'));
-  status.setHeader(header);
-  status.setUserTurn([paintInputBox(ui.prompt + prompt, process.stdout.columns ?? 80)]);
+  if (planMode) view.printLine(chalk.bold.yellow('（规划模式：仅生成计划，不执行）'));
+  view.beginUserTurn(prompt);
   // Phase 16：单次模式也自动注入上下文（基于 prompt 检索记忆/知识库）
   const semanticRecallEnabled = semanticRecall ?? true;
   let autoContext: string | undefined;
@@ -119,7 +124,7 @@ export async function runOnce(
     if (ac.text) autoContext = ac.text;
   }
   // 非交互模式无 HITL 提示：默认只读工具放行，写/危险操作被拒（安全默认）
-  status.begin('思考中…');
+  view.begin('思考中…');
   try {
     await runAgent(history, {
       model,
@@ -130,15 +135,17 @@ export async function runOnce(
       cwd: process.cwd(),
       planMode,
       autoContext,
-      onText: (c) => status.pushText(c),
-      onToolCall: (call) => status.toolStart(call.name),
-      onToolResult: (call, res) => status.toolDone(call.name, res.ok),
+      onText: (c) => view.pushToken(c),
+      onToolCall: (call) => view.toolStart(call.name),
+      onToolResult: (call, res) => view.toolDone(call.name, res.ok),
     });
   } finally {
-    status.stop();
+    view.finishTurn();
   }
   // Phase 14：打印本次会话总成本（单次模式，单轮即累计）
-  console.log(chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`));
+  const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
+  view.exit();
+  console.log(costLine);
 }
 
 export async function startRepl(
@@ -158,146 +165,42 @@ export async function startRepl(
   semanticRecall?: boolean,
   autoInjectNames?: string[],
 ): Promise<void> {
-  /**
-   * 自定义控制台：TTY 下，斜杠命令（/sessions、/help、/tools…）的 console_.log 输出
-   * 不直接写屏，而是先收集进 `slashBuffer`，待命令结束后再并入 transcript 并由 StatusLine
-   * 整屏重绘——否则这些输出会落在「输入框预留区」，被紧随其后的 editor.show() 清屏抹掉，
-   * 表现为「命令毫无反应」（这正是 /sessions 看不到任何内容的根因）。非 TTY 直接写屏，
-   * 保证管道 / 测试输出可解析。
-   */
-  let slashBuffer: string[] | null = null;
-  const console_ = {
-    log: (...args: unknown[]) => {
-      const text = args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ');
-      if (slashBuffer && process.stdout.isTTY) {
-        slashBuffer.push(text);
-        return;
-      }
-      console.log(text);
-    },
-    error: (...args: unknown[]) => console.error(...args),
-    warn: (...args: unknown[]) => console.warn(...args),
-  };
-
-  /**
-   * 把模型调用抛出的错误翻译成「对用户友好的一行提示」。
-   * 返回空串表示无需提示（如用户主动 Ctrl+C 中断）。
-   * 网络错误会引导检查网络/代理/密钥；HTTP 错误原样回显状态码。
-   */
-  function modelErrorNote(e: unknown): string {
-    if (e instanceof ModelRequestError) {
-      if (e.kind === 'abort') return ''; // 中断不提示
-      if (e.kind === 'network') return `🌐 ${e.message}`;
-      if (e.kind === 'http') return `⚠️ 模型服务返回错误：${e.message}`;
-      return `⚠️ ${e.message}`;
-    }
-    const msg = e instanceof Error ? e.message : String(e);
-    return `⚠️ 发生未知错误：${msg}`;
-  }
-
-  // 某轮模型调用失败的兜底展示：把友好提示写进状态行正文 + 并入 transcript，
-  // 然后正常返回（不抛出），从而不会冒泡成「未处理异常」冲垮整个 REPL 进程。
-  function showTurnError(statusLine: StatusLine, e: unknown): void {
-    const note = modelErrorNote(e);
-    if (!note) return;
-    statusLine.pushText('\n' + chalk.red(note));
-    transcript.push(chalk.gray(note));
-  }
-
-  // 启动欢迎面板（Splash）：显示项目信息 + 运行信息（模型 / git 分支）。
-  // 把 splash 行收集进 transcript 首部，作为「历史正文」从顶行重绘——
-  // 这样首轮输入后欢迎面板仍在最上方，直到对话变长自然向上滚动消失
-  // （而非一输入就被清屏吞掉）。长对话时 splash 随顶部滚动让位给新内容，
-  // 因为 transcript 模型只向下滚动、永不向上覆盖。
-  const splashLines = printSplash({ modelId: model.id });
-  // transcript：欢迎面板（首部常驻）+ 历史上各轮「用户输入 / 回复」的屏显行。
-  const transcript: string[] = [...splashLines];
+  // 启动欢迎面板（Splash）：TTY 下只渲染进 Ink 的 initialTranscript（由 Transcript 组件画一次，
+  // 不 console.log，否则会与 Ink 渲染的 splash 重复成两个框）；非 TTY 纯文本直接打印，无需常驻
+  // transcript（没有状态栏重绘）。无 API Key 时 TTY 也给出首屏前提示。
   if (!config.llm.apiKey) {
-    const warn = chalk.yellow('⚠ 未检测到 API Key，请设置 AGENTCLI_API_KEY（或 OPENAI_API_KEY）后再对话。');
-    console_.log(warn);
+    console.log(chalk.yellow('⚠ 未检测到 API Key，请设置 AGENTCLI_API_KEY（或 OPENAI_API_KEY）后再对话。'));
   }
 
-  // —— 常驻底部状态栏（statusline）：模型 · 分支 · ctx% · ¥成本 · 时长 · 模式 ——
-  // 初始 ctxPct 留空，待 history 声明后由 refreshStatus() 填充（避免 TDZ）
-  const statusBar = new StatusBar({ enabled: config.statusline !== false });
+  const statusBarEnabled = config.statusline !== false;
   const branch = gatherContext(process.cwd()).gitBranch ?? '(无)';
-  statusBar.start({
-    model: model.id,
-    branch,
-    mode: 'normal',
-    costText: '¥' + formatUSD(tracker.snapshot().cost).replace(/^\$/, ''),
-    showCtx: true,
-    ctxPct: undefined,
-    startedAt: Date.now(),
-  });
-
-  // 持续存在的 StatusLine 实例：空闲态承载 transcript（含 splash），轮次开始时复用，
-  // 下拉关闭回调用它 refresh() 重绘被输入框覆盖的历史内容。
-  const currentStatus = new StatusLine({
-    color: ui.assistant,
-    markdown: renderMarkdown,
-    statusBar,
-    reservedBottom: 4,
-  });
-  // 前缀缓存命中率：从 token 事件回填到状态栏（让优化「肉眼可见」）
-  bus?.on('token', (e) => {
-    const u = e as { cacheReadTokens?: number; promptTokens?: number };
-    if (u.cacheReadTokens != null && (u.promptTokens ?? 0) > 0) {
-      currentStatus.setCache(Math.round((u.cacheReadTokens / u.promptTokens!) * 100));
-    }
-  });
-  currentStatus.setHeader(transcript);
-  currentStatus.setUserTurn([]);
-
   const historyStore = new HistoryStore();
   // 本地维护一份「新 → 旧」历史，用于 Tab 补全与跨会话 ↑/↓。
-  // 注：新版 @types/node 的 readline.Interface 已不直接暴露可读写的 rl.history 属性，
-  // 历史只能经 createInterface 的 history/historySize 选项初始化、由 readline 内部维护，
-  // 故补全所需的「历史句子」我们用本地数组 mirror 一份。
   const histLines: string[] = historyStore.forReadline();
-  // Phase 10：跨会话命令历史。
-  // historySize>0 启用 readline 内部历史（↑/↓ 可用），初始用历史文件 seed；
-  // 用户输入由 readline 自动记录，我们额外通过 HistoryStore 落盘（去重 + 限长）。
-  // 输入编辑器：TTY 下用 raw mode 自绘（含斜杠命令下拉菜单），非 TTY 回退 readline。
   const promptStr = ui.prompt;
-  const editor = new LineEditor({
-    prompt: promptStr,
-    history: histLines,
-    commands: COMMANDS,
-    onSubmit: (line: string) => {
-      recordHistory(line);
-      dispatch(line);
-    },
-    onInterrupt: () => {
-      if (busy) abort.abort();
-      else editor.exit();
-    },
-    statusBar,
-    // 顶部预留 splash 区域：输入框盒子绝不上侵欢迎框（矮终端 / rows 被报小时，
-    // 避免 rows-3 的清屏起点升进欢迎框、把其底边 ╰─╯ 擦掉）。+1 留一行分隔空白。
-    topReserve: splashLines.length + 1,
-    // 斜杠下拉关闭（Esc 清空 / 删除至空）后，强制重绘 transcript 历史，
-    // 恢复被下拉临时覆盖的上方内容（避免屏幕上方留下空白）。
-    onDropdownClose: () => currentStatus.refresh(),
-  });
+
   // 规划模式（Phase 15）需要「切换系统提示」：把正常/规划两套系统提示都准备好，
   // 进入/退出规划模式时只替换 history[0].content，不另起引擎。
   // ⚠ 前缀缓存：sysCtx 在会话内只构造一次 → now 冻结在会话起点，
   // 使含时间/cwd/git 的 system 提示整段稳定（前缀匹配才能命中）。
-  const sysCtx = { cwd: process.cwd(), skillsMenu: autoInjectNames && autoInjectNames.length ? skillLoader?.menuTextExcluding(autoInjectNames) ?? undefined : skillLoader?.menuText() ?? undefined, toolNames: tools.list().map((t) => t.name), now: new Date() };
+  const sysCtx = {
+    cwd: process.cwd(),
+    skillsMenu:
+      autoInjectNames && autoInjectNames.length
+        ? skillLoader?.menuTextExcluding(autoInjectNames) ?? undefined
+        : skillLoader?.menuText() ?? undefined,
+    toolNames: tools.list().map((t) => t.name),
+    now: new Date(),
+  };
   // Phase 22：Skill 自动注入块——构造一次、会话内稳定，作为 system 前缀的一部分（缓存友好、不被压缩）。
-  const autoInjectBlock = autoInjectNames && autoInjectNames.length ? skillLoader?.autoInjectBlock(autoInjectNames) ?? '' : '';
+  const autoInjectBlock =
+    autoInjectNames && autoInjectNames.length ? skillLoader?.autoInjectBlock(autoInjectNames) ?? '' : '';
   /** 按模式构造系统提示：基础提示 + 自动注入块（若开启）。normal/plan 共用，保证切换一致。 */
   function makeSys(m: AgentMode): string {
     const base = m === 'plan' ? buildPlanSystemPrompt(sysCtx) : buildAgentSystemPrompt(sysCtx);
     return autoInjectBlock ? `${base}\n\n${autoInjectBlock}` : base;
   }
-  const history: ChatMessage[] = [
-    {
-      role: 'system',
-      content: makeSys('normal'),
-    },
-  ];
+  const history: ChatMessage[] = [{ role: 'system', content: makeSys('normal') }];
   // 模式与批准状态（Phase 15）
   let mode: AgentMode = 'normal';
   let normalSys = makeSys('normal');
@@ -314,7 +217,9 @@ export async function startRepl(
     mode = m;
     const content = makeSys(m);
     if (history[0] && typeof history[0].content === 'string') history[0].content = content;
+    view.setStatus({ mode });
   }
+
   // Phase 9：会话存储 + 跨会话恢复。每轮结束自动写 autosave，--resume 时恢复。
   const sessionStore = new SessionStore();
   if (resume && sessionStore.exists(AUTOSAVE_NAME)) {
@@ -326,27 +231,58 @@ export async function startRepl(
       // 恢复后重建 normalSys（含 Phase 22 自动注入块），保证 /plan→/discard 切换时 system 一致
       normalSys = makeSys('normal');
       if (typeof history[0]?.content === 'string') history[0].content = normalSys;
-      console_.log(chalk.gray(`⟳ 已从自动保存的会话恢复（${loaded.length} 条消息）`));
+      console.log(chalk.gray(`⟳ 已从自动保存的会话恢复（${loaded.length} 条消息）`));
     }
   }
-  const abort = new AbortController();
-  // Ctrl+C：由 LineEditor 捕获后回调 onInterrupt —— 模型生成中（busy）先取消当前轮，
-  // 空闲时直接退出（editor.exit() → 触发 startRepl 的 Promise resolve → main 清理后退出）。
-  // 注：全局 process.on('SIGINT')（main.ts）只负责关 MCP，不会终止进程。
-  const resolver = makeResolver(editor, permission);
-  // 把交互式 HITL 提示器注入权限管理器，执行器在 ask 决策时回调它
-  permission.setResolver(resolver);
-  let busy = false;
 
-  async function persistAutosave(): Promise<void> {
-    // 每轮结束把当前对话（不含 system）压缩后写入 autosave，供 --resume 恢复。
-    // 失败不应打断用户，故吞掉异常。
-    try {
-      await sessionStore.save(AUTOSAVE_NAME, extractConversation(history), compress);
-    } catch {
-      /* 自动保存失败静默忽略 */
+  const abort = new AbortController();
+  let busy = false;
+  const pending: string[] = [];
+
+  // —— 渲染后端（ReplView）：TTY 走 Ink，非 TTY 走 readline + StreamRenderer ——
+  let view: ReplView;
+
+  const onInterrupt = (): void => {
+    if (busy) abort.abort();
+    else view.exit();
+  };
+  const onExit = (): void => view.exit();
+  const onSubmit = (line: string): Promise<'exit' | 'continue'> => {
+    recordHistory(line);
+    return dispatch(line);
+  };
+
+  const tty = !!(process.stdout.isTTY && process.stdin.isTTY);
+  // 非 TTY 纯文本：直接打印 splash 首屏（无状态栏重绘需求，无需常驻 transcript）。
+  if (!tty) printSplash({ modelId: model.id });
+  view = tty
+    ? createInkView({
+        model: model.id,
+        branch,
+        mode: 'normal',
+        statuslineEnabled: statusBarEnabled,
+        commands: COMMANDS,
+        prompt: promptStr,
+        history: histLines,
+        markdown: renderMarkdown,
+        onSubmit,
+        onInterrupt,
+        initialHistory: [],
+        // TTY：仅把 splash 行交给 Ink 渲染一次（renderSplash 不 console.log，避免双重框）。
+        initialTranscript: renderSplash({ modelId: model.id }),
+      })
+    : createPlainView({ prompt: promptStr, history: histLines, onSubmit, onInterrupt, onExit });
+
+  // 前缀缓存命中率：从 token 事件回填到状态栏（让优化「肉眼可见」）
+  bus?.on('token', (e) => {
+    const u = e as { cacheReadTokens?: number; promptTokens?: number };
+    if (u.cacheReadTokens != null && (u.promptTokens ?? 0) > 0) {
+      view.setCache(Math.round((u.cacheReadTokens / u.promptTokens!) * 100));
     }
-  }
+  });
+
+  // 把交互式 HITL 提示器注入权限管理器，执行器在 ask 决策时回调它
+  permission.setResolver(makeResolver(view, permission));
 
   /** Phase 16：根据最新用户输入，自动检索记忆/知识库拼出本轮要注入的上下文 */
   async function autoCtxForTurn(): Promise<AutoContextResult | undefined> {
@@ -362,33 +298,69 @@ export async function startRepl(
   }
 
   /** 同步状态栏：刷新成本 / 上下文占用率 / 模式（每轮结束、回到输入态时调用） */
-  function refreshStatus(extra: Partial<StatusBarState> = {}): void {
+  function refreshStatus(extra: StatusPatch = {}): void {
     const cum = tracker.snapshot();
     const costText = '¥' + formatUSD(cum.cost).replace(/^\$/, '');
     const ctxPct = compress
       ? Math.round((estimateHistoryTokens(history, compress.counter) / compress.budgetTokens) * 100)
       : undefined;
-    statusBar.update({ costText, ctxPct, mode, ...extra });
+    view.setStatus({ costText, ctxPct, mode, ...extra });
   }
 
-  async function runTurn(userTurn: string[]): Promise<void> {
-    // 复用外层持久 StatusLine，避免轮次间创建多个实例，也保证下拉关闭时 currentStatus
-    // 始终非空、可用来 refresh() 重绘历史。
-    const status = currentStatus;
+  /** 把模型调用抛出的错误翻译成「对用户友好的一行提示」。返回空串表示无需提示（如用户主动 Ctrl+C 中断）。 */
+  function modelErrorNote(e: unknown): string {
+    if (e instanceof ModelRequestError) {
+      if (e.kind === 'abort') return ''; // 中断不提示
+      if (e.kind === 'network') return `🌐 ${e.message}`;
+      if (e.kind === 'http') return `⚠️ 模型服务返回错误：${e.message}`;
+      return `⚠️ ${e.message}`;
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    return `⚠️ 发生未知错误：${msg}`;
+  }
+
+  // 某轮模型调用失败的兜底展示：把友好提示写进 transcript（TTY 永久行 / 非 TTY 直印），
+  // 然后正常返回（不抛出），从而不会冒泡成「未处理异常」冲垮整个 REPL 进程。
+  function showTurnError(e: unknown): void {
+    const note = modelErrorNote(e);
+    if (!note) return;
+    view.printLine(chalk.gray(note));
+  }
+
+  /** Phase 9：每轮结束把当前对话（不含 system）压缩后写入 autosave，供 --resume 恢复。失败静默忽略。 */
+  async function persistAutosave(): Promise<void> {
+    try {
+      await sessionStore.save(AUTOSAVE_NAME, extractConversation(history), compress);
+    } catch {
+      /* 自动保存失败静默忽略 */
+    }
+  }
+
+  /** 记一条命令到跨会话历史（去重 + 落盘 + 同步本地历史供 ↑↓ 翻历史） */
+  function recordHistory(line: string): void {
+    const t = line.trim();
+    if (!t) return;
+    historyStore.add(t);
+    if (histLines[0] !== t) {
+      histLines.unshift(t);
+      if (histLines.length > 2000) histLines.length = 2000;
+    }
+  }
+
+  async function runTurn(input: string): Promise<void> {
     let turnError = false;
     // Phase 20：本轮是否显式调过 remember（用于自动提取的来源门控，避免重复）
     let turnUsedRemember = false;
-    // 把历史正文 + 本轮用户输入交给状态行，从顶行统一重绘（避免向上吞掉已提交输入框）
-    status.setHeader(transcript);
-    status.setUserTurn(userTurn);
+    // 把「提示符 + 输入」输入框行交给视图（TTY 带底色、进入思考态并隐藏输入框），
+    // 旧 status.setUserTurn + status.begin 的等价替代。
+    view.beginUserTurn(input);
     tracker.beginTurn();
-    // Phase 16：自动上下文注入（记忆 + 知识库），作为临时系统消息进入本轮模型调用
     const ac = await autoCtxForTurn();
-    status.begin('思考中…');
+    view.begin('思考中…');
     // 生成期间隐藏上下文占用率（避免与动画行的 ↓ N tokens 重复）
-    statusBar.update({ showCtx: false });
+    view.setStatus({ showCtx: false });
     if (ac && ac.text) {
-      status.setLabel(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
+      view.setAnimLabel(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
     }
     try {
       await runAgent(history, {
@@ -400,59 +372,57 @@ export async function startRepl(
         signal: abort.signal,
         cwd: process.cwd(),
         autoContext: ac?.text,
-        // 状态行动画：流式正文 + 实时 tokens/秒数；工具调用时显示工具名
-        onText: (c) => status.pushText(c),
+        onText: (c) => view.pushToken(c),
         onToolCall: (call) => {
           if (call.name === 'remember') turnUsedRemember = true;
-          status.toolStart(call.name);
+          view.toolStart(call.name);
         },
-        onToolResult: (call, res) => status.toolDone(call.name, res.ok),
-        onCompact: (info) => status.setLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
+        onToolResult: (call, res) => view.toolDone(call.name, res.ok),
+        onCompact: (info) => view.setAnimLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
       });
     } catch (e) {
       // 模型调用失败（多为网络/密钥问题）：友好提示后正常返回，不冲垮 REPL。
       turnError = true;
-      showTurnError(status, e);
-    } finally {
-      // 无论正常结束还是被 Ctrl+C 中断，都清掉状态行动画，避免残留半行
-      status.stop();
+      showTurnError(e);
     }
-    if (!turnError) {
-      void persistAutosave();
-      // Phase 20：自动记忆提取——本轮若未显式 remember，则从对话被动提取稳定事实写入记忆库。
-      // fire-and-forget：不阻塞、失败静默，与 persistAutosave 同一约定。
-      if (autoMemoryEnabled && memory && !turnUsedRemember) {
-        void extractMemories(history, { model, store: memory })
-          .then((n) => {
-            if (n > 0) transcript.push(chalk.gray(`🧠 已自动记住 ${n} 条事实`));
-          })
-          .catch(() => {
-            /* 静默 */
-          });
+    try {
+      if (!turnError) {
+        void persistAutosave();
+        // Phase 20：自动记忆提取——本轮若未显式 remember，则从对话被动提取稳定事实写入记忆库。
+        // fire-and-forget：不阻塞、失败静默，与 persistAutosave 同一约定。
+        if (autoMemoryEnabled && memory && !turnUsedRemember) {
+          void extractMemories(history, { model, store: memory })
+            .then((n) => {
+              if (n > 0) view.printLine(chalk.gray(`🧠 已自动记住 ${n} 条事实`));
+            })
+            .catch(() => {
+              /* 静默 */
+            });
+        }
+        // Phase 14：每轮结束展示本轮 + 累计成本（并入 transcript，下一轮可见）
+        const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
+        // 正文渲染：TTY 经 renderMarkdown 把 assistantBuffer 渲染成 ANSI 行；
+        // 非 TTY 正文已流式输出，此处仅取 extra（成本行）。
+        const bodyLines = view.flushAndRenderBody();
+        view.commitDisplay(bodyLines, [costLine]);
       }
-      // Phase 14：每轮结束展示本轮 + 累计成本（并入 transcript，下一轮可见）
-      const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
-      transcript.push(...userTurn, ...status.getBodyLines(), costLine);
+    } finally {
+      // 无论正常结束还是被 Ctrl+C 中断，都清掉缓冲、回到输入态（TTY）/ 补换行（非 TTY）。
+      view.finishTurn();
+      refreshStatus({ showCtx: true });
     }
-    if (transcript.length > 4000) transcript.splice(0, transcript.length - 4000);
-    // 更新 StatusLine 的 header，使空闲态下拉关闭回调能重绘包含本轮的完整 transcript。
-    status.setHeader(transcript);
-    status.setUserTurn([]);
   }
 
   /** 规划模式的一轮：只读探测 + 产出计划，结束后进入「待批准」状态（Phase 15） */
-  async function runPlan(userTurn: string[]): Promise<void> {
-    const status = currentStatus;
+  async function runPlan(input: string): Promise<void> {
     let turnError = false;
     let turnUsedRemember = false;
-    status.setHeader(transcript);
-    status.setUserTurn(userTurn);
+    view.beginUserTurn(input);
     tracker.beginTurn();
-    // Phase 16：规划阶段同样自动注入上下文，帮助模型理解既有记忆/知识
     const ac = await autoCtxForTurn();
-    status.begin('规划中…');
+    view.begin('规划中…');
     if (ac && ac.text) {
-      status.setLabel(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
+      view.setAnimLabel(`⚡ 自动注入上下文：记忆 ${ac.memoryCount} 条 / 知识库 ${ac.ragCount} 段`);
     }
     try {
       await runAgent(history, {
@@ -465,53 +435,64 @@ export async function startRepl(
         cwd: process.cwd(),
         planMode: true,
         autoContext: ac?.text,
-        onText: (c) => status.pushText(c),
+        onText: (c) => view.pushToken(c),
         onToolCall: (call) => {
           if (call.name === 'remember') turnUsedRemember = true;
-          status.setLabel(`🔍 规划探测 ${call.name}`);
+          view.setAnimLabel(`🔍 规划探测 ${call.name}`);
         },
-        onToolResult: (call, res) => status.setLabel(`${res.ok ? '✓' : '✗'} ${call.name}`),
+        onToolResult: (call, res) => view.setAnimLabel(`${res.ok ? '✓' : '✗'} ${call.name}`),
         onBatch: (info) =>
-          status.setLabel(`⚡ 并行探测 ${info.readCount} 个只读工具（峰值并发 ${info.maxConcurrency}）`),
-        onCompact: (info) => status.setLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
+          view.setAnimLabel(`⚡ 并行探测 ${info.readCount} 个只读工具（峰值并发 ${info.maxConcurrency}）`),
+        onCompact: (info) => view.setAnimLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
       });
     } catch (e) {
       turnError = true;
-      showTurnError(status, e);
-    } finally {
-      status.stop();
+      showTurnError(e);
     }
-    if (!turnError) {
-      void persistAutosave();
-      if (autoMemoryEnabled && memory && !turnUsedRemember) {
-        void extractMemories(history, { model, store: memory })
-          .then((n) => {
-            if (n > 0) transcript.push(chalk.gray(`🧠 已自动记住 ${n} 条事实`));
-          })
-          .catch(() => {
-            /* 静默 */
-          });
+    try {
+      if (!turnError) {
+        void persistAutosave();
+        if (autoMemoryEnabled && memory && !turnUsedRemember) {
+          void extractMemories(history, { model, store: memory })
+            .then((n) => {
+              if (n > 0) view.printLine(chalk.gray(`🧠 已自动记住 ${n} 条事实`));
+            })
+            .catch(() => {
+              /* 静默 */
+            });
+        }
+        const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
+        // 计划批注（空行 + 提示）并入 transcript，下一轮可见
+        const notes = [
+          '',
+          chalk.bold.yellow('⬆ 以上是模型生成的执行计划。'),
+          chalk.gray('   /approve 执行  ·  /discard 放弃  ·  直接输入补充让模型修订'),
+        ];
+        const bodyLines = view.flushAndRenderBody();
+        view.commitDisplay(bodyLines, [costLine, ...notes]);
       }
-      const costLine = chalk.gray(`💰 ${formatSnapshot(tracker.endTurn(), tracker.snapshot())}`);
-      // 计划批注（空行 + 提示）并入 transcript，下一轮可见
-      const notes = [
-        '',
-        chalk.bold.yellow('⬆ 以上是模型生成的执行计划。'),
-        chalk.gray('   /approve 执行  ·  /discard 放弃  ·  直接输入补充让模型修订'),
-      ];
-      transcript.push(...userTurn, ...status.getBodyLines(), costLine, ...notes);
+    } finally {
+      view.finishTurn();
+      refreshStatus({ showCtx: true });
     }
-    if (transcript.length > 4000) transcript.splice(0, transcript.length - 4000);
-    status.setHeader(transcript);
-    status.setUserTurn([]);
     awaitingApproval = true;
   }
 
   /** Phase 17：Multi-Agent —— 把任务拆给 Planner → 并发 Worker（各自隔离 worktree）→ Reviewer */
   async function runMultiAgentCommand(task: string): Promise<void> {
     const { runMultiAgent } = await import('../core/multiagent');
-    const r = new StreamRenderer(chalk.cyan);
-    console_.log(chalk.bold.cyan('\n⚙️ Multi-Agent 启动'));
+    // worker 流式输出按行喂给 transcript（TTY 永久行 / 非 TTY 直印），避免半行污染。
+    let streamBuf = '';
+    const pushStream = (chunk: string): void => {
+      streamBuf += chunk;
+      let idx: number;
+      while ((idx = streamBuf.indexOf('\n')) >= 0) {
+        const line = streamBuf.slice(0, idx);
+        streamBuf = streamBuf.slice(idx + 1);
+        view.printLine(line);
+      }
+    };
+    view.printLine(chalk.bold.cyan('\n⚙️ Multi-Agent 启动'));
     let spawns = 0;
     const res = await runMultiAgent({
       task,
@@ -524,38 +505,36 @@ export async function startRepl(
       hooks: {
         onAgentSpawn: (info) => {
           spawns++;
-          console_.log(chalk.gray(`  ▸ ${info.label} 启动`));
+          view.printLine(chalk.gray(`  ▸ ${info.label} 启动`));
         },
-        onAgentDone: (info) =>
-          console_.log(chalk.gray(`  ✓ ${info.label} 完成（${info.ok ? '成功' : '失败'}）`)),
+        onAgentDone: (info) => view.printLine(chalk.gray(`  ✓ ${info.label} 完成（${info.ok ? '成功' : '失败'}）`)),
         onText: (role, id, chunk) => {
-          if (role === 'worker' && id) r.push(chunk);
+          if (role === 'worker' && id) pushStream(chunk);
         },
       },
     });
-    r.newline();
+    if (streamBuf) view.printLine(streamBuf);
     if (res.plan.subtasks.length > 0) {
-      console_.log(chalk.bold('\n📋 计划'));
-      console_.log(chalk.gray(`  目标：${res.plan.goal || task}`));
-      for (const s of res.plan.subtasks) {
-        console_.log(chalk.gray(`  · [${s.id}] ${s.title}`));
-      }
+      view.printLine(chalk.bold('\n📋 计划'));
+      view.printLine(chalk.gray(`  目标：${res.plan.goal || task}`));
+      for (const s of res.plan.subtasks) view.printLine(chalk.gray(`  · [${s.id}] ${s.title}`));
     }
-    console_.log(chalk.bold('\n🛠 Worker 结果（各自在隔离 worktree 中运行）'));
+    view.printLine(chalk.bold('\n🛠 Worker 结果（各自在隔离 worktree 中运行）'));
     for (const w of res.workers) {
-      console_.log(
-        chalk[w.ok ? 'green' : 'red'](`  [${w.subtask.id}] ${w.subtask.title} — ${w.ok ? '成功' : '失败'}`),
-      );
-      console_.log(chalk.gray(`    工作目录：${w.cwd}`));
-      if (w.output.trim()) console_.log(chalk.gray(`    产出：${w.output.trim().slice(0, 400)}`));
-      if (w.error) console_.log(chalk.red(`    错误：${w.error}`));
+      view.printLine(chalk[w.ok ? 'green' : 'red'](`  [${w.subtask.id}] ${w.subtask.title} — ${w.ok ? '成功' : '失败'}`));
+      view.printLine(chalk.gray(`    工作目录：${w.cwd}`));
+      if (w.output.trim()) view.printLine(chalk.gray(`    产出：${w.output.trim().slice(0, 400)}`));
+      if (w.error) view.printLine(chalk.red(`    错误：${w.error}`));
     }
-    console_.log(chalk.bold('\n🔍 Reviewer 结论'));
-    console_.log(res.review || '（无）');
+    view.printLine(chalk.bold('\n🔍 Reviewer 结论'));
+    view.printLine(res.review || '（无）');
     void spawns;
   }
 
   async function handleSlash(cmd: string): Promise<'exit' | 'continue'> {
+    // 命令本身作为一条永久行写进 transcript（TTY 带输入框底色；非 TTY 直印），
+    // 旧 slashBuffer 收集后整屏重绘的等价替代（Ink 下输出直接进 transcript，无需手工清屏）。
+    view.echoInput(cmd);
     const [name, ...rest] = cmd.slice(1).split(/\s+/);
     switch (name) {
       case 'exit':
@@ -563,38 +542,34 @@ export async function startRepl(
         return 'exit';
       case 'clear':
         history.length = 1;
-        console_.log(chalk.gray('上下文已清空。'));
+        view.printLine(chalk.gray('上下文已清空。'));
         return 'continue';
       case 'model':
-        console_.log(chalk.gray(`当前模型: ${model.id}`));
+        view.printLine(chalk.gray(`当前模型: ${model.id}`));
         return 'continue';
       case 'tools':
-        console_.log(chalk.gray(`已注册工具: ${tools.list().map((t) => t.name).join(', ')}`));
+        view.printLine(chalk.gray(`已注册工具: ${tools.list().map((t) => t.name).join(', ')}`));
         return 'continue';
       case 'cost': {
         // Phase 14：详细展示本次会话的用量与成本
         const s = tracker.snapshot();
         const est = s.estimated ? chalk.yellow(' （含估算值）') : '';
-        console_.log(chalk.bold('本次会话用量与成本：') + est);
-        console_.log(chalk.gray(`  模型调用 : ${s.calls} 次`));
-        console_.log(chalk.gray(`  Prompt   : ~${formatTokens(s.promptTokens)} token`));
-        console_.log(chalk.gray(`  Completion: ~${formatTokens(s.completionTokens)} token`));
-        console_.log(chalk.gray(`  合计     : ~${formatTokens(s.totalTokens)} token`));
-        console_.log(chalk.gray(`  成本     : ${formatUSD(s.cost)}`));
+        view.printLine(chalk.bold('本次会话用量与成本：') + est);
+        view.printLine(chalk.gray(`  模型调用 : ${s.calls} 次`));
+        view.printLine(chalk.gray(`  Prompt   : ~${formatTokens(s.promptTokens)} token`));
+        view.printLine(chalk.gray(`  Completion: ~${formatTokens(s.completionTokens)} token`));
+        view.printLine(chalk.gray(`  合计     : ~${formatTokens(s.totalTokens)} token`));
+        view.printLine(chalk.gray(`  成本     : ${formatUSD(s.cost)}`));
         const extras: string[] = [];
-        if (s.compressions)
-          extras.push(`压缩 ${s.compressions} 次 / 省 ~${formatTokens(s.tokensSavedByCompact)} tok`);
+        if (s.compressions) extras.push(`压缩 ${s.compressions} 次 / 省 ~${formatTokens(s.tokensSavedByCompact)} tok`);
         if (s.retrievals) extras.push(`检索 ${s.retrievals} 次`);
-        if (extras.length) console_.log(chalk.gray(`  事件     : ${extras.join(' · ')}`));
+        if (extras.length) view.printLine(chalk.gray(`  事件     : ${extras.join(' · ')}`));
         return 'continue';
       }
       case 'compact': {
         const before = estimateHistoryTokens(history, compress?.counter);
-        console_.log(chalk.gray(`上下文 ${before} token，开始压缩…`));
+        view.printLine(chalk.gray(`上下文 ${before} token，开始压缩…`));
         const summarizer = createDefaultSummarizer(model);
-        // 用户显式 /compact = 处于 turn boundary，允许 L4 摘要；透传 compress 的全部新字段
-        // （persistDir / summaryCache / summaryFailures / transcriptDir / keepRecentToolResults），
-        // 与自动压缩共用同一份配置与缓存。
         const base: CompressOptions = compress ?? {
           budgetTokens: 8000,
           keepRecentTurns: 4,
@@ -609,70 +584,67 @@ export async function startRepl(
         const after = estimateHistoryTokens(compressed, compress?.counter);
         history.length = 0;
         history.push(...compressed);
-        console_.log(chalk.gray(`压缩完成：${before} → ${after} token（省 ~${formatTokens(before - after)} token）`));
+        view.printLine(chalk.gray(`压缩完成：${before} → ${after} token（省 ~${formatTokens(before - after)} token）`));
         return 'continue';
       }
       case 'perm':
-        console_.log(chalk.gray(`允许: ${permission.getAllow().join(', ') || '(空)'}`));
-        console_.log(chalk.gray(`拒绝: ${permission.getDeny().join(', ') || '(空)'}`));
+        view.printLine(chalk.gray(`允许: ${permission.getAllow().join(', ') || '(空)'}`));
+        view.printLine(chalk.gray(`拒绝: ${permission.getDeny().join(', ') || '(空)'}`));
         return 'continue';
       case 'config': {
-        const [sub, ...rest2] = rest;
+        const [sub] = rest;
         if (sub === 'save') {
-          // 把当前生效配置落盘（与已有文件浅合并）
           saveUserConfig(appConfigToUserConfig(config));
-          console_.log(chalk.gray(`已写入 ${CONFIG_PATH}`));
+          view.printLine(chalk.gray(`已写入 ${CONFIG_PATH}`));
         } else {
           const mcp = config.mcpServers;
           const rag = config.ragPath
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean);
-          console_.log(chalk.bold('当前配置（生效值）：'));
-          console_.log(chalk.gray(`  provider : ${config.provider}`));
-          console_.log(chalk.gray(`  model    : ${config.llm.model}`));
-          console_.log(chalk.gray(`  baseURL  : ${config.llm.baseURL}`));
-          console_.log(chalk.gray(`  apiKey   : ${maskSecret(config.llm.apiKey)}`));
-          console_.log(chalk.gray(`  MCP 源   : ${mcp.length} 个`));
-          console_.log(chalk.gray(`  RAG 源   : ${rag.length ? rag.join(', ') : '(空)'}`));
-          console_.log(chalk.gray('（/config save 可持久化当前配置）'));
+          view.printLine(chalk.bold('当前配置（生效值）：'));
+          view.printLine(chalk.gray(`  provider : ${config.provider}`));
+          view.printLine(chalk.gray(`  model    : ${config.llm.model}`));
+          view.printLine(chalk.gray(`  baseURL  : ${config.llm.baseURL}`));
+          view.printLine(chalk.gray(`  apiKey   : ${maskSecret(config.llm.apiKey)}`));
+          view.printLine(chalk.gray(`  MCP 源   : ${mcp.length} 个`));
+          view.printLine(chalk.gray(`  RAG 源   : ${rag.length ? rag.join(', ') : '(空)'}`));
+          view.printLine(chalk.gray('（/config save 可持久化当前配置）'));
         }
         return 'continue';
       }
       case 'rag': {
         if (!ragStore) {
-          console_.log(chalk.yellow('未启用 RAG：启动时请用 --rag <路径> 或设置 AGENTCLI_RAG_PATH'));
+          view.printLine(chalk.yellow('未启用 RAG：启动时请用 --rag <路径> 或设置 AGENTCLI_RAG_PATH'));
           return 'continue';
         }
         const [sub, ...rest2] = rest;
         const arg = rest2.join(' ').trim();
         if (sub === 'search' && arg) {
           const r = await ragStore.search(arg, 5);
-          console_.log(RagStore.toContext(r));
+          view.printLine(RagStore.toContext(r));
         } else if (sub === 'ingest' && arg) {
           const { docs, chunks } = await ragStore.addSource(arg);
-          console_.log(chalk.gray(`已增量索引 ${arg}：共 ${docs} 文档 / ${chunks} 片段`));
+          view.printLine(chalk.gray(`已增量索引 ${arg}：共 ${docs} 文档 / ${chunks} 片段`));
         } else if (sub === 'reindex') {
           const { docs, chunks } = await ragStore.reindex();
-          console_.log(chalk.gray(`已重建索引：${docs} 文档 / ${chunks} 片段`));
+          view.printLine(chalk.gray(`已重建索引：${docs} 文档 / ${chunks} 片段`));
         } else if (sub === 'status') {
           const s = ragStore.status();
-          console_.log(chalk.gray(`RAG 状态：文档 ${s.docs} / 片段 ${s.chunks} / 维度 ${s.dim}`));
-          console_.log(chalk.gray(`来源: ${ragStore.getSources().join(', ') || '(空)'}`));
+          view.printLine(chalk.gray(`RAG 状态：文档 ${s.docs} / 片段 ${s.chunks} / 维度 ${s.dim}`));
+          view.printLine(chalk.gray(`来源: ${ragStore.getSources().join(', ') || '(空)'}`));
         } else {
-          console_.log(
-            chalk.yellow('用法: /rag <search|ingest|reindex|status> [参数]'),
-          );
+          view.printLine(chalk.yellow('用法: /rag <search|ingest|reindex|status> [参数]'));
         }
         return 'continue';
       }
       case 'skills': {
         const list = skillLoader?.list() ?? [];
         if (list.length === 0) {
-          console_.log(chalk.gray('（当前无已加载技能）'));
+          view.printLine(chalk.gray('（当前无已加载技能）'));
         } else {
           for (const s of list) {
-            console_.log(chalk.gray(`- ${s.name} [${s.layer}]：${s.description}`));
+            view.printLine(chalk.gray(`- ${s.name} [${s.layer}]：${s.description}`));
           }
         }
         return 'continue';
@@ -680,44 +652,44 @@ export async function startRepl(
       case 'skill': {
         const name = rest.join(' ').trim();
         if (!name) {
-          console_.log(chalk.yellow('用法: /skill <技能名>'));
+          view.printLine(chalk.yellow('用法: /skill <技能名>'));
           return 'continue';
         }
         const skill = skillLoader?.load(name);
         if (!skill) {
-          console_.log(chalk.yellow(`未找到技能: ${name}`));
+          view.printLine(chalk.yellow(`未找到技能: ${name}`));
         } else {
-          console_.log(chalk.bold(`技能：${skill.name}`) + chalk.gray(`（来源 ${skill.layer}）`));
-          console_.log(skill.body.trim());
+          view.printLine(chalk.bold(`技能：${skill.name}`) + chalk.gray(`（来源 ${skill.layer}）`));
+          view.printLine(skill.body.trim());
         }
         return 'continue';
       }
       case 'save': {
         const sname = rest[0]?.trim() || 'default';
         await sessionStore.save(sname, extractConversation(history), compress);
-        console_.log(chalk.gray(`已保存会话「${sname}」（${history.length - 1} 条消息）`));
+        view.printLine(chalk.gray(`已保存会话「${sname}」（${history.length - 1} 条消息）`));
         return 'continue';
       }
       case 'load': {
         const sname = rest[0]?.trim() || 'default';
         const loaded = sessionStore.load(sname);
         if (!loaded) {
-          console_.log(chalk.yellow(`未找到会话: ${sname}`));
+          view.printLine(chalk.yellow(`未找到会话: ${sname}`));
           return 'continue';
         }
         const systemContent = typeof history[0]?.content === 'string' ? history[0].content : '';
         history.length = 0;
         history.push(...withSystem(loaded, systemContent));
-        console_.log(chalk.gray(`已载入会话「${sname}」（${loaded.length} 条消息）`));
+        view.printLine(chalk.gray(`已载入会话「${sname}」（${loaded.length} 条消息）`));
         return 'continue';
       }
       case 'sessions': {
         const list = sessionStore.list();
         if (list.length === 0) {
-          console_.log(chalk.gray('（当前无已保存会话）'));
+          view.printLine(chalk.gray('（当前无已保存会话）'));
         } else {
           for (const s of list) {
-            console_.log(
+            view.printLine(
               chalk.gray(`- ${s.name} ：${s.messageCount} 条消息，更新于 ${new Date(s.updatedAt).toLocaleString()}`),
             );
           }
@@ -727,52 +699,52 @@ export async function startRepl(
       case 'session': {
         const sname = rest[0]?.trim();
         if (!sname) {
-          console_.log(chalk.yellow('用法: /session <会话名>'));
+          view.printLine(chalk.yellow('用法: /session <会话名>'));
           return 'continue';
         }
         const loaded = sessionStore.load(sname);
         if (!loaded) {
-          console_.log(chalk.yellow(`未找到会话: ${sname}`));
+          view.printLine(chalk.yellow(`未找到会话: ${sname}`));
           return 'continue';
         }
-        console_.log(chalk.bold(`会话「${sname}」（${loaded.length} 条）预览：`));
+        view.printLine(chalk.bold(`会话「${sname}」（${loaded.length} 条）预览：`));
         for (const m of loaded) {
           const full =
             typeof m.content === 'string'
               ? m.content
               : m.content.map((b) => (b.type === 'text' ? b.text : `[${b.type}]`)).join('');
           const preview = full.slice(0, 200);
-          console_.log(chalk.gray(`  [${m.role}] ${preview}${full.length > 200 ? '…' : ''}`));
+          view.printLine(chalk.gray(`  [${m.role}] ${preview}${full.length > 200 ? '…' : ''}`));
         }
         return 'continue';
       }
       case 'rm': {
         const sname = rest[0]?.trim();
         if (!sname) {
-          console_.log(chalk.yellow('用法: /rm <会话名>'));
+          view.printLine(chalk.yellow('用法: /rm <会话名>'));
           return 'continue';
         }
         const ok = sessionStore.remove(sname);
-        console_.log(ok ? chalk.gray(`已删除会话「${sname}」`) : chalk.yellow(`未找到会话: ${sname}`));
+        view.printLine(ok ? chalk.gray(`已删除会话「${sname}」`) : chalk.yellow(`未找到会话: ${sname}`));
         return 'continue';
       }
       case 'help':
-        printHelp();
+        printHelp((l) => view.printLine(l));
         return 'continue';
       case 'prompt': {
         const text = rest.join(' ').trim();
         if (text) {
           history.push({ role: 'user', content: text });
-          await runTurn(buildUserTurn(text, promptStr));
+          await runTurn(text);
         } else {
-          console_.log(chalk.yellow('用法: /prompt <你的问题>'));
+          view.printLine(chalk.yellow('用法: /prompt <你的问题>'));
         }
         return 'continue';
       }
       case 'autoctx': {
         // Phase 16：开关「每轮自动注入记忆/知识库上下文」
         autoCtxEnabled = !autoCtxEnabled;
-        console_.log(
+        view.printLine(
           autoCtxEnabled
             ? chalk.gray('已开启自动上下文注入（每轮自动检索记忆/知识库）')
             : chalk.gray('已关闭自动上下文注入'),
@@ -783,7 +755,7 @@ export async function startRepl(
         // Phase 17：Multi-Agent —— 把任务拆给 Planner → 并发 Worker（隔离 worktree）→ Reviewer
         const task = rest.join(' ').trim();
         if (!task) {
-          console_.log(chalk.yellow('用法: /agent <任务描述>  启动多 Agent 协作（规划+并发执行+评审）'));
+          view.printLine(chalk.yellow('用法: /agent <任务描述>  启动多 Agent 协作（规划+并发执行+评审）'));
           return 'continue';
         }
         await runMultiAgentCommand(task);
@@ -793,150 +765,113 @@ export async function startRepl(
         // Phase 15：进入规划模式，生成执行计划待批准
         const task = rest.join(' ').trim();
         if (!task) {
-          console_.log(chalk.yellow('用法: /plan <任务描述>  进入规划模式并生成执行计划'));
+          view.printLine(chalk.yellow('用法: /plan <任务描述>  进入规划模式并生成执行计划'));
           return 'continue';
         }
         setMode('plan');
-        statusBar.update({ mode }); // 状态栏模式切换为「规划」
         planCheckpoint = history.length; // 记录规划前位置，便于 /discard 回滚
         history.push({ role: 'user', content: task });
-        console_.log(ui.muted('⚙ 规划中…'));
+        view.printLine(ui.muted('⚙ 规划中…'));
         awaitingApproval = false;
-        await runPlan(buildUserTurn(task, promptStr));
+        await runPlan(task);
         return 'continue';
       }
       case 'approve': {
         // Phase 15：批准计划 → 切回正常模式并执行（同一份 history，计划即上下文）
         if (!awaitingApproval) {
-          console_.log(chalk.yellow('当前没有待批准计划，请先用 /plan 生成计划。'));
+          view.printLine(chalk.yellow('当前没有待批准计划，请先用 /plan 生成计划。'));
           return 'continue';
         }
         setMode('normal');
         awaitingApproval = false;
-        statusBar.update({ mode }); // 状态栏模式切回「正常」
-        dispatch('(计划已批准，请按上述计划开始执行所需操作)');
+        await dispatch('(计划已批准，请按上述计划开始执行所需操作)');
         return 'continue';
       }
       case 'discard': {
         // Phase 15：放弃计划并回滚到规划前（含只读探测），切回正常模式
         if (!awaitingApproval) {
-          console_.log(chalk.yellow('当前没有待批准计划。'));
+          view.printLine(chalk.yellow('当前没有待批准计划。'));
           return 'continue';
         }
         history.length = planCheckpoint;
         setMode('normal');
         awaitingApproval = false;
-        statusBar.update({ mode }); // 状态栏模式切回「正常」
-        console_.log(chalk.gray('已放弃计划，回到正常模式。'));
+        view.printLine(chalk.gray('已放弃计划，回到正常模式。'));
         return 'continue';
       }
       default:
-        console_.log(chalk.yellow(`未知命令: ${cmd}（输入 /help 查看可用命令）`));
+        view.printLine(chalk.yellow(`未知命令: ${cmd}（输入 /help 查看可用命令）`));
         return 'continue';
     }
   }
 
   /** 处理一条输入：slash 走命令，普通文本入 history 并跑一轮（Phase 15：待批准时普通输入视为修订计划） */
   function isPinnedInput(text: string): boolean {
-  return /(记住|记一下|重要|务必|别忘|删?除?这?条|置顶|保留这)/i.test(text);
-}
+    return /(记住|记一下|重要|务必|别忘|删?除?这?条|置顶|保留这)/i.test(text);
+  }
 
-async function processInput(input: string): Promise<'exit' | 'continue'> {
+  async function processInput(input: string): Promise<'exit' | 'continue'> {
     if (input.startsWith('/')) {
-      // 收集斜杠命令输出，结束后再并入 transcript 整屏重绘，避免被输入框清屏吞掉
-      slashBuffer = [];
-      try {
-        const r = await handleSlash(input);
-        if (process.stdout.isTTY && slashBuffer.length) {
-          const width = process.stdout.columns ?? 80;
-          transcript.push(paintInputBox(ui.prompt + input, width));
-          transcript.push(...slashBuffer);
-          if (transcript.length > 4000) transcript.splice(0, transcript.length - 4000);
-          currentStatus.setHeader(transcript);
-          currentStatus.setUserTurn([]);
-          currentStatus.refresh();
-        }
-        return r;
-      } finally {
-        slashBuffer = null;
-      }
+      return await handleSlash(input);
     }
-    const userTurn = buildUserTurn(input, promptStr);
     if (awaitingApproval) {
       // 计划待批准时，普通输入 = 对计划的补充修订：保留已生成计划，重新规划
       history.push({ role: 'user', content: input, ...(isPinnedInput(input) ? { protected: true } : {}) });
-      console_.log(ui.muted('⚙ 修订规划中…'));
-      await runPlan(userTurn);
+      view.printLine(ui.muted('⚙ 修订规划中…'));
+      await runPlan(input);
       return 'continue';
     }
     history.push({ role: 'user', content: input, ...(isPinnedInput(input) ? { protected: true } : {}) });
-    await runTurn(userTurn);
+    await runTurn(input);
     return 'continue';
   }
 
-  // ---- 输入处理：模型生成期间到达的输入不丢弃，排队在本轮结束后顺序处理 ----
-  const pending: string[] = [];
-
-  /** 真正的「取一条输入去执行」入口：busy 时排队，否则立即跑 */
-  function dispatch(input: string): void {
+  // ---- 输入处理：总线入口（TTY 由 <InputBox> 的 onSubmit 触发；非 TTY 由 readline 循环触发）----
+  async function dispatch(input: string): Promise<'exit' | 'continue'> {
     if (busy) {
+      // Ink 模式输入框在忙时被隐藏，不会收到输入；非 TTY readline 也只在 dispatch 完成后
+      // 才显示下一提示，所以此处实际不会被触发。保留防御性排队以兼容极端时序。
       pending.push(input);
-      return;
+      return 'continue';
     }
     busy = true;
-    void (async () => {
-      let exited = false;
-      try {
-        exited = (await processInput(input)) === 'exit';
-        // 排空排队输入（退出则停止）
-        while (!exited && pending.length) {
-          const next = pending.shift()!;
-          exited = (await processInput(next)) === 'exit';
-        }
-      } catch (e) {
-        // 最后防线：理论上 runTurn/runPlan 已就地消化模型错误，这里兜底任何意外异常，
-        // 打印一行友好提示后回到输入态，绝不把整个 REPL 进程打崩。
-        const msg = e instanceof Error ? e.message : String(e);
-        console_.error(chalk.red(`⚠️ 处理输入时出错：${msg}`));
-      } finally {
-        busy = false;
-        refreshStatus({ showCtx: true }); // 一轮结束：刷新成本/ctx/模式，恢复显示 ctx%
-        if (exited) editor.exit(); // /exit、/quit：退出（resolve startRepl）
-        else editor.show(); // 回到输入态
+    let exited = false;
+    try {
+      exited = (await processInput(input)) === 'exit';
+      // 排空排队输入（退出则停止）
+      while (!exited && pending.length) {
+        const next = pending.shift()!;
+        exited = (await processInput(next)) === 'exit';
       }
-    })();
-  }
-
-  /** 记一条命令到跨会话历史（去重 + 落盘 + 同步本地历史供 ↑↓ 翻历史） */
-  function recordHistory(line: string): void {
-    const t = line.trim();
-    if (!t) return;
-    historyStore.add(t);
-    if (histLines[0] !== t) {
-      histLines.unshift(t);
-      if (histLines.length > 2000) histLines.length = 2000;
+    } catch (e) {
+      // 最后防线：理论上 runTurn/runPlan 已就地消化模型错误，这里兜底任何意外异常，
+      // 打印一行友好提示后回到输入态，绝不把整个 REPL 进程打崩。
+      const msg = e instanceof Error ? e.message : String(e);
+      view.printLine(chalk.red(`⚠️ 处理输入时出错：${msg}`));
+    } finally {
+      busy = false;
+      refreshStatus({ showCtx: true }); // 一轮结束：刷新成本/ctx/模式，恢复显示 ctx%
     }
+    if (exited) view.exit(); // /exit、/quit：退出（resolve startRepl / 关闭 readline）
+    return exited ? 'exit' : 'continue';
   }
 
   // startRepl 在 REPL 真正关闭（/exit、Ctrl+C 空闲、Ctrl+D）时才 resolve，
   // 这样 main 里的 await shutdownMcp() 会在退出时执行，正确清理 MCP 子进程等资源。
   try {
     refreshStatus(); // 首屏填充 ctx% / 成本 / 模式
-    return await editor.start();
+    await view.start();
   } finally {
-    statusBar.release(); // 复位滚动区、清掉最底状态栏，避免污染后续终端输出
+    // 退出时无需显式释放：Ink 已由 view.exit() unmount；readline 由 start() 的 finally 关闭。
   }
 }
 
-function printHelp(): void {
-  const lines = [chalk.bold('可用命令：')];
+function printHelp(print: (line: string) => void): void {
+  print(chalk.bold('可用命令：'));
   for (const c of COMMANDS) {
-    lines.push(`  /${c.name.padEnd(10)} ${c.description}`);
+    print(`  /${c.name.padEnd(10)} ${c.description}`);
   }
-  lines.push(
-    '',
-    chalk.gray('交互提示：输入 / 弹出命令菜单，↑↓ 选择、Tab/Enter 填充 · ↑↓ 翻历史（跨会话持久）· 直接粘贴多行代码作为「一条消息」'),
-    chalk.gray('模型可自主调用 read_file / write_file / edit_file / list_dir / glob / grep / bash 完成多步任务。'),
-  );
-  console.log(lines.join('\n'));
+  print('');
+  print(chalk.gray('交互提示：输入 / 弹出命令菜单，↑↓ 选择、Tab/Enter 填充 · ↑↓ 翻历史（跨会话持久）· 直接粘贴多行代码作为「一条消息」'));
+  print(chalk.gray('模型可自主调用 read_file / write_file / edit_file / list_dir / glob / grep / bash 完成多步任务。'));
 }

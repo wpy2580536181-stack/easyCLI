@@ -64,7 +64,7 @@ process.on('unhandledRejection', (err) => {
 
 program
   .name('agent-cli')
-  .description('从零手搓的仿 Claude Code 命令行 Agent CLI')
+  .description('AI 辅助编写的仿 Claude Code 命令行 Agent CLI')
   .option('-p, --prompt <text>', '单次查询模式（不进入交互 REPL）')
   .option('--provider <provider>', '模型 provider（默认 openai）')
   .option('--model <model>', '模型名（如 deepseek-chat）')

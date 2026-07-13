@@ -4,18 +4,18 @@
 
 ## 0. 项目目标
 
-个人学习项目：从零到一**纯手写**一个仿 Claude Code 的命令行 Agent CLI，用以吃透以下底层模式：
+个人学习项目：由 **AI 辅助编写** 的仿 Claude Code 命令行 Agent CLI，用以吃透以下底层模式：
 
 - ReAct 架构、Tool Calling、MCP 协议、多模型适配
 - Prompt 工程、RAG、安全审计、Agent 流程
 
-**核心约束**：纯从零手写，**不 fork 任何参考项目**。参考物仅作架构对照（优先级：**实现蓝本 > 架构/范围对照 > 交互范本**）：
+**核心约束**：由 AI 辅助编写，**不 fork 任何参考项目**（代码不得直接复制参考实现，思路可借鉴）。参考物仅作架构对照（优先级：**实现蓝本 > 架构/范围对照 > 交互范本**）：
 - **claude-code-from-scratch**（[GitHub](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)）——**首要实现蓝本**：约 4300 行、13 章 clean-room 教程，从零造受 Claude Code 启发的 Coding Agent，与本项目「纯手写吃透原理」诉求几乎同构，比 PaiCLI 更贴合作为实现蓝本。
 - itwanger 的 **PaiCLI（Java, 21期）** 与 **paicli-ts（TypeScript）**——分期与功能清单对照。
 - **Qoder CLI**（轻量/ACP/SDK 交互范本）。
 - 配套 **how-claude-code-works**（[GitHub](https://github.com/Windy3f3f3f3f/how-claude-code-works)）—— Claude Code 真实架构（50 万行）16 篇拆解，作为「生产级护城河」参照（见 §8）。
 
-> 这些参考物**都不是本项目作者所写**，只能看、不能复制粘贴当实现。claude-code-from-scratch 可照着学思路，但代码仍须自己手写（不 fork）。
+> 这些参考物**都不是本项目作者所写**，只能看、不能复制粘贴当实现。claude-code-from-scratch 可照着学思路，但代码不得直接复制参考实现（不 fork）。
 
 ---
 
@@ -58,12 +58,12 @@
 
 ## 2. 技术栈与工程约定
 
-- **语言/运行时**：TypeScript / Node（>= 18，沙箱 22）。**纯从零手写**。
+- **语言/运行时**：TypeScript / Node（>= 18，沙箱 22）。**AI 辅助编写**，依赖按需引入、保持克制。
 - **包管理**：pnpm。
 - **构建**：tsup（esbuild），产物到 `dist/`。
 - **测试**：vitest，单测放 `tests/unit/`，每模块配回归测试。
 - **类型检查**：`tsc --noEmit`。
-- **依赖克制**：仅引入必要依赖——`commander`（CLI）、`chalk`（着色）、`zod`（schema 校验）。其余协议/解析层**原则上从零手写，不引官方 SDK**，以吃透原理。
+- **依赖克制**：仅引入必要依赖，保持架构合理、不堆砌。早期核心逻辑由 AI 辅助编写以吃透原理；**协议/解析层在成熟方案更优时引入官方 SDK**（如 MCP 客户端/服务端基于 `@modelcontextprotocol/sdk`、终端界面层基于 Ink），不为「零依赖」牺牲可维护性与正确性。
 - **MCP 例外（已批准）**：MCP 客户端与服务端**基于官方 `@modelcontextprotocol/sdk`**（手写 JSON-RPC 层先作为学习产物，后迁到 SDK 以获得生产级健壮性）。详见 `docs/mcp-sdk-migration-plan.md` 与 `docs/phase5.md`/`docs/phase12.md`。迁移前提是「对外契约不变」——`McpClient`/`McpServer` 门面 + `ToolDef` 归一化 + CLI/配置零改动。
 - **忽略项**：`node_modules`、`dist`、`.env` 已在 `.gitignore`，**密钥（API Key）绝不入库**。
 
@@ -81,11 +81,11 @@ pnpm typecheck      # tsc --noEmit
 
 | # | 分支 | 结论 |
 |---|---|---|
-| 1 | 实现语言/技术栈 | TS/Node，纯从零手写；PaiCLI/paicli-ts 仅作参考 |
+| 1 | 实现语言/技术栈 | TS/Node，AI 辅助编写；PaiCLI/paicli-ts 仅作参考 |
 | 2 | 模型适配 | 先接 OpenAI 兼容协议；接口设计为 Provider 无关的 `ChatModel` + 首批 `OpenAICompatibleAdapter` |
 | 3 | 模块分期 | 采用修订后 11 期路线（见 §4），全做到底；实现蓝本优先参照 claude-code-from-scratch |
 | 4 | MCP 范围 | 客户端优先、stdio 优先；Server 模式留到第 12 期 |
-| 5 | 交互/UX | 轻量 `readline`+`chalk` 手写流式 REPL；Claude Code 式三级权限（allow/deny/ask）持久化到 `~/.config/<cli>/settings.json` |
+| 5 | 交互/UX | 基于 **Ink（React 声明式 TUI）** 的框架化界面层（见 `docs/tui-ink-design.md`）；Claude Code 式三级权限（allow/deny/ask）持久化到 `~/.config/<cli>/settings.json` |
 | 6 | 安全审计 | 核心三道防线（路径围栏+命令黑名单+HITL），前两者为不可关闭硬限制；脱敏/Token 预算延后 |
 
 > 以下为「设计评审补充」新敲定的决策（原 6 大决策不变、不再争论）；它们把评审中发现的路线图缺口落成硬约束，详见 §8 与修订后的路线图。
@@ -190,7 +190,7 @@ flowchart TD
 | 步骤 | 执行方 | 必选 | 出口标准（gate） |
 |---|---|---|---|
 | 0 对齐章程 | 人 + Agent | 必 | 本期目标与「设计决策（§3）」「全局架构约定（§5）」一致 |
-| 1 实现 | Agent | 必 | 功能写完，遵循「手写不引 SDK / 依赖克制」等约束 |
+| 1 实现 | Agent | 必 | 功能写完，遵循「AI 辅助编写、依赖克制、不 fork 参考实现」等约束 |
 | 2 测试 | Agent | **必** | `pnpm typecheck` + `pnpm test` 全绿；能真机验证的跑一次 |
 | 3 代码审查 | Agent 审 diff | **建议必（有逻辑实现的期必做）** | 产出审查报告：正确性/边界、是否偏离约定、是否过度设计、测试盲区 |
 | 4 学习文档 | Agent | **必（强制准则）** | `docs/phaseN.md` 套模板，含 §6 面试话术 + §7 常见面试题 |
@@ -234,7 +234,7 @@ Claude Code 有约 7 种「继续」策略，大部分错误用户无感：
 → 落地期：期2（循环骨架）/ 期11（fallback model）。
 
 ### 8.5 对照蓝本
-- **claude-code-from-scratch**（[GitHub](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)）：约 4300 行、13 章 clean-room 教程，从零造受 Claude Code 启发的 Coding Agent。**作为本项目实现的首要对照蓝本**——照着它能少走弯路，但代码仍须自己手写（不 fork）。
+- **claude-code-from-scratch**（[GitHub](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)）：约 4300 行、13 章 clean-room 教程，从零造受 Claude Code 启发的 Coding Agent。**作为本项目实现的首要对照蓝本**——照着它能少走弯路，但代码不得直接复制参考实现（不 fork）。
 - **how-claude-code-works**（[GitHub](https://github.com/Windy3f3f3f3f/how-claude-code-works)）：Claude Code 真实架构 16 篇拆解，作为「生产级护城河」参照。
 
 ---

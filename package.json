@@ -1,7 +1,7 @@
 {
   "name": "agent-cli",
   "version": "0.1.0",
-  "description": "从零手搓的仿 Claude Code 命令行 Agent CLI（学习 ReAct / Tool Calling / MCP / 多模型适配）",
+  "description": "AI 辅助编写的仿 Claude Code 命令行 Agent CLI（学习 ReAct / Tool Calling / MCP / 多模型适配）",
   "type": "module",
   "bin": {
     "agent-cli": "dist/cli/main.js"
@@ -22,12 +22,19 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
+    "ink": "^4.4.1",
+    "ink-big-text": "^2.0.0",
+    "ink-spinner": "^5.0.0",
+    "react": "^18.3.1",
     "undici": "^8.7.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "zustand": "^4.5.7"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/react": "^18.3.31",
     "eslint": "^9.17.0",
+    "ink-testing-library": "^4.0.0",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
