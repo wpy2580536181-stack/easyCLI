@@ -149,8 +149,11 @@ describe('CostTracker 事件累加', () => {
 });
 
 describe('formatSnapshot / formatTokens', () => {
-  it('formatTokens 带千分位', () => {
-    expect(formatTokens(1234567)).toBe('1,234,567');
+  it('formatTokens 超过 10000 用 k 显示', () => {
+    expect(formatTokens(9999)).toBe('9,999'); // 不足 10000 仍带千分位
+    expect(formatTokens(10000)).toBe('10k'); // 整数 k 不带小数
+    expect(formatTokens(23200)).toBe('23.2k'); // 非整数保留 1 位
+    expect(formatTokens(1234567)).toBe('1234.6k');
   });
 
   it('formatSnapshot 单轮与累计拼接', () => {

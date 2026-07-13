@@ -62,16 +62,23 @@ export function App({
     (_ch, key: any) => {
       const st = store.getState();
       const step = Math.max(3, Math.floor((st.height - 4) / 2)); // 半页
+      // 真实总行数：body 用 markdown 渲染后的行数，与 Transcript 的 buildVisibleLines 完全一致。
+      // 关键修复：流式期间 assistantBuffer 未渲染时只有少数原始换行，若据此夹取 maxOff 会过小，
+      // 导致长回复开头（"被滚掉的消息"）永远滚不到——必须用渲染后总行数。
+      const body = st.assistantBuffer
+        ? (markdown ? markdown(st.assistantBuffer, st.width) : st.assistantBuffer.split('\n')).length
+        : 0;
+      const total = st.transcriptLines.length + st.userTurn.length + body;
       if (key.pageUp) {
-        st.scrollBy(step);
+        st.scrollBy(step, total);
         return;
       }
       if (key.pageDown) {
-        st.scrollBy(-step);
+        st.scrollBy(-step, total);
         return;
       }
       if (key.home) {
-        st.scrollBy(Number.MAX_SAFE_INTEGER);
+        st.scrollBy(Number.MAX_SAFE_INTEGER, total);
         return;
       }
       if (key.end) {

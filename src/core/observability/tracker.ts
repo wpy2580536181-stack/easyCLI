@@ -136,9 +136,19 @@ export class CostTracker {
   }
 }
 
-/** 把数字格式化为带千分位的紧凑串（如 1234567 → "1,234,567"） */
+/**
+ * 把 token 数格式化为紧凑串：
+ * - < 10000：带千分位（如 9999 → "9,999"）；
+ * - ≥ 10000：用 k 单位，整数不带小数（10000 → "10k"），非整数保留 1 位（23200 → "23.2k"）。
+ */
 export function formatTokens(n: number): string {
-  return Math.round(n).toLocaleString('en-US');
+  const v = Math.round(n);
+  if (v >= 10000) {
+    const k = v / 1000;
+    const s = Number.isInteger(k) ? k.toFixed(0) : k.toFixed(1);
+    return `${s}k`;
+  }
+  return v.toLocaleString('en-US');
 }
 
 /**

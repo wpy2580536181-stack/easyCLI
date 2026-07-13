@@ -109,8 +109,13 @@ export interface AppActions {
   setInputState(s: InputState): void;
   requestApproval(question: string, opts?: { debounceMs?: number }): Promise<string>;
   resolveApproval(value: string): void;
-  /** 上滚/下滚（delta>0 上滚、<0 下滚）；按当前视口夹取到合法范围。 */
-  scrollBy(delta: number): void;
+  /**
+   * 上滚/下滚（delta>0 上滚、<0 下滚）；按真实总行数夹取到合法范围。
+   * totalOverride：调用方（App）用 markdown 渲染后的 body 行数算出的真实总行，
+   * 避免 store 只用原始 \n 切分估算而导致长回复开头永远滚不到（流式期间尤为明显）。
+   * 不传则回退旧估算（body 按原始 \n 切分），仅用于测试或简单场景。
+   */
+  scrollBy(delta: number, totalOverride?: number): void;
   /** 回到贴底（scrollOffset=0），恢复跟随最新输出。 */
   scrollToBottom(): void;
   tickClock(): void;
@@ -322,13 +327,19 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
       set({ clock: get().clock + 1 });
     },
 
-    scrollBy(delta) {
+    scrollBy(delta, totalOverride) {
       const s = get();
       // 视口行数（与 Transcript 的 maxRows = height - reservedRows 对齐；reservedRows 默认 4）。
       const maxRows = Math.max(1, s.height - 4);
-      // 估算总行：正文按换行粗估（精确切片由 Transcript 用 markdown 完成，此处只需夹取上限）。
-      const body = s.assistantBuffer ? s.assistantBuffer.split('\n').length : 0;
-      const total = s.transcriptLines.length + s.userTurn.length + body;
+      // 真实总行：优先用调用方（App）传入的「markdown 渲染后」总行，与 Transcript 的
+      // buildVisibleLines 完全一致；否则回退旧估算（body 按原始 \n 切分，仅测试/简单场景）。
+      const total =
+        typeof totalOverride === 'number'
+          ? totalOverride
+          : (() => {
+              const body = s.assistantBuffer ? s.assistantBuffer.split('\n').length : 0;
+              return s.transcriptLines.length + s.userTurn.length + body;
+            })();
       const maxOff = Math.max(0, total - maxRows);
       const next = Math.max(0, Math.min(maxOff, s.scrollOffset + delta));
       if (next !== s.scrollOffset) set({ scrollOffset: next });
