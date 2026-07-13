@@ -23,7 +23,7 @@ function visibleLen(s: string): number {
 describe('printSplash（启动欢迎框）', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('渲染双栏圆角框：顶/底边圆角、含品牌标题与右栏分隔线', () => {
+  it('渲染双栏方角框：顶/底边方角、含能力栏与右栏分隔线', () => {
     const logs: string[] = [];
     const spy = vi.spyOn(console, 'log').mockImplementation((s) => logs.push(String(s)));
     let ret: string[] = [];
@@ -36,23 +36,23 @@ describe('printSplash（启动欢迎框）', () => {
     expect(logs).toEqual(ret);
     expect(ret.length).toBeGreaterThan(5);
 
-    // 顶边：纯圆角框（品牌大字标题已移至 React SplashTitle 头部，TTY 下由 Ink 渲染上色；
+    // 顶边：纯方角框（品牌大字标题已移至 React SplashTitle 头部，TTY 下由 Ink 渲染上色；
     // 非 TTY 文本路径不再内嵌标题，避免与头部重复成两个框）。
-    expect(ret[0]).toContain('╭');
-    expect(ret[0]).toContain('╮');
+    expect(ret[0]).toContain('┌');
+    expect(ret[0]).toContain('┐');
 
-    // 底边：纯圆角框（与顶边对称；提示文字已移到框外单独一行）
+    // 底边：纯方角框（与顶边对称；提示文字已移到框外单独一行）
     let bottomIndex = ret.length - 1;
     for (let i = ret.length - 1; i >= 0; i--) {
       const l = ret[i] ?? '';
-      if (l.includes('╰') || l.includes('╯')) {
+      if (l.includes('└') || l.includes('┘')) {
         bottomIndex = i;
         break;
       }
     }
     const bottom = ret[bottomIndex];
-    expect(bottom).toContain('╰');
-    expect(bottom).toContain('╯');
+    expect(bottom).toContain('└');
+    expect(bottom).toContain('┘');
 
     // 提示文字在框外单独居中
     const hintLine = ret[bottomIndex + 1];

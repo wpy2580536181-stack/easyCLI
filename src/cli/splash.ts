@@ -1,16 +1,17 @@
 // 启动欢迎面板（Splash / Banner）。
 //
-// 进入交互循环前打印一段品牌信息块，参考 Claude Code 的双栏圆角框 + PaiCLI 的极客感：
-//   - 顶边：居中标题 ` easyCLI vX `（圆角边框 ╭─…─╮）
-//   - 左栏：欢迎语 + 标识 + 运行信息（Model / CWD / Branch / Engine / Built）
+// 进入交互循环前打印一段品牌信息块，参考 Claude Code 的双栏框 + PaiCLI 的极客感：
+//   - 顶边：方角框（┌─…─┐），品牌大字标题由 React <SplashTitle> 头部承担（ink-big-text 渐变）
+//   - 左栏：欢迎语 + 运行信息（Model / CWD / Branch / Engine / Built）
 //   - 右栏：能力速览（ReAct / Plan / MCP / RAG / Memory / Multi-Agent）
-//   - 底边：操作提示（圆角边框 ╰─…─╯）
+//   - 底边：操作提示（方角框 └─…─┘）
+//
+// 边框统一为方角 Unicode box-drawing（┌─┐│└┘），与 markdown 表格风格一致（见 theme.ts 的 ui.border）。
 //
 // 内宽按终端列数自适应并 clamp 到 [70,90]，用 displayWidth 计算填充（CJK 宽度已处理）。
 // 返回打印出来的「屏显行」数组，供 REPL 收集进 transcript 作为首屏历史，状态行动画
 // 从顶行重绘时不会被吞掉。
 
-import chalk from 'chalk';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { gatherContext } from '../core/prompts/context';
@@ -101,12 +102,12 @@ export function renderSplash(opts: SplashOptions = {}): string[] {
   const ctx = gatherContext(cwdRaw); // 复用动态上下文采集，取 git 分支（失败静默降级）
   const model = opts.modelId ?? 'unknown';
 
-  // 盒子外宽（含左右圆角 ╭ ╮ 两列）= W。clamp 到 [70,90]，但永远 ≤ cols，
+  // 盒子外宽（含左右方角 ┌ ┐ 两列）= W。clamp 到 [70,90]，但永远 ≤ cols，
   // 否则整条框线宽于 Ink 渲染容器会被换行拆断（之前 W+2 的越界 bug）。
   const cols = process.stdout.columns ?? 80;
   const W = cols < 70 ? cols : Math.min(90, cols);
   // 主体行 = 左竖线(1) + 左栏(LW) + 中竖线(1) + 右栏(RW) + 右竖线(1) = W
-  // ⇒ LW + RW = W - 3。顶/底行 = ╭ + ─×(W-2) + ╮ = W。
+  // ⇒ LW + RW = W - 3。顶/底行 = ┌ + ─×(W-2) + ┐ = W。
   const LW = Math.floor((W - 3) / 2); // 左栏内容宽
   const RW = W - 3 - LW; // 右栏内容宽
 
@@ -115,21 +116,21 @@ export function renderSplash(opts: SplashOptions = {}): string[] {
   const padLeft = Math.max(0, Math.floor((cols - W) / 2));
   const pad = ' '.repeat(padLeft);
 
-  const border = ui.muted; // 边框 / 分隔线颜色（灰）
+  const border = ui.border; // 边框 / 分隔线统一色（见 theme.ts 的 ui.border）
 
-  // ── 顶边：纯圆角框（标题改由 React SplashTitle 头部渲染，避免 TTY 下 ANSI 被 Ink 剥离）──
-  // 外宽严格 = W：圆角各占 1 列，中间横线 W-2 根。
-  const top = '╭' + border('─'.repeat(W - 2)) + '╮';
+  // ── 顶边：纯方角框（品牌大字标题由 React <SplashTitle> 头部渲染，避免 TTY 下 ANSI 被 Ink 剥离）──
+  // 外宽严格 = W：方角各占 1 列，中间横线 W-2 根。
+  const top = '┌' + border('─'.repeat(W - 2)) + '┐';
 
   // ── 左栏：欢迎 + 运行信息 ───────────────────────────────────────────────────
+  // 层级：区块标题 primary(bold) > 数据值 value(白) > 字段标签 muted(灰)。
   const left = [
     center(ui.primary.bold('Welcome back!'), LW),
-    center(chalk.yellow('✦') + ' ' + ui.primary('easyCLI') + ' ' + chalk.yellow('✦'), LW),
-    padTo(ui.muted('Model   ') + chalk.white(model), LW),
-    padTo(ui.muted('CWD     ') + chalk.white(cwd), LW),
-    padTo(ui.muted('Branch  ') + ui.primary(ctx.gitBranch ?? '-'), LW),
-    padTo(ui.muted('Engine  ') + chalk.white('ReAct loop'), LW),
-    padTo(ui.muted('Built   ') + chalk.white('from-scratch CLI'), LW),
+    padTo(ui.muted('Model   ') + ui.value(model), LW),
+    padTo(ui.muted('CWD     ') + ui.value(cwd), LW),
+    padTo(ui.muted('Branch  ') + ui.value(ctx.gitBranch ?? '-'), LW),
+    padTo(ui.muted('Engine  ') + ui.value('ReAct loop'), LW),
+    padTo(ui.muted('Built   ') + ui.value('from-scratch CLI'), LW),
   ];
 
   // ── 右栏：能力速览 ──────────────────────────────────────────────────────────
@@ -142,17 +143,17 @@ export function renderSplash(opts: SplashOptions = {}): string[] {
     'Multi-Agent collaboration',
   ];
   const right: string[] = [center(ui.primary.bold('Capabilities'), RW)];
-  for (const c of caps) right.push(padTo(ui.primary('• ') + chalk.white(c), RW));
+  for (const c of caps) right.push(padTo(ui.accent('• ') + ui.value(c), RW));
   // 两栏等高：短的一侧用空行补齐
   while (right.length < left.length) right.push(padTo('', RW));
   while (left.length < right.length) left.push(padTo('', LW));
 
-  // ── 底边：纯圆角框（与顶边对称，外宽 = W） ─────────────────────────────────
-  const bottom = '╰' + border('─'.repeat(W - 2)) + '╯';
+  // ── 底边：纯方角框（与顶边对称，外宽 = W） ─────────────────────────────────
+  const bottom = '└' + border('─'.repeat(W - 2)) + '┘';
 
   // 操作提示放在框外单独一行并居中，让上下边框保持对称，避免顶边空、底边厚的视觉失衡。
   const hint = 'type a question to begin · /help for commands · Ctrl+C to abort';
-  const hintLine = center(ui.primary(hint), W);
+  const hintLine = center(ui.muted(hint), W);
 
   // ── 组装：框体 + 外部提示 + 呼吸空行（整框左补 pad 以水平居中） ──────────────
   const lines: string[] = [pad + top];
