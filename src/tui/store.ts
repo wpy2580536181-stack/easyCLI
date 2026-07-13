@@ -49,7 +49,7 @@ export interface AppState {
   model: string;
   branch: string;
   mode: TuiMode;
-  costText: string;
+  tokenText: string;
   ctxPct?: number;
   showCtx: boolean;
   startedAt: number;
@@ -92,7 +92,7 @@ export interface AppActions {
   finishTurn(): void;
   setStatus(
     patch: Partial<
-      Pick<AppState, 'model' | 'branch' | 'mode' | 'costText' | 'ctxPct' | 'showCtx'>
+      Pick<AppState, 'model' | 'branch' | 'mode' | 'tokenText' | 'ctxPct' | 'showCtx'>
     >,
   ): void;
   setInput(s: string): void;
@@ -158,7 +158,7 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
     model: opts.model ?? '',
     branch: opts.branch ?? '',
     mode: opts.mode ?? 'normal',
-    costText: '',
+    tokenText: '',
     ctxPct: undefined,
     showCtx: false,
     startedAt: Date.now(),

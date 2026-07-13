@@ -23,7 +23,7 @@ export interface StatusPatch {
   model?: string;
   branch?: string;
   mode?: 'normal' | 'plan';
-  costText?: string;
+  tokenText?: string;
   ctxPct?: number;
   showCtx?: boolean;
 }

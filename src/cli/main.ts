@@ -308,6 +308,7 @@ program
         opts.autoMemory === false ? false : undefined,
         opts.semanticRecall === false ? false : undefined,
         config.skills.autoInject,
+        mcpClients.length,
       );
       await shutdownMcp();
     }

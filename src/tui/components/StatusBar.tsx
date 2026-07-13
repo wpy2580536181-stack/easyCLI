@@ -2,7 +2,7 @@
 //
 // 等价旧 src/cli/statusbar.ts 的字段，但视觉上拆成「独立状态条」：
 //   - 顶部一条细分割线（灰 ─）把状态条与上方 Transcript/StatusLine 分层；
-//   - 左组：模型(青) · 分支(灰) · [ctx%(灰/≥80黄)] · ¥成本(绿) · 时长(灰)，`·` 分隔；
+//   - 左组：模型(青) · 分支(灰) · [ctx%(灰/≥80黄)] · 累计 token(绿) · 时长(灰)，`·` 分隔；
 //   - 右端：● 模式（正常绿 / 规划黄）右对齐——用 flexGrow 撑开。
 //
 // 每秒刷新由 useClock→tickClock 驱动（订阅 clock 切片触发重渲染）。
@@ -26,7 +26,7 @@ export function StatusBar({ store }: StatusBarProps): React.ReactElement | null 
   const model = useAppStore(store, (s) => s.model);
   const branch = useAppStore(store, (s) => s.branch);
   const mode = useAppStore(store, (s) => s.mode);
-  const costText = useAppStore(store, (s) => s.costText);
+  const tokenText = useAppStore(store, (s) => s.tokenText);
   const showCtx = useAppStore(store, (s) => s.showCtx);
   const ctxPct = useAppStore(store, (s) => s.ctxPct);
   const startedAt = useAppStore(store, (s) => s.startedAt);
@@ -50,7 +50,7 @@ export function StatusBar({ store }: StatusBarProps): React.ReactElement | null 
       </Text>,
     );
   }
-  left.push(<Text key="cost" color="green">{costText}</Text>);
+  left.push(<Text key="token" color="green">{tokenText}</Text>);
   left.push(<Text key="dur" color="gray">{formatDuration(Date.now() - startedAt)}</Text>);
 
   // 右端：模式指示（● 圆点 + 文案），正常绿 / 规划黄。

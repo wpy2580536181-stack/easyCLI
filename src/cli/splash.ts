@@ -2,7 +2,7 @@
 //
 // 进入交互循环前打印一段品牌信息块，参考 Claude Code 的双栏框 + PaiCLI 的极客感：
 //   - 顶边：方角框（┌─…─┐），品牌大字标题由 React <SplashTitle> 头部承担（ink-big-text 渐变）
-//   - 左栏：欢迎语 + 运行信息（Model / CWD / Branch / Engine / Built）
+//   - 左栏：欢迎语 + 运行信息（Model / CWD / Branch / Engine / Tools / Skills·MCP）
 //   - 右栏：能力速览（ReAct / Plan / MCP / RAG / Memory / Multi-Agent）
 //   - 底边：操作提示（方角框 └─…─┘）
 //
@@ -85,6 +85,12 @@ export interface SplashOptions {
   isDev?: boolean;
   /** 当前模型 id，显示在信息行（如 openai:agnes-2.0-flash） */
   modelId?: string;
+  /** 内置 + 技能工具总数（显示在信息行 Tools） */
+  toolCount?: number;
+  /** 已加载技能总数（显示在信息行 Skills） */
+  skillCount?: number;
+  /** 已连接 MCP server 总数（显示在信息行 MCP） */
+  mcpCount?: number;
 }
 
 /**
@@ -134,7 +140,8 @@ export function renderSplash(opts: SplashOptions = {}): string[] {
     padTo(ui.muted('CWD     ') + ui.value(cwd), LW),
     padTo(ui.muted('Branch  ') + ui.value(ctx.gitBranch ?? '-'), LW),
     padTo(ui.muted('Engine  ') + ui.value('ReAct loop'), LW),
-    padTo(ui.muted('Built   ') + ui.value('from-scratch CLI'), LW),
+    padTo(ui.muted('Tools   ') + ui.value(String(opts.toolCount ?? 0)), LW),
+    padTo(ui.muted('Skills  ') + ui.value(`${opts.skillCount ?? 0} · MCP ${opts.mcpCount ?? 0}`), LW),
   ];
 
   // ── 右栏：能力速览 ──────────────────────────────────────────────────────────

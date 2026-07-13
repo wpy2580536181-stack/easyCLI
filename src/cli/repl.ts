@@ -164,6 +164,8 @@ export async function startRepl(
   autoMemory?: boolean,
   semanticRecall?: boolean,
   autoInjectNames?: string[],
+  /** 已连接 MCP server 总数（注入 splash 信息框，避免 main.ts 额外装配） */
+  mcpCount?: number,
 ): Promise<void> {
   // 启动欢迎面板（Splash）：TTY 下只渲染进 Ink 的 initialTranscript（由 Transcript 组件画一次，
   // 不 console.log，否则会与 Ink 渲染的 splash 重复成两个框）；非 TTY 纯文本直接打印，无需常驻
@@ -269,7 +271,12 @@ export async function startRepl(
         onInterrupt,
         initialHistory: [],
         // TTY：仅把 splash 行交给 Ink 渲染一次（renderSplash 不 console.log，避免双重框）。
-        initialTranscript: renderSplash({ modelId: model.id }),
+        initialTranscript: renderSplash({
+          modelId: model.id,
+          toolCount: tools.list().length,
+          skillCount: skillLoader?.list().length ?? 0,
+          mcpCount: mcpCount ?? 0,
+        }),
       })
     : createPlainView({ prompt: promptStr, history: histLines, onSubmit, onInterrupt, onExit });
 
@@ -300,11 +307,11 @@ export async function startRepl(
   /** 同步状态栏：刷新成本 / 上下文占用率 / 模式（每轮结束、回到输入态时调用） */
   function refreshStatus(extra: StatusPatch = {}): void {
     const cum = tracker.snapshot();
-    const costText = '¥' + formatUSD(cum.cost).replace(/^\$/, '');
+    const tokenText = '~' + formatTokens(cum.totalTokens) + ' tok';
     const ctxPct = compress
       ? Math.round((estimateHistoryTokens(history, compress.counter) / compress.budgetTokens) * 100)
       : undefined;
-    view.setStatus({ costText, ctxPct, mode, ...extra });
+    view.setStatus({ tokenText, ctxPct, mode, ...extra });
   }
 
   /** 把模型调用抛出的错误翻译成「对用户友好的一行提示」。返回空串表示无需提示（如用户主动 Ctrl+C 中断）。 */

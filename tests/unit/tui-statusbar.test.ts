@@ -15,11 +15,11 @@ function frameOf(store: ReturnType<typeof createAppStore>): string {
 describe('StatusBar.tsx', () => {
   it('渲染 模型·分支·成本·时长·模式 全字段（默认不显示 ctx）', () => {
     const store = createAppStore({ model: 'agnes-2.0', branch: 'main' });
-    store.getState().setStatus({ costText: '¥0.0015' });
+    store.getState().setStatus({ tokenText: '~1,500 tok' });
     const frame = frameOf(store);
     expect(frame).toContain('agnes-2.0');
     expect(frame).toContain('main');
-    expect(frame).toContain('¥0.0015');
+    expect(frame).toContain('~1,500 tok');
     expect(frame).toContain('正常');
     expect(frame).toContain('·');
     expect(frame).not.toContain('ctx');

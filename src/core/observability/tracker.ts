@@ -1,5 +1,5 @@
 import type { AgentEvent, EventBus } from '../events/bus';
-import { costFor, formatUSD } from './pricing';
+import { costFor } from './pricing';
 
 /** 一条用量记录的归一化形态（真实或估算，统一成这个结构供累加） */
 export interface TokenUsageRecord {
@@ -143,18 +143,18 @@ export function formatTokens(n: number): string {
 
 /**
  * 把快照渲染成单行可读摘要（纯文本、无着色，UI 层自行上色）。
- * 例：`~12,340 tok · ≈$0.0023 (估算) | 累计 ~45,678 tok · ≈$0.0089`
+ * 例：`~12,340 tok (估算) | 累计 ~45,678 tok (含估算)`
  */
 export function formatSnapshot(turn: TrackerSnapshot, cumulative?: TrackerSnapshot): string {
   const parts: string[] = [];
   const tEst = turn.estimated ? ' (估算)' : '';
   parts.push(
-    `本轮 ~${formatTokens(turn.totalTokens)} tok · ≈${formatUSD(turn.cost)}${tEst}`,
+    `本轮 ~${formatTokens(turn.totalTokens)} tok${tEst}`,
   );
   if (cumulative) {
     const cEst = cumulative.estimated ? ' (含估算)' : '';
     parts.push(
-      `累计 ~${formatTokens(cumulative.totalTokens)} tok · ≈${formatUSD(cumulative.cost)}${cEst}`,
+      `累计 ~${formatTokens(cumulative.totalTokens)} tok${cEst}`,
     );
   }
   let line = parts.join(' | ');
