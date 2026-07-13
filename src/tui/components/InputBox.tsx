@@ -14,7 +14,7 @@ import React, { useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import chalk from 'chalk';
 import type { CommandMeta } from '../../cli/commands';
-import { paintInputBox, computeDropdownViewport } from '../../cli/line-editor';
+import { computeDropdownViewport } from '../../cli/line-editor';
 import type { AppStoreApi } from '../store';
 import { useAppStore } from '../hooks';
 import { filterCommands, decideEnter, wrapIndex } from '../input-editor';
@@ -195,10 +195,34 @@ export function InputBox({
 
   return (
     <Box flexDirection="column">
-      <Text>{paintInputBox(prompt + input, width)}</Text>
+      {renderInputLine(prompt, input, cursor)}
       {dropdownRows.map((row, i) => (
         <Text key={i}>{row}</Text>
       ))}
+    </Box>
+  );
+}
+
+/** 剥离 ANSI 转义（prompt 可能带 chalk 色），交给 Ink 原生上色避免被 <Text> 剥离。 */
+function stripAnsi(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/**
+ * 原生 Ink 渲染输入行（Phase 3 视觉层次重做）：
+ *   青色 prompt 字形 + 已输入文本 + 光标处 inverse 块（可见光标，替代原整行底色条）。
+ * 原生 Text 自动换行，长输入不再需要手工按宽度截断。
+ */
+function renderInputLine(prompt: string, input: string, cursor: number): React.ReactElement {
+  const before = input.slice(0, cursor);
+  const at = input.slice(cursor, cursor + 1);
+  const after = input.slice(cursor + 1);
+  return (
+    <Box>
+      <Text color="cyan" bold>{stripAnsi(prompt)}</Text>
+      <Text>{before}</Text>
+      <Text inverse>{at || ' '}</Text>
+      <Text>{after}</Text>
     </Box>
   );
 }
@@ -217,11 +241,14 @@ function renderDropdown(
   const reserved = 6 + 16 + 2;
   const maxDesc = Math.max(8, width - reserved);
   return visible.map((c, i) => {
+    const isSel = viewportStart + i === sel;
     const name = '/' + c.name;
     let desc = c.description;
     if (desc.length > maxDesc) desc = desc.slice(0, maxDesc - 1) + '…';
-    const row = `  ${chalk.cyan(name.padEnd(16))}  ${chalk.gray(desc)}`;
-    return viewportStart + i === sel ? chalk.inverse(row) : row;
+    // 选中项加 ❯ 标记（青）+ inverse 整行；未选中用 2 空格占位保持对齐。
+    const marker = isSel ? chalk.cyan('❯ ') : '  ';
+    const row = `${marker}${chalk.cyan(name.padEnd(14))}  ${chalk.gray(desc)}`;
+    return isSel ? chalk.inverse(row) : row;
   });
 }
 
