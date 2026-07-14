@@ -12,7 +12,8 @@ import { buildAutoContext, lastUserText, type AutoContextResult } from '../core/
 import { extractMemories } from '../core/memory/extractor';
 import { SkillLoader } from '../core/skill';
 import { SessionStore, extractConversation, withSystem, AUTOSAVE_NAME } from '../core/session/store';
-import { runAgent } from '../core/agent';
+import { runAgent, runPlanAndExecute } from '../core/agent';
+import { renderTodos, TodoStore } from '../core/tools/planning';
 import { buildAgentSystemPrompt, buildPlanSystemPrompt, type AgentMode } from '../core/prompts';
 import { formatSnapshot, formatTokens, formatUSD, type CostTracker } from '../core/observability';
 import { renderMarkdown } from './markdown';
@@ -166,6 +167,8 @@ export async function startRepl(
   autoInjectNames?: string[],
   /** 已连接 MCP server 总数（注入 splash 信息框，避免 main.ts 额外装配） */
   mcpCount?: number,
+  /** 会话级任务表（todo_write 注册用）；/auto 会复用它同步进度到 /todos */
+  todoStore?: TodoStore,
 ): Promise<void> {
   // 启动欢迎面板（Splash）：TTY 下只渲染进 Ink 的 initialTranscript（由 Transcript 组件画一次，
   // 不 console.log，否则会与 Ink 渲染的 splash 重复成两个框）；非 TTY 纯文本直接打印，无需常驻
@@ -509,6 +512,7 @@ export async function startRepl(
       bus,
       compress,
       cwd: process.cwd(),
+      onWarn: (m) => view.printLine(chalk.yellow(`  ⚠ ${m}`)),
       hooks: {
         onAgentSpawn: (info) => {
           spawns++;
@@ -524,11 +528,19 @@ export async function startRepl(
     if (res.plan.subtasks.length > 0) {
       view.printLine(chalk.bold('\n📋 计划'));
       view.printLine(chalk.gray(`  目标：${res.plan.goal || task}`));
-      for (const s of res.plan.subtasks) view.printLine(chalk.gray(`  · [${s.id}] ${s.title}`));
+      for (const s of res.plan.subtasks) {
+        const role = s.role ? chalk.cyan(` [${s.role}]`) : '';
+        const dep = s.dependsOn && s.dependsOn.length ? chalk.gray(` ← [${s.dependsOn.join(', ')}]`) : '';
+        view.printLine(chalk.gray(`  · [${s.id}] ${s.title}${role}${dep}`));
+      }
+      if (res.executionOrder.length > 0) {
+        view.printLine(chalk.gray(`  拓扑执行顺序：${res.executionOrder.join(' → ')}`));
+      }
     }
     view.printLine(chalk.bold('\n🛠 Worker 结果（各自在隔离 worktree 中运行）'));
     for (const w of res.workers) {
-      view.printLine(chalk[w.ok ? 'green' : 'red'](`  [${w.subtask.id}] ${w.subtask.title} — ${w.ok ? '成功' : '失败'}`));
+      const role = w.subtask.role ? chalk.cyan(` [${w.subtask.role}]`) : '';
+      view.printLine(chalk[w.ok ? 'green' : 'red'](`  [${w.subtask.id}] ${w.subtask.title}${role} — ${w.ok ? '成功' : '失败'}`));
       view.printLine(chalk.gray(`    工作目录：${w.cwd}`));
       if (w.output.trim()) view.printLine(chalk.gray(`    产出：${w.output.trim().slice(0, 400)}`));
       if (w.error) view.printLine(chalk.red(`    错误：${w.error}`));
@@ -536,6 +548,38 @@ export async function startRepl(
     view.printLine(chalk.bold('\n🔍 Reviewer 结论'));
     view.printLine(res.review || '（无）');
     void spawns;
+  }
+
+  /** 差异6（PaiCLI 对照 P2）：单 Agent 顺序规划 + 逐步深度执行 */
+  async function runPlanExecuteCommand(task: string): Promise<void> {
+    const store = todoStore ?? new TodoStore();
+    view.printLine(chalk.bold.cyan('\n🧭 Plan-and-Execute 启动（单 Agent 顺序执行）'));
+    const res = await runPlanAndExecute({
+      task,
+      model,
+      tools,
+      permission,
+      bus,
+      compress,
+      cwd: process.cwd(),
+      todoStore: store,
+      hooks: {
+        onStepStart: (step, i, total) =>
+          view.printLine(chalk.gray(`  ▸ 步骤 ${i + 1}/${total}：${step.description}`)),
+        onStepDone: (r, i, total) =>
+          view.printLine(chalk[r.ok ? 'green' : 'red'](`  ✓ 步骤 ${i + 1}/${total} ${r.ok ? '完成' : '失败'}${r.error ? `（${r.error}）` : ''}`)),
+      },
+    });
+    view.printLine(chalk.bold('\n📋 计划步骤'));
+    for (const s of res.plan.steps) {
+      view.printLine(chalk.gray(`  · ${s.description}${s.verification ? chalk.cyan(`（验收：${s.verification}）`) : ''}`));
+    }
+    if (res.synthesis.trim()) {
+      view.printLine(chalk.bold('\n🔍 最终结论'));
+      view.printLine(res.synthesis.trim().slice(0, 1200));
+    }
+    view.printLine(chalk.bold('\n✅ 任务清单进度'));
+    view.printLine(renderTodos(store.list()));
   }
 
   async function handleSlash(cmd: string): Promise<'exit' | 'continue'> {
@@ -758,11 +802,21 @@ export async function startRepl(
         );
         return 'continue';
       }
-      case 'agent': {
-        // Phase 17：Multi-Agent —— 把任务拆给 Planner → 并发 Worker（隔离 worktree）→ Reviewer
+      case 'auto': {
+        // 差异6（PaiCLI 对照 P2）：单 Agent 顺序规划 + 逐步深度执行（/agent 是并发多 Agent，二者正交）
         const task = rest.join(' ').trim();
         if (!task) {
-          view.printLine(chalk.yellow('用法: /agent <任务描述>  启动多 Agent 协作（规划+并发执行+评审）'));
+          view.printLine(chalk.yellow('用法: /auto <任务描述>  单 Agent 顺序规划并逐步深度执行（前序结果喂回下一步）'));
+          return 'continue';
+        }
+        await runPlanExecuteCommand(task);
+        return 'continue';
+      }
+      case 'agent': {
+        // Phase 17：Multi-Agent —— 把任务拆给 Planner → 并发/依赖调度 Worker（隔离 worktree）→ Reviewer
+        const task = rest.join(' ').trim();
+        if (!task) {
+          view.printLine(chalk.yellow('用法: /agent <任务描述>  启动多 Agent 协作（规划+依赖调度执行+评审）'));
           return 'continue';
         }
         await runMultiAgentCommand(task);

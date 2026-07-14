@@ -309,6 +309,7 @@ program
         opts.semanticRecall === false ? false : undefined,
         config.skills.autoInject,
         mcpClients.length,
+        todoStore,
       );
       await shutdownMcp();
     }
