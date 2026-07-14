@@ -136,10 +136,16 @@
 |------|------|------|---------|
 | P0 | 差异 1 MCP 客户端 HTTP 传输 | ✅ 已合入 `origin/main` | `McpServerSpec` 增 `transport`/`url`；`connect` 选 `StreamableHTTPClientTransport`；`config/store.ts` schema 放开 |
 | P0 | 差异 2 fast-glob 替换手写 glob | ✅ 已合入 | `builtin.ts`/`skill/loader.ts`/`rag/store.ts` 三处 `walk` 改为 `fast-glob` |
-| **P1** | **差异 4 undici 代理接入 LLM** | ✅ 已完成（待提交） | 抽取共享 `src/core/http/proxy.ts`（`getProxyDispatcher`/`shouldBypassProxy`/`dispatcherForUrl`）；OpenAI + Anthropic 适配器 fetch 加 `dispatcher` |
-| **P1** | **差异 3 工具入参 zod 校验** | ✅ 已完成（待提交） | 新增轻量 JSON Schema 校验器 `src/core/tools/schema-validate.ts`（fail-open）；`executor.runOne` 执行前按 `inputSchema` 拦截非法参数 |
-| **P1** | **差异 3 计划 JSON 校验** | ✅ 已完成（待提交） | `orchestrator.parsePlan` 改用 zod `PlanSchema.safeParse` 结构化提取子任务，失败仍退化兜底 |
+| **P1** | **差异 4 undici 代理接入 LLM** | ✅ 已合入 `origin/main` | 抽取共享 `src/core/http/proxy.ts`（`getProxyDispatcher`/`shouldBypassProxy`/`dispatcherForUrl`）；OpenAI + Anthropic 适配器 fetch 加 `dispatcher` |
+| **P1** | **差异 3 工具入参 zod 校验** | ✅ 已合入 | 新增轻量 JSON Schema 校验器 `src/core/tools/schema-validate.ts`（fail-open）；`executor.runOne` 执行前按 `inputSchema` 拦截非法参数 |
+| **P1** | **差异 3 计划 JSON 校验** | ✅ 已合入 | `orchestrator.parsePlan` 改用 zod `PlanSchema.safeParse` 结构化提取子任务，失败仍退化兜底 |
+| **P2** | **差异 5 Multi-Agent 角色 + 依赖图** | ✅ 已完成（待提交） | ①`Subtask` 增 `role?`/`dependsOn?`；② 新增 `scheduler.ts` 拓扑调度器（Kahn 环检测 + 依赖就绪调度 + 前置结果注入，环则降级全并行）；③ `prompts.ts` 补全 `researcher`/`architect` 角色（复用 planMode 只读 gate）；④ `MultiAgentResult` 增 `executionOrder`；⑤ REPL `/agent` 展示拓扑顺序与角色 |
+| **P2** | **差异 6 独立 Plan-and-Execute 模块** | ✅ 已完成（待提交） | 新增 `src/core/agent/plan-execute.ts`：`runPlanAndExecute` 复用 `runAgent`，Plan 阶段(zod `SequentialPlanSchema`)→Execute 阶段(前序产出喂回下一步)→可选 Synthesis；同步进 `TodoStore`；REPL 新增 `/auto` 命令 |
 
 **P1 验证**：`tsc --noEmit` 0 报错；`vitest run` 456 测试全绿（原 441 + 新增 15：executor 入参校验 3、schema-validate 8、proxy 4）；`tsup` 构建成功。
-**设计取舍**：差异 3 未引入 `json-schema-to-zod`（仓库无此依赖），改为零依赖的轻量 JSON Schema 校验器，对未知 schema 关键字 fail-open，绝不误拒合法调用。
-**P1 未覆盖**：差异 5（Multi-Agent 角色+依赖图）、差异 6（独立 Plan-and-Execute 模块）属 P2 功能对齐，差异 7/8 属 P3 风格/规范，均按计划暂缓。
+**P2 验证**：`tsc --noEmit` 0 报错；`vitest run` 470 测试全绿（原 441 + P1 15 + P2 14：scheduler 6、plan-execute 3、multiagent-roles 5）；`tsup` 构建成功。
+**设计取舍**：
+- 差异 3 未引入 `json-schema-to-zod`（仓库无此依赖），改为零依赖的轻量 JSON Schema 校验器，对未知 schema 关键字 fail-open，绝不误拒合法调用；
+- 差异 5 的「依赖传递」走**文本喂回**（前置子任务产出注入下游 Worker 提示），而非文件系统合并——这是为保住 worktree 隔离这一核心不变式的刻意选择；角色复用 `planMode` 只读 gate，不引入新权限维度；
+- 差异 6 与现有 Plan 模式（`/plan`）、`todo_write` 正交：`/auto` 是单 Agent 顺序深度执行，`/agent` 是并发多 Agent 编排。
+**P2 未覆盖**：差异 7（ReAct 包成 AsyncGenerator 流式接口）、差异 8（统一包管理器 pnpm）属 P3 风格/规范，按计划暂缓。
