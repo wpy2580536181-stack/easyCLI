@@ -1,8 +1,11 @@
 // Phase 17：Multi-Agent 编排器（复用 runAgent 引擎）。
 //
-// 流程：Planner（纯推理，产出 JSON 计划）
-//      → Worker 扇出（有界并发，每个 Worker 在独立隔离 worktree 里跑 runAgent）
+// 流程：Planner（纯推理，产出 JSON 计划，可声明每子任务的 role 与 dependsOn）
+//      → Worker 扇出（依赖图拓扑调度，每个 Worker 在独立隔离 worktree 里跑 runAgent）
 //      → Reviewer（纯推理，汇总各 Worker 结果给结论）
+//
+// 差异5（PaiCLI 对照 P2）：子任务支持 dependsOn 依赖图 + researcher/architect/worker 三角色，
+// 调度由 src/core/multiagent/scheduler.ts 负责（环检测 + 拓扑就绪调度 + 前置结果注入）。
 //
 // 关键设计：
 // - 子 Agent 不另写引擎，全部是 runAgent 的不同「角色配置」；
@@ -21,7 +24,9 @@ import {
   buildPlannerSystemPrompt,
   buildWorkerSystemPrompt,
   buildReviewerSystemPrompt,
+  resolveWorkerRole,
 } from './prompts';
+import { runScheduled } from './scheduler';
 import type {
   AgentRole,
   MultiAgentPlan,
@@ -52,34 +57,8 @@ export interface MultiAgentOptions {
   hooks?: MultiAgentHooks;
   /** 注入式 worktree 工厂（测试用），默认 createWorktree */
   worktreeFactory?: (baseCwd: string, id: string) => Promise<Worktree>;
-}
-
-/** 有界并发 map：同时最多 limit 个 worker 在跑（与 Phase 15 池子同思路，本模块自包含） */
-async function mapPool<T, R>(
-  items: T[],
-  limit: number,
-  worker: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let cursor = 0;
-  let active = 0;
-  let maxActive = 0;
-  const take = async (): Promise<void> => {
-    if (cursor >= items.length) return;
-    const i = cursor++;
-    active++;
-    if (active > maxActive) maxActive = active;
-    try {
-      results[i] = await worker(items[i]!);
-    } finally {
-      active--;
-      await take();
-    }
-  };
-  const cap = Math.max(1, Math.min(limit, items.length || 1));
-  await Promise.all(Array.from({ length: cap }, () => take()));
-  void maxActive;
-  return results;
+  /** 调度/降级告警回调（如依赖成环降级、重复 id），REPL 用来打印一行提示 */
+  onWarn?: (msg: string) => void;
 }
 
 /** 从 history 里取最后一条 assistant 文本（runAgent 回填后） */
@@ -106,6 +85,8 @@ const SubtaskSchema = z.object({
   id: z.union([z.string(), z.number()]).optional(),
   title: z.string().optional(),
   description: z.string().optional(),
+  role: z.enum(['researcher', 'architect', 'worker']).optional(),
+  dependsOn: z.array(z.union([z.string(), z.number()])).optional(),
 });
 const PlanSchema = z.object({
   goal: z.string().optional(),
@@ -126,6 +107,8 @@ function parsePlan(text: string): MultiAgentPlan {
           id: String(s.id ?? `s${i + 1}`),
           title: String(s.title ?? ''),
           description: String(s.description ?? ''),
+          role: s.role,
+          dependsOn: (s.dependsOn ?? []).map(String),
         }));
         return { goal: String(data.goal ?? ''), subtasks };
       }
@@ -169,6 +152,7 @@ export async function runMultiAgent(opts: MultiAgentOptions): Promise<MultiAgent
     maxWorkers = 3,
     hooks,
     worktreeFactory = createWorktree,
+    onWarn,
   } = opts;
 
   // ── 1) Planner：纯推理产出结构化计划 ──
@@ -193,64 +177,78 @@ export async function runMultiAgent(opts: MultiAgentOptions): Promise<MultiAgent
       workers: [],
       review: `Planner 失败：${(e as Error).message}`,
       allOk: false,
+      executionOrder: [],
     };
   }
 
-  // ── 2) Worker 扇出：每个子任务在独立 worktree 里跑 runAgent ──
-  const workers: WorkerResult[] = await mapPool(plan.subtasks, maxWorkers, async (subtask) => {
-    const label = `Worker[${subtask.id}]`;
-    emitSpawn(bus, hooks, 'worker', label, subtask.id);
-    let wt: Worktree;
-    try {
-      wt = await worktreeFactory(cwd, subtask.id);
-    } catch (e) {
-      emitError(bus, 'worker', label, (e as Error).message, subtask.id);
-      emitDone(bus, hooks, 'worker', label, false, subtask.id);
-      return {
-        subtask,
-        cwd: cwd,
-        output: '',
-        ok: false,
-        error: `创建隔离工作目录失败：${(e as Error).message}`,
-        history: [],
-      };
-    }
+  // ── 2) Worker 扇出：按依赖图拓扑调度，每个子任务在独立 worktree 里跑 runAgent ──
+  const scheduled = await runScheduled(
+    plan.subtasks,
+    async (subtask, predecessors) => {
+      const role = subtask.role ?? 'worker';
+      const roleCfg = resolveWorkerRole(role);
+      const label = `${roleCfg.label}[${subtask.id}]`;
+      emitSpawn(bus, hooks, role, label, subtask.id);
+      let wt: Worktree;
+      try {
+        wt = await worktreeFactory(cwd, subtask.id);
+      } catch (e) {
+        emitError(bus, role, label, (e as Error).message, subtask.id);
+        emitDone(bus, hooks, role, label, false, subtask.id);
+        return {
+          subtask,
+          cwd: cwd,
+          output: '',
+          ok: false,
+          error: `创建隔离工作目录失败：${(e as Error).message}`,
+          history: [],
+        };
+      }
 
-    try {
-      const history = await runAgent(
-        [
-          { role: 'system', content: buildWorkerSystemPrompt(task, subtask, wt.path) },
-          { role: 'user', content: `请执行子任务 [${subtask.id}] ${subtask.title}。${subtask.description}` },
-        ],
-        {
-          model,
-          tools,
-          permission,
-          bus,
-          compress,
+      // 前置结果注入：依赖的子任务产出以文本形式喂给当前 Worker（worktree 隔离下的依赖传递）
+      const depContext = predecessors.length
+        ? '\n\n## 你依赖的前置子任务产出（已在其它隔离工作目录完成）：\n' +
+          predecessors.map((p) => `- [${p.subtask.id}] ${p.subtask.title}：${p.output}`).join('\n')
+        : '';
+      try {
+        const history = await runAgent(
+          [
+            { role: 'system', content: roleCfg.build(task, subtask, wt.path) + depContext },
+            { role: 'user', content: `请执行子任务 [${subtask.id}] ${subtask.title}。${subtask.description}` },
+          ],
+          {
+            model,
+            tools,
+            permission,
+            bus,
+            compress,
+            cwd: wt.path,
+            signal,
+            planMode: roleCfg.planMode,
+            onText: (c) => hooks?.onText?.(role, subtask.id, c),
+          },
+        );
+        const output = lastAssistantText(history);
+        emitDone(bus, hooks, role, label, true, subtask.id);
+        return { subtask, cwd: wt.path, output, ok: true, history };
+      } catch (e) {
+        emitError(bus, role, label, (e as Error).message, subtask.id);
+        emitDone(bus, hooks, role, label, false, subtask.id);
+        return {
+          subtask,
           cwd: wt.path,
-          signal,
-          onText: (c) => hooks?.onText?.('worker', subtask.id, c),
-        },
-      );
-      const output = lastAssistantText(history);
-      emitDone(bus, hooks, 'worker', label, true, subtask.id);
-      return { subtask, cwd: wt.path, output, ok: true, history };
-    } catch (e) {
-      emitError(bus, 'worker', label, (e as Error).message, subtask.id);
-      emitDone(bus, hooks, 'worker', label, false, subtask.id);
-      return {
-        subtask,
-        cwd: wt.path,
-        output: '',
-        ok: false,
-        error: (e as Error).message,
-        history: [],
-      };
-    }
-    // 注意：此处不自动 cleanup worktree——Worker 的改动需保留供用户 review / 合并
-    // （Reviewer 也会提示用户逐一合并）。worktree 句柄的 cleanup 由调用方按需调用。
-  });
+          output: '',
+          ok: false,
+          error: (e as Error).message,
+          history: [],
+        };
+      }
+      // 注意：此处不自动 cleanup worktree——Worker 的改动需保留供用户 review / 合并
+      // （Reviewer 也会提示用户逐一合并）。worktree 句柄的 cleanup 由调用方按需调用。
+    },
+    { maxWorkers, onWarn },
+  );
+  const workers = scheduled.workers;
 
   // ── 3) Reviewer：汇总各 Worker 结果给结论 ──
   emitSpawn(bus, hooks, 'reviewer', 'Reviewer');
@@ -289,5 +287,6 @@ export async function runMultiAgent(opts: MultiAgentOptions): Promise<MultiAgent
     workers,
     review,
     allOk: workers.length > 0 && workers.every((w) => w.ok),
+    executionOrder: scheduled.executionOrder,
   };
 }

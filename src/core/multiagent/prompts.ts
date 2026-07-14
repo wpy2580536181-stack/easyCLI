@@ -5,24 +5,54 @@
 // - Worker：带完整工具集，在**独立的隔离 worktree** 里落地子任务；
 // - Reviewer：纯推理，汇总各 Worker 结果并给评审结论。
 
-import type { Subtask } from './types';
+import type { Subtask, WorkerRole } from './types';
 
 /** Planner 系统提示：要求输出可解析的 JSON 计划 */
 export function buildPlannerSystemPrompt(): string {
   return (
-    '你是一个任务拆解专家（Planner）。你的唯一职责是把用户的高层任务拆解成若干' +
-    '**彼此独立、可并行执行**的子任务。\n' +
+    '你是一个任务拆解专家（Planner）。你的唯一职责是把用户的高层任务拆解成若干子任务。\n' +
     '请只输出一个 JSON 代码块，结构如下：\n' +
     '```json\n' +
     '{\n' +
     '  "goal": "一句话概括总目标",\n' +
     '  "subtasks": [\n' +
-    '    { "id": "s1", "title": "子任务标题", "description": "该子任务要做什么、预期产物" }\n' +
+    '    { "id": "s1", "title": "子任务标题", "description": "该子任务要做什么、预期产物", "role": "worker", "dependsOn": [] }\n' +
     '  ]\n' +
     '}\n' +
     '```\n' +
-    '要求：子任务之间尽量解耦（不要依赖彼此的中间产物），每个子任务描述要足够清晰，让一个独立工程师拿到就能执行。不要输出 JSON 以外的解释文字。'
+    '字段说明：\n' +
+    '- role（可选，默认 worker）：子任务派发的角色。\n' +
+    '  · "worker"：执行工程师，在隔离工作目录中直接落地改动；\n' +
+    '  · "researcher"：只读探索，调研/读取现有代码、整理事实，不写文件；\n' +
+    '  · "architect"：架构设计，产出设计文档/接口定义，不写业务代码。\n' +
+    '- dependsOn（可选）：本子任务依赖的前置子任务 id 数组。若有依赖，必须等前置全部完成才能开始；\n' +
+    '  无依赖则填空数组或省略。请尽量让可并行的子任务不写 dependsOn，以利用并发。\n' +
+    '要求：子任务描述要足够清晰，让一个独立工程师拿到就能执行。不要输出 JSON 以外的解释文字。'
   );
+}
+
+/**
+ * 角色解析：把子任务 role 映射到「系统提示构造器 + 是否走只读 gate」。
+ * researcher/architect 复用 Phase 15 的 planMode 写门控（零新权限维度），worker 默认可写。
+ */
+export interface WorkerRoleConfig {
+  /** 中文/英文标签，用于 REPL 展示与事件总线 */
+  label: string;
+  /** 是否对该 Worker 启用只读 gate（planMode） */
+  planMode: boolean;
+  /** 系统提示构造器 */
+  build: (task: string, subtask: Subtask, cwd: string) => string;
+}
+
+export function resolveWorkerRole(role: WorkerRole | undefined): WorkerRoleConfig {
+  switch (role) {
+    case 'researcher':
+      return { label: 'Researcher', planMode: true, build: buildResearcherSystemPrompt };
+    case 'architect':
+      return { label: 'Architect', planMode: true, build: buildArchitectSystemPrompt };
+    default:
+      return { label: 'Worker', planMode: false, build: buildWorkerSystemPrompt };
+  }
 }
 
 /**
@@ -44,6 +74,38 @@ export function buildWorkerSystemPrompt(task: string, subtask: Subtask, cwd: str
     '1. 直接用工具（read_file / write_file / edit_file / list_dir / glob / grep / bash 等）落地这个子任务；\n' +
     '2. 只关注分配给你的子任务，不要去处理其他子任务；\n' +
     '3. 完成后用简洁中文说明「你做了什么、产出了什么、改动落在哪些文件」。'
+  );
+}
+
+/** Researcher 系统提示：只读探索，调研/读取现有代码、整理事实，不写文件（planMode 已 gate 写操作） */
+export function buildResearcherSystemPrompt(task: string, subtask: Subtask, cwd: string): string {
+  return (
+    '你是一个调研专家（Researcher），正在一个**独立的隔离工作目录**中工作。\n' +
+    `当前隔离工作目录：${cwd}\n\n` +
+    `总任务：${task}\n\n` +
+    `你负责的唯一子任务：\n` +
+    `- [${subtask.id}] ${subtask.title}\n` +
+    `${subtask.description}\n\n` +
+    '要求：\n' +
+    '1. 你处于**只读**模式——只能读取/搜索/分析代码与文档（read_file / list_dir / glob / grep / 等），不要创建或修改任何文件；\n' +
+    '2. 只关注分配给你的子任务，聚焦「现状是什么、关键文件与接口在哪里、有哪些约束」；\n' +
+    '3. 完成后用简洁中文给出一份**调研报告**：涉及的模块/文件、关键代码片段位置、结论与对后续实现者的建议。'
+  );
+}
+
+/** Architect 系统提示：产出设计文档/接口定义（planMode 已 gate 写操作，仅允许落一本设计说明） */
+export function buildArchitectSystemPrompt(task: string, subtask: Subtask, cwd: string): string {
+  return (
+    '你是一个架构师（Architect），正在一个**独立的隔离工作目录**中工作。\n' +
+    `当前隔离工作目录：${cwd}\n\n` +
+    `总任务：${task}\n\n` +
+    `你负责的唯一子任务：\n` +
+    `- [${subtask.id}] ${subtask.title}\n` +
+    `${subtask.description}\n\n` +
+    '要求：\n' +
+    '1. 你处于**设计**模式——优先产出架构设计/接口定义/数据结构/模块边界等**设计文档**，而非直接写业务代码；\n' +
+    '2. 如需落盘，请只写一个设计说明文件（如 ARCHITECTURE.md 或对应设计文档），不要把实现写好；\n' +
+    '3. 完成后用简洁中文说明「你的设计决策、模块边界、对外接口、给实现者的关键约束」。'
   );
 }
 

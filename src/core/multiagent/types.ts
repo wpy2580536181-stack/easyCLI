@@ -6,14 +6,21 @@
 
 import type { ChatMessage } from '../chatmodel/types';
 
-/** 子 Agent 角色 */
-export type AgentRole = 'planner' | 'worker' | 'reviewer';
+/** 子 Agent 角色（含差异5 补全的 researcher/architect，用于事件总线与可观测层区分） */
+export type AgentRole = 'planner' | 'worker' | 'reviewer' | 'researcher' | 'architect';
+
+/** Worker 子任务的角色（researcher/architect 走只读 gate，worker 默认可写） */
+export type WorkerRole = 'researcher' | 'architect' | 'worker';
 
 /** 一个被拆解出来的子任务 */
 export interface Subtask {
   id: string;
   title: string;
   description: string;
+  /** 该子任务派发的角色（默认 worker）；researcher/architect 会改用对应系统提示并启用只读 gate */
+  role?: WorkerRole;
+  /** 依赖的前置子任务 id 列表（差异5：依赖图）；满足后才调度执行 */
+  dependsOn?: string[];
 }
 
 /** Planner 产出的结构化计划 */
@@ -45,4 +52,6 @@ export interface MultiAgentResult {
   review: string;
   /** 是否所有子任务都成功 */
   allOk: boolean;
+  /** 实际拓扑执行顺序（差异5：依赖图调度后的子任务 id 序列；满足「依赖必先于下游」） */
+  executionOrder: string[];
 }
