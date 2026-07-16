@@ -1,0 +1,197 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 1080" font-family="'JetBrains Mono', ui-monospace, monospace">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22D3EE"/>
+      <stop offset="0.5" stop-color="#E879F9"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 背景 -->
+  <rect x="0" y="0" width="1320" height="1080" fill="#0D1117"/>
+
+  <!-- 标题 -->
+  <text x="30" y="40" fill="#E6EDF3" font-size="20" font-weight="700">easyCLI 终端界面设计方案</text>
+  <text x="30" y="62" fill="#8B949E" font-size="12">UI Designer · 复用 Ink5 + @inkjs/ui + zustand · 对标 Claude Code / Qoder / OpenCode</text>
+
+  <!-- ===== Token 色带 ===== -->
+  <g font-size="10">
+    <!-- primary -->
+    <rect x="43"  y="80" width="120" height="28" rx="6" fill="#22D3EE" stroke="#2A323D"/>
+    <text x="47"  y="124" fill="#C9D1D9">primary #22D3EE</text>
+    <!-- accent -->
+    <rect x="181" y="80" width="120" height="28" rx="6" fill="#F5C518" stroke="#2A323D"/>
+    <text x="185" y="124" fill="#C9D1D9">accent #F5C518</text>
+    <!-- success -->
+    <rect x="319" y="80" width="120" height="28" rx="6" fill="#3FB950" stroke="#2A323D"/>
+    <text x="323" y="124" fill="#C9D1D9">success #3FB950</text>
+    <!-- danger -->
+    <rect x="457" y="80" width="120" height="28" rx="6" fill="#F85149" stroke="#2A323D"/>
+    <text x="461" y="124" fill="#C9D1D9">danger #F85149</text>
+    <!-- value -->
+    <rect x="595" y="80" width="120" height="28" rx="6" fill="#E6EDF3" stroke="#2A323D"/>
+    <text x="599" y="124" fill="#C9D1D9">value #E6EDF3</text>
+    <!-- muted -->
+    <rect x="733" y="80" width="120" height="28" rx="6" fill="#8B949E" stroke="#2A323D"/>
+    <text x="737" y="124" fill="#C9D1D9">muted #8B949E</text>
+    <!-- dim -->
+    <rect x="871" y="80" width="120" height="28" rx="6" fill="#586069" stroke="#2A323D"/>
+    <text x="875" y="124" fill="#C9D1D9">dim #586069</text>
+    <!-- border -->
+    <rect x="1009" y="80" width="120" height="28" rx="6" fill="#2A323D" stroke="#30363D"/>
+    <text x="1013" y="124" fill="#C9D1D9">border #2A323D</text>
+    <!-- bg -->
+    <rect x="1147" y="80" width="120" height="28" rx="6" fill="#0A0E14" stroke="#30363D"/>
+    <text x="1151" y="124" fill="#C9D1D9">bg #0A0E14</text>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- T1 欢迎屏 (x=30,y=150) -->
+  <!-- ============================================================= -->
+  <g>
+    <rect x="30" y="150" width="620" height="430" rx="12" fill="#0A0E14" stroke="#30363D"/>
+    <rect x="30" y="150" width="620" height="34" rx="12" fill="#11161F"/>
+    <rect x="30" y="178" width="620" height="6" fill="#11161F"/>
+    <line x1="30" y1="184" x2="650" y2="184" stroke="#2A323D"/>
+    <circle cx="48" cy="167" r="5.5" fill="#FF5F56"/>
+    <circle cx="68" cy="167" r="5.5" fill="#FFBD2E"/>
+    <circle cx="88" cy="167" r="5.5" fill="#27C93F"/>
+    <text x="340" y="172" fill="#8B949E" font-size="12" text-anchor="middle">easycli — splash</text>
+
+    <text x="52" y="234" fill="url(#brand)" font-size="30" font-weight="800">easyCLI</text>
+    <line x1="52" y1="252" x2="628" y2="252" stroke="#2A323D"/>
+    <text x="52" y="278" fill="#8B949E" font-size="13">  直接输入需求，开始对话</text>
+    <text x="52" y="302" fill="#8B949E" font-size="13">  / 查看全部命令        ? 帮助</text>
+    <text x="52" y="326" fill="#8B949E" font-size="13">  Ctrl+C 中断        Ctrl+D 退出</text>
+    <line x1="52" y1="346" x2="628" y2="346" stroke="#2A323D"/>
+    <text x="52" y="370" fill="#586069" font-size="13">  model  claude-sonnet-4 · branch main · v0.9.2</text>
+    <text x="52" y="394" fill="#586069" font-size="13">  ↑↓ 历史 · PgUp/PgDn 滚动 · Home/End 跳顶/底</text>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- T2 对话主屏 (x=690,y=150) -->
+  <!-- ============================================================= -->
+  <g>
+    <rect x="690" y="150" width="620" height="430" rx="12" fill="#0A0E14" stroke="#30363D"/>
+    <rect x="690" y="150" width="620" height="34" rx="12" fill="#11161F"/>
+    <line x1="690" y1="184" x2="1310" y2="184" stroke="#2A323D"/>
+    <circle cx="708" cy="167" r="5.5" fill="#FF5F56"/>
+    <circle cx="728" cy="167" r="5.5" fill="#FFBD2E"/>
+    <circle cx="748" cy="167" r="5.5" fill="#27C93F"/>
+    <text x="1000" y="172" fill="#8B949E" font-size="12" text-anchor="middle">easycli — conversation</text>
+
+    <!-- 用户行 -->
+    <text x="708" y="210" fill="#22D3EE" font-size="13">❯</text>
+    <text x="724" y="210" fill="#E6EDF3" font-size="13">重构 src/auth 的 token 刷新逻辑，避免竞态</text>
+    <!-- 助手 markdown -->
+    <text x="708" y="230" fill="#E6EDF3" font-size="13" font-weight="700">## 方案</text>
+    <text x="708" y="250" fill="#8B949E" font-size="13">把刷新逻辑收口到单一哨兵函数，用 Promise 复用避免并发</text>
+    <!-- 工具调用 -->
+    <text x="708" y="270" fill="#8B949E" font-size="13">🔧 read_file src/auth/token.ts</text>
+    <text x="1180" y="270" fill="#3FB950" font-size="13">✓ 12 行</text>
+    <!-- diff 卡片 -->
+    <rect x="706" y="282" width="588" height="46" rx="8" fill="#11161F" stroke="#2A323D"/>
+    <text x="720" y="300" fill="#F85149" font-size="12">- let refreshing = false;</text>
+    <text x="720" y="318" fill="#3FB950" font-size="12">+ let inflight: Promise&lt;Token&gt; | null = null;</text>
+    <!-- 助手续 -->
+    <text x="708" y="346" fill="#8B949E" font-size="13">这样多个调用方会共享同一次刷新，竞态消失。</text>
+    <!-- footer -->
+    <text x="708" y="366" fill="#22D3EE" font-size="13">◐</text>
+    <rect x="724" y="356" width="54" height="18" rx="6" fill="none" stroke="#22D3EE"/>
+    <text x="732" y="369" fill="#22D3EE" font-size="11">生成中</text>
+    <text x="786" y="369" fill="#8B949E" font-size="12">3s</text>
+    <text x="814" y="369" fill="#8B949E" font-size="12">↓ 1.2k tok</text>
+    <rect x="906" y="356" width="74" height="18" rx="6" fill="none" stroke="#F5C518"/>
+    <text x="914" y="369" fill="#F5C518" font-size="11">cache 82%</text>
+    <!-- statusbar -->
+    <text x="708" y="392" fill="#8B949E" font-size="12">claude-sonnet · main · 12% ctx · 3.4k tok · 0:03</text>
+    <text x="1230" y="392" fill="#3FB950" font-size="12">● 正常</text>
+    <line x1="708" y1="404" x2="1292" y2="404" stroke="#2A323D"/>
+    <!-- 输入行 -->
+    <text x="708" y="424" fill="#22D3EE" font-size="13">❯</text>
+    <text x="724" y="424" fill="#E6EDF3" font-size="13">更新单测</text>
+    <rect x="790" y="414" width="8" height="14" fill="#E6EDF3"/>
+    <!-- 下拉 -->
+    <rect x="706" y="434" width="588" height="128" rx="8" fill="#11161F" stroke="#2A323D"/>
+    <rect x="706" y="434" width="588" height="32" rx="8" fill="#22D3EE"/>
+    <text x="720" y="455" fill="#04141a" font-size="13" font-weight="600">❯ /model</text>
+    <text x="1220" y="455" fill="#06343f" font-size="12">切换模型</text>
+    <text x="720" y="483" fill="#E6EDF3" font-size="13">/review</text>
+    <text x="1220" y="483" fill="#8B949E" font-size="12">代码评审</text>
+    <text x="720" y="511" fill="#E6EDF3" font-size="13">/clear</text>
+    <text x="1220" y="511" fill="#8B949E" font-size="12">清空对话</text>
+    <text x="720" y="539" fill="#E6EDF3" font-size="13">/compact</text>
+    <text x="1220" y="539" fill="#8B949E" font-size="12">压缩上下文</text>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- T3 工具审批 (x=30,y=600) -->
+  <!-- ============================================================= -->
+  <g>
+    <rect x="30" y="600" width="620" height="430" rx="12" fill="#0A0E14" stroke="#30363D"/>
+    <rect x="30" y="600" width="620" height="34" rx="12" fill="#11161F"/>
+    <line x1="30" y1="634" x2="650" y2="634" stroke="#2A323D"/>
+    <circle cx="48" cy="617" r="5.5" fill="#FF5F56"/>
+    <circle cx="68" cy="617" r="5.5" fill="#FFBD2E"/>
+    <circle cx="88" cy="617" r="5.5" fill="#27C93F"/>
+    <text x="340" y="622" fill="#8B949E" font-size="12" text-anchor="middle">easycli — approval</text>
+
+    <!-- 压暗 transcript -->
+    <g opacity="0.45">
+      <text x="48" y="660" fill="#22D3EE" font-size="13">❯</text>
+      <text x="64" y="660" fill="#E6EDF3" font-size="13">跑一下测试确认改动</text>
+      <text x="48" y="682" fill="#8B949E" font-size="13">🔧 read_file src/auth/token.test.ts</text>
+      <text x="520" y="682" fill="#3FB950" font-size="13">✓</text>
+    </g>
+    <!-- alert -->
+    <rect x="46" y="700" width="588" height="96" rx="10" fill="#F5C518" fill-opacity="0.08" stroke="#F5C518"/>
+    <text x="62" y="724" fill="#F5C518" font-size="13" font-weight="700">⚠ 需要审批</text>
+    <text x="62" y="748" fill="#E6EDF3" font-size="13">是否允许执行 npm run test ？（命令将在项目根目录运行）</text>
+    <text x="62" y="772" fill="#8B949E" font-size="12">[y] 允许  [n] 拒绝  [a] 始终允许  [esc] 取消</text>
+    <!-- 输入 -->
+    <text x="48" y="826" fill="#F5C518" font-size="13">❯</text>
+    <rect x="64" y="816" width="8" height="14" fill="#E6EDF3"/>
+    <text x="80" y="826" fill="#586069" font-size="13">（按 y / n / a 响应）</text>
+    <!-- statusbar -->
+    <text x="48" y="862" fill="#8B949E" font-size="12">claude-sonnet · main · 12% ctx · 3.4k tok</text>
+    <text x="560" y="862" fill="#F5C518" font-size="12">● 等待授权</text>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- T4 命令面板 (x=690,y=600) -->
+  <!-- ============================================================= -->
+  <g>
+    <rect x="690" y="600" width="620" height="430" rx="12" fill="#0A0E14" stroke="#30363D"/>
+    <rect x="690" y="600" width="620" height="34" rx="12" fill="#11161F"/>
+    <line x1="690" y1="634" x2="1310" y2="634" stroke="#2A323D"/>
+    <circle cx="708" cy="617" r="5.5" fill="#FF5F56"/>
+    <circle cx="728" cy="617" r="5.5" fill="#FFBD2E"/>
+    <circle cx="748" cy="617" r="5.5" fill="#27C93F"/>
+    <text x="1000" y="622" fill="#8B949E" font-size="12" text-anchor="middle">easycli — command palette</text>
+
+    <!-- 输入 -->
+    <text x="708" y="660" fill="#22D3EE" font-size="13">❯</text>
+    <text x="724" y="660" fill="#E6EDF3" font-size="13">/</text>
+    <rect x="734" y="650" width="8" height="14" fill="#E6EDF3"/>
+    <!-- 下拉 -->
+    <rect x="706" y="676" width="588" height="180" rx="8" fill="#11161F" stroke="#2A323D"/>
+    <rect x="706" y="676" width="588" height="30" rx="8" fill="#22D3EE"/>
+    <text x="720" y="696" fill="#04141a" font-size="13" font-weight="600">❯ /help</text>
+    <text x="1220" y="696" fill="#06343f" font-size="12">查看命令与快捷键</text>
+    <text x="720" y="724" fill="#E6EDF3" font-size="13">/model</text>
+    <text x="1220" y="724" fill="#8B949E" font-size="12">切换模型</text>
+    <text x="720" y="754" fill="#E6EDF3" font-size="13">/review</text>
+    <text x="1220" y="754" fill="#8B949E" font-size="12">对改动做代码评审</text>
+    <text x="720" y="784" fill="#E6EDF3" font-size="13">/init</text>
+    <text x="1220" y="784" fill="#8B949E" font-size="12">初始化项目记忆</text>
+    <text x="720" y="814" fill="#E6EDF3" font-size="13">/clear</text>
+    <text x="1220" y="814" fill="#8B949E" font-size="12">清空当前对话</text>
+    <text x="720" y="844" fill="#E6EDF3" font-size="13">/compact</text>
+    <text x="1220" y="844" fill="#8B949E" font-size="12">压缩上下文以省 token</text>
+    <!-- 提示 -->
+    <text x="708" y="876" fill="#586069" font-size="12">↑↓ 选择 · Enter 执行 · Esc 关闭</text>
+    <!-- statusbar -->
+    <text x="708" y="906" fill="#8B949E" font-size="12">claude-sonnet · main · 12% ctx</text>
+    <text x="1230" y="906" fill="#3FB950" font-size="12">● 正常</text>
+  </g>
+</svg>

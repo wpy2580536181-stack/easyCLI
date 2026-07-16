@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>easyCLI TUI 改进蓝图 · 应用版</title>
+<style>
+  :root{
+    --primary:#22D3EE;
+    --brand:#EC4FD0;
+    --success:#22C55E;
+    --error:#F4586E;
+    --warning:#F5A623;
+    --text:#ECE7F4;
+    --subtext:#938BA6;
+    --bg:#161320;
+    --panel:#1d1829;
+    --sidebar:#191426;
+    --diffbg:#110d1a;
+    --border:#2A2438;
+    --chip:#241d33;
+    --mono:'Sarasa Gothic SC','PingFang SC','Noto Sans CJK SC',ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--bg);color:var(--text);font-family:var(--mono);-webkit-font-smoothing:antialiased}
+  body{overflow-x:hidden}
+
+  /* 缩放舞台：保留 1080 原始画布 + 等比缩放 */
+  .stage{margin:0 auto;transform-origin:top left}
+  .canvas{width:1080px;background:var(--bg);padding:40px;display:flex;flex-direction:column;gap:32px}
+
+  /* ---------- Hero ---------- */
+  .hero{display:flex;flex-direction:column;gap:10px}
+  .hero h1{font-size:34px;font-weight:700;color:var(--text);letter-spacing:1px}
+  .hero .sub{font-size:15px;color:var(--subtext)}
+  .hero .tags{font-size:12px;color:var(--primary);word-spacing:1px}
+
+  /* ---------- Terminal Mockup ---------- */
+  .terminal{position:relative;width:1000px;height:640px;background:var(--panel);border:1px solid var(--border);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;font-size:13px}
+  .term-titlebar{height:40px;display:flex;align-items:center;gap:8px;padding:0 18px;border-bottom:1px solid var(--border);flex:0 0 auto}
+  .term-titlebar .dot{width:11px;height:11px;border-radius:50%}
+  .term-titlebar .dot.r{background:var(--error)}
+  .term-titlebar .dot.y{background:var(--warning)}
+  .term-titlebar .dot.g{background:var(--success)}
+  .term-titlebar .title{margin-left:8px;color:var(--subtext);font-size:14px}
+  .term-statusbar{height:30px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;background:var(--bg);font-size:13px;flex:0 0 auto}
+  .term-statusbar .left{display:flex;align-items:center;gap:6px}
+  .term-statusbar .ok{color:var(--success);display:flex;align-items:center;gap:5px}
+  .term-body{flex:1 1 auto;display:flex;min-height:0}
+  .term-sidebar{width:196px;background:var(--sidebar);border-right:1px solid var(--border);padding:14px 14px;overflow:auto;flex:0 0 auto}
+  .term-main{flex:1 1 auto;background:var(--bg);padding:14px 16px;overflow:auto;display:flex;flex-direction:column;gap:10px}
+
+  /* sidebar */
+  .sb-head{font-size:12px;color:var(--subtext);letter-spacing:1px;cursor:pointer;user-select:none;display:flex;justify-content:space-between}
+  .sb-divider{height:1px;background:var(--border);margin:8px 0}
+  .sb-row{font-size:12.5px;line-height:1.9;display:flex;align-items:center;gap:6px;white-space:nowrap}
+  .sb-row .st{font-weight:700;width:12px;text-align:center}
+  .sb-row .st.M{color:var(--warning)}
+  .sb-row .st.A{color:var(--success)}
+  .sb-row .st.D{color:var(--error)}
+  .sb-row .st.Q{color:var(--subtext)}
+  .sb-row .name{color:var(--text)}
+  .sb-row .name.dim{color:var(--subtext)}
+  .sb-row .staged{color:var(--success);margin-left:2px}
+  .sb-row.active .name{color:var(--primary)}
+  .sb-row .caret{color:var(--primary)}
+  .sb-collapsed{display:none}
+
+  /* messages */
+  .msg-user{display:flex;gap:8px;align-items:baseline;font-size:13px;line-height:1.6}
+  .msg-user .p{color:var(--primary);font-weight:700}
+  .msg-user .ref{color:var(--primary)}
+  .msg-asst{font-size:12.5px;color:#cfc8dd;line-height:1.6}
+
+  /* tool card */
+  .tool-card{background:#221c30;border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12.5px;display:flex;align-items:center;gap:8px}
+  .tool-card .ico{color:var(--primary)}
+  .tool-card .nm{color:var(--text)}
+  .tool-card .arg{color:var(--subtext)}
+  .tool-card .chk{color:var(--success);margin-left:auto}
+
+  /* diff block */
+  .diff{background:var(--diffbg);border:1px solid var(--border);border-radius:8px;padding:8px 0;font-size:12px;overflow:hidden}
+  .diff-head{padding:2px 12px 8px;color:var(--subtext);font-size:12px;border-bottom:1px solid var(--border);margin-bottom:6px}
+  .diff-line{display:flex;align-items:stretch;line-height:1.7;white-space:pre}
+  .diff-line .gutter{width:14px;flex:0 0 auto}
+  .diff-line .code{padding:0 12px;flex:1 1 auto}
+  .diff-line.add .gutter{background:rgba(34,197,94,.25)}
+  .diff-line.del .gutter{background:rgba(244,88,110,.25)}
+  .diff-line.mod .gutter{background:rgba(245,166,35,.25)}
+  .diff-line.add .code{color:var(--success)}
+  .diff-line.del .code{color:var(--error)}
+  .diff-line.mod .code .new{color:var(--warning)}
+  .diff-line.ctx .code{color:var(--subtext)}
+  .diff-foot{padding:6px 12px 2px;color:var(--subtext);font-size:11px;display:flex;justify-content:space-between;align-items:center}
+  .diff-foot .hint{color:var(--primary);cursor:pointer;user-select:none}
+  .diff.split{display:flex}
+  .diff.split .pane{flex:1 1 0;min-width:0;border-right:1px solid var(--border)}
+  .diff.split .pane:last-child{border-right:none}
+  .diff.split .pane .code.old{color:var(--error)}
+  .diff.split .pane .code.new{color:var(--success)}
+  .diff.split .pane .code.ctx{color:var(--subtext)}
+  .diff.split .pane .ln{flex:0 0 auto;width:34px;text-align:right;padding-right:8px;color:var(--subtext);user-select:none}
+  .hidden{display:none!important}
+
+  /* input bar (含状态行) */
+  .term-input{height:78px;background:var(--sidebar);border-top:1px solid var(--border);padding:8px 18px;display:flex;flex-direction:column;gap:6px;flex:0 0 auto;position:relative}
+  .term-input .statusline{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--subtext)}
+  .term-input .statusline .spin{color:var(--primary);display:inline-block;width:14px}
+  .term-input .statusline .gen{color:var(--primary)}
+  .term-input .statusline .cancel{color:var(--warning);margin-left:6px}
+  .term-input .prompt-row{display:flex;align-items:center;gap:8px}
+  .term-input .prompt-row .p{color:var(--primary);font-weight:700}
+  .term-input input.fake{border:none;background:transparent;color:var(--text);font-family:var(--mono);font-size:13px;outline:none;flex:1 1 auto}
+  .term-input input.fake::placeholder{color:var(--subtext)}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}
+  .chip{background:var(--chip);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:11.5px;color:var(--text);display:flex;align-items:center;gap:6px}
+  .chip .p{color:var(--primary);font-weight:700}
+  .chip .d{color:var(--subtext)}
+
+  /* dropdown for @ and / */
+  .dd{position:absolute;left:18px;bottom:84px;background:#1d1829;border:1px solid var(--border);border-radius:8px;padding:6px;min-width:220px;z-index:30;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  .dd .item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:12.5px;cursor:pointer}
+  .dd .item:hover{background:var(--chip)}
+  .dd .item .k{color:var(--primary)}
+  .dd .item .v{color:var(--subtext)}
+
+  /* dimension badges */
+  .badge{position:absolute;width:26px;height:26px;border-radius:50%;background:var(--brand);color:var(--bg);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;z-index:20;box-shadow:0 0 0 3px rgba(236,79,208,.18)}
+  .legend{font-size:11px;color:var(--subtext);margin-top:8px}
+  .legend b{color:var(--brand)}
+
+  /* ---------- Dims Overview ---------- */
+  .dims{display:grid;grid-template-columns:repeat(7,1fr);gap:12px}
+  .dim{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px 14px;height:210px;display:flex;flex-direction:column}
+  .dim .num{width:30px;height:30px;border-radius:50%;background:var(--brand);color:var(--bg);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;margin-bottom:6px}
+  .dim .name{font-size:13px;color:var(--text);font-weight:600}
+  .dim .lines{margin-top:auto;font-size:11.5px;color:var(--subtext);line-height:1.9}
+
+  /* ---------- Tokens ---------- */
+  .tokens{display:flex;flex-direction:column;gap:12px}
+  .tokens .t-title{font-size:14px;color:var(--text)}
+  .tokens .row{display:flex;gap:12px;flex-wrap:wrap}
+  .sw{width:110px;display:flex;flex-direction:column;gap:6px}
+  .sw .box{height:56px;border-radius:8px;border:1px solid var(--border)}
+  .sw .nm{font-size:12px;color:var(--text)}
+  .sw .hx{font-size:11px;color:var(--subtext)}
+
+  /* ---------- Component Details ---------- */
+  .details{display:flex;gap:12px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;flex:1 1 0;min-width:0}
+  .panel .p-title{font-size:12px;color:var(--subtext);margin-bottom:10px}
+  .panel .mini-diff{background:var(--diffbg);border:1px solid var(--border);border-radius:6px;font-size:11.5px;overflow:hidden}
+  .panel .mini-diff .ml{display:flex;line-height:1.7;white-space:pre}
+  .panel .mini-diff .ml .g{width:4px;flex:0 0 auto}
+  .panel .mini-diff .ml .c{padding:0 10px;flex:1 1 auto}
+  .panel .mini-diff .ml.add .g{background:var(--success)} .panel .mini-diff .ml.add .c{color:var(--success)}
+  .panel .mini-diff .ml.del .g{background:var(--error)} .panel .mini-diff .ml.del .c{color:var(--error)}
+  .panel .mini-diff .ml.mod .g{background:var(--warning)} .panel .mini-diff .ml.mod .c .n{color:var(--warning)}
+  .panel .mini-diff .ml.ctx .c{color:var(--subtext)}
+  .panel .sp{display:flex}
+  .panel .sp .col{flex:1 1 0;border-right:1px solid var(--border)}
+  .panel .sp .col:last-child{border-right:none}
+  .panel .sp .ml .ln{flex:0 0 auto;width:30px;text-align:right;padding-right:6px;color:var(--subtext)}
+  .panel .sp .ml .c.old{color:var(--error)} .panel .sp .ml .c.new{color:var(--success)} .panel .sp .ml .c.ctx{color:var(--subtext)}
+  .panel .ibox{background:var(--sidebar);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px}
+  .panel .ibox .ln1{font-size:11.5px;color:var(--text);display:flex;gap:6px;align-items:baseline}
+  .panel .ibox .ln1 .p{color:var(--primary)}
+  .panel .ibox .ln1 .cont{color:var(--text)}
+  .panel .ibox .ln1 .ref{color:var(--primary)}
+  .panel .ibox .ln2{font-size:11.5px;color:var(--text);display:flex;gap:6px;align-items:baseline}
+  .panel .ibox .ln2 .cont{color:var(--text)}
+  .panel .ibox .ln2 .ref{color:var(--primary)}
+  .panel .ibox .sep{height:1px;background:var(--border)}
+  .panel .ibox .cmds{display:flex;gap:8px;flex-wrap:wrap}
+  .panel .ibox .cmd{background:var(--chip);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:11px;color:var(--text);display:flex;gap:6px;align-items:center}
+  .panel .ibox .cmd .p{color:var(--primary)}
+  .panel .ibox .cmd .d{color:var(--subtext)}
+  .panel .hint{font-size:11px;color:var(--subtext);margin-top:10px;line-height:1.8}
+  .panel .hint .k{color:var(--primary)}
+</style>
+</head>
+<body>
+<div class="stage">
+<div class="canvas">
+
+  <!-- Hero -->
+  <header class="hero">
+    <h1>easyCLI TUI 改进蓝图</h1>
+    <p class="sub">参考 OpenCode · QoderCLI · Claude Code 的交互与设计理念</p>
+    <p class="tags">Ink 5.2.1 + @inkjs/ui 2.0.0&nbsp;&nbsp;·&nbsp;&nbsp;TOKENS 配色&nbsp;&nbsp;·&nbsp;&nbsp;组件链 SplashTitle→Transcript→StatusLine→StatusBar→InputBox→Approval</p>
+  </header>
+
+  <!-- Terminal Mockup -->
+  <section class="terminal" id="terminal">
+    <div class="term-titlebar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="title">easyCLI · session: refactor-auth</span>
+    </div>
+    <div class="term-statusbar">
+      <div class="left">
+        <span style="color:var(--primary)">claude-sonnet</span>
+        <span style="color:var(--subtext)">· main · 64% ctx ·</span>
+        <span style="color:var(--success)">12.4k tok</span>
+        <span style="color:var(--subtext)">· 03:21</span>
+      </div>
+      <div class="ok"><span>●</span><span>正常</span></div>
+    </div>
+
+    <div class="term-body">
+      <!-- Sidebar -->
+      <aside class="term-sidebar">
+        <div class="sb-head" data-toggle="files">FILES · main <span>▾</span></div>
+        <div class="sb-divider" id="files"></div>
+        <div class="sb-row"><span class="caret">▸</span><span class="name">src/</span></div>
+        <div class="sb-row"><span class="st M">M</span><span class="name">auth/login.ts</span></div>
+        <div class="sb-row"><span class="st A">A</span><span class="name">auth/jwt.ts</span><span class="staged">✓</span></div>
+        <div class="sb-row"><span class="st D">D</span><span class="name dim">auth/session.ts</span></div>
+        <div class="sb-row"><span class="st Q">?</span><span class="name dim">utils/token.ts</span></div>
+        <div class="sb-divider"></div>
+        <div class="sb-head" data-toggle="sessions">SESSIONS <span>▾</span></div>
+        <div class="sb-divider" id="sessions"></div>
+        <div class="sb-row active"><span class="caret">▸</span><span class="name">refactor-auth</span></div>
+        <div class="sb-row"><span class="name dim">&nbsp;&nbsp;fix-login-bug</span></div>
+        <div class="sb-row"><span class="name dim">&nbsp;&nbsp;add-rate-limit</span></div>
+      </aside>
+
+      <!-- Main -->
+      <main class="term-main" id="termMain">
+        <div class="msg-user"><span class="p">❯</span><span>帮我把 login.ts 改成 JWT 鉴权 <span class="ref">+@src/auth/login.ts</span></span></div>
+        <div class="msg-asst">好的，我先读取文件并替换会话中间件…</div>
+        <div class="tool-card"><span class="ico">⚡</span><span class="nm">read_file</span><span class="arg">src/auth/login.ts</span><span class="chk">✓</span></div>
+
+        <!-- inline diff -->
+        <div class="diff" id="diffInline">
+          <div class="diff-head">@@ auth/login.ts&nbsp;&nbsp;(unified)&nbsp;&nbsp;—&nbsp;&nbsp;行内 diff</div>
+          <div class="diff-line add"><span class="gutter">+</span><span class="code">import { verifyJwt } from './jwt'</span></div>
+          <div class="diff-line del"><span class="gutter">-</span><span class="code">const sess = req.cookies.sid</span></div>
+          <div class="diff-line add"><span class="gutter">+</span><span class="code">const tok = req.headers.authorization</span></div>
+          <div class="diff-line ctx"><span class="gutter">&nbsp;</span><span class="code">if (!validate(tok)) return 401</span></div>
+          <div class="diff-line mod"><span class="gutter">~</span><span class="code">return <span class="new">next()</span> // 旧: next(sess)</span></div>
+          <div class="diff-line add"><span class="gutter">+</span><span class="code">// 新增 JWT 校验中间件</span></div>
+          <div class="diff-foot"><span>+ 3&nbsp;&nbsp;-1&nbsp;&nbsp;~1&nbsp;&nbsp;&nbsp;(4 行变更)&nbsp;&nbsp;↓ 展开剩余 12 行</span><span class="hint" id="toSplit">Ctrl+D 切换并排视图</span></div>
+        </div>
+
+        <!-- split diff (hidden by default) -->
+        <div class="diff split hidden" id="diffSplit">
+          <div class="pane">
+            <div class="diff-line del"><span class="ln">- 12</span><span class="code old">sess = req.cookies.sid</span></div>
+            <div class="diff-line del"><span class="ln">- 13</span><span class="code old">next(sess)</span></div>
+            <div class="diff-line ctx"><span class="ln">&nbsp;14</span><span class="code ctx">if (!sess) return 401</span></div>
+          </div>
+          <div class="pane">
+            <div class="diff-line add"><span class="ln">+ 12</span><span class="code new">tok = req.headers.auth</span></div>
+            <div class="diff-line add"><span class="ln">+ 13</span><span class="code new">next()</span></div>
+            <div class="diff-line ctx"><span class="ln">&nbsp;14</span><span class="code ctx">if (!tok) return 401</span></div>
+          </div>
+          <div class="diff-foot" style="position:absolute;bottom:6px;left:12px"><span class="hint" id="toInline">Ctrl+D 切回行内视图</span></div>
+        </div>
+
+        <div class="msg-asst">已应用改动，需要我暂存吗？</div>
+      </main>
+    </div>
+
+    <!-- Input bar -->
+    <div class="term-input">
+      <div class="statusline">
+        <span class="spin" id="spin">⠿</span>
+        <span class="gen">生成中</span>
+        <span style="color:var(--subtext)">(3s · ↓ 1.2k tokens) · cache 84% ·</span>
+        <span class="cancel">Esc 取消</span>
+      </div>
+      <div class="prompt-row">
+        <span class="p">❯</span>
+        <input class="fake" id="cmdInput" placeholder="输入消息… 试试 @ 引用文件 或 / 唤起命令" autocomplete="off">
+      </div>
+      <div class="chips">
+        <span class="chip"><span class="p">❯</span><span>/stage</span><span class="d">暂存改动</span></span>
+        <span class="chip"><span class="p">❯</span><span>/session</span><span class="d">切换会话</span></span>
+        <span class="chip"><span class="p">❯</span><span>/diff split</span><span class="d">并排对比</span></span>
+      </div>
+
+      <!-- @ dropdown -->
+      <div class="dd hidden" id="ddFile">
+        <div class="item" data-ins="@src/auth/login.ts"><span class="k">@</span><span>src/auth/login.ts</span></div>
+        <div class="item" data-ins="@src/auth/jwt.ts"><span class="k">@</span><span>src/auth/jwt.ts</span></div>
+        <div class="item" data-ins="@utils/token.ts"><span class="k">@</span><span>utils/token.ts</span></div>
+      </div>
+      <!-- / dropdown -->
+      <div class="dd hidden" id="ddCmd">
+        <div class="item" data-ins="/stage "><span class="k">/stage</span><span class="v">暂存改动</span></div>
+        <div class="item" data-ins="/session "><span class="k">/session</span><span class="v">切换会话</span></div>
+        <div class="item" data-ins="/diff split "><span class="k">/diff split</span><span class="v">并排对比</span></div>
+      </div>
+    </div>
+
+    <!-- dimension badges (overlay, 匹配设计稿坐标) -->
+    <div class="badge" style="left:175px;top:290px">1</div>
+    <div class="badge" style="left:500px;top:63px">7</div>
+    <div class="badge" style="left:175px;top:150px">3</div>
+    <div class="badge" style="left:600px;top:240px">2</div>
+    <div class="badge" style="left:958px;top:572px">5</div>
+    <div class="badge" style="left:120px;top:600px">4</div>
+    <div class="badge" style="left:958px;top:68px">6</div>
+  </section>
+  <p class="legend"><b>①②③④⑤⑥⑦</b> → 见下方「7 维度速览」：①会话管理 ②代码差异 ③文件面板 ④输入交互 ⑤进度反馈 ⑥主题视觉 ⑦布局结构</p>
+
+  <!-- Dims Overview -->
+  <section class="dims">
+    <div class="dim"><div class="num">1</div><div class="name">会话管理</div><div class="lines">对话树 + 面板切换</div></div>
+    <div class="dim"><div class="num">2</div><div class="name">代码差异</div><div class="lines">行内 + 并排 diff</div></div>
+    <div class="dim"><div class="num">3</div><div class="name">文件面板</div><div class="lines">树 + git 状态</div></div>
+    <div class="dim"><div class="num">4</div><div class="name">输入交互</div><div class="lines">多行 @ 历史搜索</div></div>
+    <div class="dim"><div class="num">5</div><div class="name">进度反馈</div><div class="lines">spinner + 进度条</div></div>
+    <div class="dim"><div class="num">6</div><div class="name">主题视觉</div><div class="lines">TOKENS 设计令牌</div></div>
+    <div class="dim"><div class="num">7</div><div class="name">布局结构</div><div class="lines">五区 尺寸自适应</div></div>
+  </section>
+
+  <!-- Tokens -->
+  <section class="tokens">
+    <div class="t-title">设计令牌 · TOKENS（唯一来源）</div>
+    <div class="row">
+      <div class="sw"><div class="box" style="background:#22D3EE"></div><div class="nm">primary</div><div class="hx">#22D3EE</div></div>
+      <div class="sw"><div class="box" style="background:#EC4FD0"></div><div class="nm">brand</div><div class="hx">#EC4FD0</div></div>
+      <div class="sw"><div class="box" style="background:#22C55E"></div><div class="nm">success</div><div class="hx">#22C55E</div></div>
+      <div class="sw"><div class="box" style="background:#F4586E"></div><div class="nm">error</div><div class="hx">#F4586E</div></div>
+      <div class="sw"><div class="box" style="background:#F5A623"></div><div class="nm">warning</div><div class="hx">#F5A623</div></div>
+      <div class="sw"><div class="box" style="background:#ECE7F4"></div><div class="nm">text</div><div class="hx">#ECE7F4</div></div>
+      <div class="sw"><div class="box" style="background:#938BA6"></div><div class="nm">subtext</div><div class="hx">#938BA6</div></div>
+      <div class="sw"><div class="box" style="background:#161320;border-color:#2A2438"></div><div class="nm">bg</div><div class="hx">#161320</div></div>
+    </div>
+  </section>
+
+  <!-- Component Details -->
+  <section class="details">
+    <div class="panel">
+      <div class="p-title">行内 diff（unified）</div>
+      <div class="mini-diff">
+        <div class="ml add"><span class="g"></span><span class="c">+ import { verifyJwt }</span></div>
+        <div class="ml del"><span class="g"></span><span class="c">- const sess = cookies</span></div>
+        <div class="ml add"><span class="g"></span><span class="c">+ const tok = headers</span></div>
+        <div class="ml ctx"><span class="g"></span><span class="c">&nbsp; if (!validate(tok))</span></div>
+        <div class="ml mod"><span class="g"></span><span class="c">~ return <span class="n">next()</span></span></div>
+      </div>
+      <div class="hint" style="color:var(--subtext);font-size:11px;margin-top:8px">+ 3 -1 ~1 (4 行)<br><span style="color:var(--primary)">↓ 展开剩余 12 行</span></div>
+    </div>
+    <div class="panel">
+      <div class="p-title">并排 diff（split）</div>
+      <div class="mini-diff sp">
+        <div class="col">
+          <div class="ml del"><span class="ln">- 12</span><span class="c old">sess=cookies</span></div>
+          <div class="ml del"><span class="ln">- 13</span><span class="c old">next(sess)</span></div>
+          <div class="ml ctx"><span class="ln">&nbsp;14</span><span class="c ctx">if(!sess)</span></div>
+        </div>
+        <div class="col">
+          <div class="ml add"><span class="ln">+ 12</span><span class="c new">tok=headers</span></div>
+          <div class="ml add"><span class="ln">+ 13</span><span class="c new">next()</span></div>
+          <div class="ml ctx"><span class="ln">&nbsp;14</span><span class="c ctx">if(!tok)</span></div>
+        </div>
+      </div>
+      <div class="hint" style="color:var(--subtext);font-size:11px;margin-top:8px">左: 删除 / 旧<br>右: 新增 / 新<br><span style="color:var(--primary)">行号对齐 · 同步滚动</span></div>
+    </div>
+    <div class="panel">
+      <div class="p-title">输入框（多行 + @ + /）</div>
+      <div class="ibox">
+        <div class="ln1"><span class="p">❯</span><span class="cont">帮我把登录改成 JWT，</span></div>
+        <div class="ln2"><span class="p">║</span><span class="cont">参考 </span><span class="ref">+@src/auth/login.ts</span></div>
+        <div class="sep"></div>
+        <div class="cmds">
+          <span class="cmd"><span class="p">❯</span><span>/stage</span><span class="d">暂存</span></span>
+          <span class="cmd"><span class="p">❯</span><span>/session</span><span class="d">切换</span></span>
+        </div>
+        <div class="cmds"><span class="cmd"><span class="p">❯</span><span>/diff</span><span class="d">查看改动</span></span></div>
+      </div>
+      <div class="hint"><span class="k">Shift+Enter</span> 换行 · Enter 发送<br><span class="k">Ctrl+R</span> 历史搜索 · Tab 补全<br><span class="k">@</span> 文件路径补全已就绪 (3)</div>
+    </div>
+  </section>
+
+</div>
+</div>
+
+<script>
+  // ---------- 等比缩放：保留 1080 原始画布 ----------
+  function fit(){
+    var stage=document.querySelector('.stage');
+    var canvas=document.querySelector('.canvas');
+    var scale=Math.min(1,(window.innerWidth)/1080);
+    canvas.style.transform='scale('+scale+')';
+    stage.style.width=(1080*scale)+'px';
+    stage.style.height=(canvas.offsetHeight*scale)+'px';
+  }
+  window.addEventListener('resize',fit);
+  fit();
+
+  // ---------- spinner 动画 ----------
+  var frames=['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+  var fi=0, spin=document.getElementById('spin');
+  setInterval(function(){ if(spin) spin.textContent=frames[fi=(fi+1)%frames.length]; },90);
+
+  // ---------- 侧栏折叠 ----------
+  document.querySelectorAll('.sb-head').forEach(function(h){
+    h.addEventListener('click',function(){
+      var id=h.getAttribute('data-toggle');
+      var el=document.getElementById(id);
+      if(el) el.classList.toggle('sb-collapsed');
+    });
+  });
+
+  // ---------- diff 切换（行内 / 并排）----------
+  function showSplit(){document.getElementById('diffInline').classList.add('hidden');document.getElementById('diffSplit').classList.remove('hidden');}
+  function showInline(){document.getElementById('diffSplit').classList.add('hidden');document.getElementById('diffInline').classList.remove('hidden');}
+  document.getElementById('toSplit').addEventListener('click',showSplit);
+  document.getElementById('toInline').addEventListener('click',showInline);
+  document.addEventListener('keydown',function(e){
+    if(e.ctrlKey && (e.key==='d'||e.key==='D')){e.preventDefault();
+      var sp=document.getElementById('diffSplit');
+      sp.classList.contains('hidden')?showSplit():showInline();
+    }
+  });
+
+  // ---------- 输入交互：@ 文件引用 / / 命令 ----------
+  var input=document.getElementById('cmdInput');
+  var ddFile=document.getElementById('ddFile');
+  var ddCmd=document.getElementById('ddCmd');
+  var main=document.getElementById('termMain');
+
+  function hideDD(){ddFile.classList.add('hidden');ddCmd.classList.add('hidden');}
+  input.addEventListener('input',function(){
+    var v=input.value;
+    if(v.indexOf('@')>=0){ddFile.classList.remove('hidden');ddCmd.classList.add('hidden');}
+    else if(v.charAt(0)==='/'){ddCmd.classList.remove('hidden');ddFile.classList.add('hidden');}
+    else hideDD();
+  });
+  ddFile.querySelectorAll('.item').forEach(function(it){
+    it.addEventListener('click',function(){input.value=input.value.replace(/@\S*$/,it.getAttribute('data-ins')+' ');hideDD();input.focus();});
+  });
+  ddCmd.querySelectorAll('.item').forEach(function(it){
+    it.addEventListener('click',function(){input.value=it.getAttribute('data-ins');hideDD();input.focus();});
+  });
+  document.addEventListener('click',function(e){if(!e.target.closest('.term-input'))hideDD();});
+
+  // ---------- 发送：追加消息 + 模拟助手回复 ----------
+  input.addEventListener('keydown',function(e){
+    if(e.key==='Enter'){
+      var v=input.value.trim(); if(!v) return;
+      var um=document.createElement('div'); um.className='msg-user';
+      um.innerHTML='<span class="p">❯</span><span>'+escapeHtml(v)+'</span>';
+      main.appendChild(um);
+      input.value=''; hideDD();
+      main.scrollTop=main.scrollHeight;
+      setTimeout(function(){
+        var am=document.createElement('div'); am.className='msg-asst';
+        am.textContent='已处理：'+v.replace(/^(\/|\+@).*/,'命令/引用已识别')+'，正在应用改动…';
+        main.appendChild(am);
+        var tc=document.createElement('div'); tc.className='tool-card';
+        tc.innerHTML='<span class="ico">⚡</span><span class="nm">apply_change</span><span class="arg">src/auth/login.ts</span><span class="chk">✓</span>';
+        main.appendChild(tc);
+        main.scrollTop=main.scrollHeight;
+      },650);
+    }
+  });
+  function escapeHtml(s){return s.replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+</script>
+</body>
+</html>
