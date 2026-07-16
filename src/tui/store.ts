@@ -14,6 +14,21 @@ export type TuiMode = 'normal' | 'plan';
 export type AnimMode = 'idle' | 'thinking' | 'tool' | 'stream';
 export type InputState = 'input' | 'hidden' | 'asking';
 
+// —— 蓝图维度 ①③：侧栏文件树 + 会话面板 ——
+export type FileStatusKind = 'M' | 'A' | 'D' | 'R' | '?' | 'U';
+export interface FileStatus {
+  path: string;
+  status: FileStatusKind;
+  /** 已暂存（✓ 指示）。 */
+  staged?: boolean;
+}
+export interface SessionMeta {
+  id: string;
+  title: string;
+  /** 当前会话。 */
+  active?: boolean;
+}
+
 export interface AnimState {
   mode: AnimMode;
   label: string;
@@ -45,6 +60,10 @@ export interface AppState {
   splashCount: number;
   userTurn: string[];
   assistantBuffer: string;
+  /** 推理/思考内容的独立缓冲（不与 assistantBuffer 混流）。 */
+  reasoningBuffer: string;
+  /** 是否展示推理过程（/thinking 命令切换）。 */
+  thinkingVisible: boolean;
   // —— 状态栏 ——
   model: string;
   branch: string;
@@ -74,13 +93,32 @@ export interface AppState {
   height: number;
   // 时钟节拍：useClock 每秒 +1，供派生 duration 的组件订阅重渲染
   clock: number;
+  // —— 蓝图 P0：侧栏 / 会话 / diff ——
+  /** 工作区文件 git 状态（侧栏 FILES 面板）。 */
+  files: FileStatus[];
+  /** 历史会话列表（侧栏 SESSIONS 面板）。 */
+  sessions: SessionMeta[];
+  /** 侧栏是否展开（窄屏 <90 列自动收起）。 */
+  sidebarOpen: boolean;
+  /** 已知文件路径（@ 引用下拉候选）。 */
+  fileRefs: string[];
+  /** 待展示的代码变更（PendingDiffs 渲染，由 bridge 在工具产出 diff 时 push）。 */
+  diffs: string[];
+  /** diff 视图：行内 / 并排。 */
+  diffMode: 'unified' | 'split';
 }
 
 export interface AppActions {
   pushText(c: string): void;
+  /** 累积推理 token 到独立缓冲。 */
+  pushReasoning(c: string): void;
+  /** 切换推理显示（/thinking 命令）。 */
+  setThinkingVisible(visible: boolean): void;
+  /** 清空推理缓冲。 */
+  clearReasoning(): void;
   beginAnim(label: string): void;
-  toolStart(name: string): void;
-  toolDone(name: string, ok: boolean): void;
+  toolStart(name: string, detail?: string): void;
+  toolDone(name: string, ok: boolean, summary?: string): void;
   setAnimLabel(label: string): void;
   setCache(pct: number | null): void;
   commitUserTurn(lines: string[]): void;
@@ -118,6 +156,14 @@ export interface AppActions {
   scrollBy(delta: number, totalOverride?: number): void;
   /** 回到贴底（scrollOffset=0），恢复跟随最新输出。 */
   scrollToBottom(): void;
+  // —— 蓝图 P0 actions ——
+  setFiles(files: FileStatus[]): void;
+  setSessions(sessions: SessionMeta[]): void;
+  toggleSidebar(): void;
+  setFileRefs(paths: string[]): void;
+  pushDiff(patch: string): void;
+  clearDiffs(): void;
+  toggleDiffMode(): void;
   tickClock(): void;
   setSize(w: number, h: number): void;
   reset(): void;
@@ -134,6 +180,8 @@ export interface CreateStoreOptions {
   initialHistory?: ChatMessage[];
   /** 初始显示行（如 splash 欢迎面板）。 */
   initialTranscript?: string[];
+  /** 侧栏是否展开（默认 false；Ctrl+B 切换）。 */
+  sidebarOpen?: boolean;
   width?: number;
   height?: number;
 }
@@ -169,6 +217,8 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
     splashCount: opts.initialTranscript?.length ?? 0,
     userTurn: [],
     assistantBuffer: '',
+    reasoningBuffer: '',
+    thinkingVisible: false,
     model: opts.model ?? '',
     branch: opts.branch ?? '',
     mode: opts.mode ?? 'normal',
@@ -189,6 +239,12 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
     width: opts.width ?? (process.stdout.columns || 80),
     height: opts.height ?? (process.stdout.rows || 24),
     clock: 0,
+    files: [],
+    sessions: [],
+    sidebarOpen: opts.sidebarOpen ?? false,
+    fileRefs: [],
+    diffs: [],
+    diffMode: 'unified',
 
     // —— actions ——
     pushText(c) {
@@ -206,6 +262,19 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
       });
     },
 
+    pushReasoning(c) {
+      if (!c) return;
+      set({ reasoningBuffer: get().reasoningBuffer + c });
+    },
+
+    setThinkingVisible(visible) {
+      set({ thinkingVisible: visible });
+    },
+
+    clearReasoning() {
+      set({ reasoningBuffer: '' });
+    },
+
     beginAnim(label) {
       set({
         anim: {
@@ -218,15 +287,23 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
       });
     },
 
-    toolStart(name) {
+    toolStart(name, detail) {
+      // Bash 工具特殊处理：显示 $ 命令而非 🔧 bash
+      const label = (name === 'bash' || name === 'run_command') && detail
+        ? `$ ${detail}`
+        : detail
+          ? `🔧 ${name} ${detail}`
+          : `🔧 调用工具 ${name}`;
       set({
-        anim: { ...get().anim, mode: 'tool', label: `🔧 调用工具 ${name}` },
+        anim: { ...get().anim, mode: 'tool', label },
       });
     },
 
-    toolDone(name, ok) {
+    toolDone(name, ok, summary) {
+      const prefix = ok ? '✓' : '✗';
+      const label = summary ? `${prefix} ${name} ${summary}` : `${prefix} ${name}`;
       // 对齐旧 status.ts.toolDone：保持 tool 态，label 显示 ✓/✗ 结果。
-      set({ anim: { ...get().anim, mode: 'tool', label: `${ok ? '✓' : '✗'} ${name}` } });
+      set({ anim: { ...get().anim, mode: 'tool', label } });
     },
 
     setAnimLabel(label) {
@@ -274,6 +351,7 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
       set({
         history: nextHistory,
         assistantBuffer: '',
+        reasoningBuffer: '',
         userTurn: [],
         anim: idleAnim(),
         state: 'input',
@@ -349,6 +427,29 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
       if (get().scrollOffset !== 0) set({ scrollOffset: 0 });
     },
 
+    // —— 蓝图 P0 actions ——
+    setFiles(files) {
+      set({ files });
+    },
+    setSessions(sessions) {
+      set({ sessions });
+    },
+    toggleSidebar() {
+      set({ sidebarOpen: !get().sidebarOpen });
+    },
+    setFileRefs(paths) {
+      set({ fileRefs: paths });
+    },
+    pushDiff(patch) {
+      set({ diffs: [...get().diffs, patch] });
+    },
+    clearDiffs() {
+      if (get().diffs.length) set({ diffs: [] });
+    },
+    toggleDiffMode() {
+      set({ diffMode: get().diffMode === 'unified' ? 'split' : 'unified' });
+    },
+
     setSize(w, h) {
       set({ width: w, height: h });
     },
@@ -357,6 +458,7 @@ export function createAppStore(opts: CreateStoreOptions = {}) {
       set({
         userTurn: [],
         assistantBuffer: '',
+        reasoningBuffer: '',
         anim: idleAnim(),
         input: '',
         cursor: 0,

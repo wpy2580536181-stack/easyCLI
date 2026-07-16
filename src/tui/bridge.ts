@@ -18,6 +18,8 @@ export interface BridgeOptions {
 export interface Bridge {
   /** runAgent onText 回调：累积 token（不立即渲染）。 */
   pushToken(c: string): void;
+  /** runAgent onReasoning 回调：累积推理 token 到独立缓冲（不进 assistantBuffer）。 */
+  pushReasoning(c: string): void;
   /** runAgent onToolCall 回调。 */
   onToolCall(name: string): void;
   /** runAgent onToolResult 回调。 */
@@ -37,6 +39,7 @@ export interface Bridge {
 export function createBridge(store: AppStoreApi, opts: BridgeOptions = {}): Bridge {
   const flushMs = opts.flushMs ?? 30;
   let buffer = '';
+  let reasoningBuffer = '';
   let timer: ReturnType<typeof setInterval> | null = null;
 
   const flush = () => {
@@ -44,6 +47,13 @@ export function createBridge(store: AppStoreApi, opts: BridgeOptions = {}): Brid
     const chunk = buffer;
     buffer = '';
     store.getState().pushText(chunk);
+  };
+
+  const flushReasoning = () => {
+    if (!reasoningBuffer) return;
+    const chunk = reasoningBuffer;
+    reasoningBuffer = '';
+    store.getState().pushReasoning(chunk);
   };
 
   const ensureTimer = () => {
@@ -61,8 +71,15 @@ export function createBridge(store: AppStoreApi, opts: BridgeOptions = {}): Brid
       buffer += c;
       ensureTimer();
     },
+    pushReasoning(c) {
+      if (!c) return;
+      reasoningBuffer += c;
+      // 推理内容不触发节流定时器，仅更新动画标签
+      store.getState().setAnimLabel('⟡ 深度思考中…');
+    },
     onToolCall(name) {
       flush();
+      flushReasoning();
       store.getState().toolStart(name);
     },
     onToolResult(name, ok) {
@@ -74,10 +91,12 @@ export function createBridge(store: AppStoreApi, opts: BridgeOptions = {}): Brid
     },
     finishTurn() {
       flush();
+      flushReasoning();
       store.getState().finishTurn();
     },
     flush() {
       flush();
+      flushReasoning();
     },
     requestApproval(question, o) {
       flush();
@@ -85,6 +104,7 @@ export function createBridge(store: AppStoreApi, opts: BridgeOptions = {}): Brid
     },
     dispose() {
       flush();
+      flushReasoning();
       if (timer) {
         clearInterval(timer);
         timer = null;

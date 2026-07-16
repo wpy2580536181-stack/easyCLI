@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>easyCLI TUI 改进方案 · 参考 OpenCode / QoderCLI / Claude Code</title>
+<style>
+  :root{
+    --bg:#161320; --panel:#1d1829; --panel-2:#221c30; --border:#2A2438;
+    --primary:#22D3EE; --brand:#EC4FD0; --success:#22C55E; --error:#F4586E;
+    --warning:#F5A623; --text:#ECE7F4; --sub:#938BA6;
+    --mono:"SF Mono","JetBrains Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.65}
+  .wrap{max-width:980px;margin:0 auto;padding:48px 28px 96px}
+  header.hero{border:1px solid var(--border);border-radius:14px;padding:30px 32px;background:linear-gradient(135deg,#1b1530,#161320 60%);}
+  .hero h1{margin:0 0 6px;font-size:30px;letter-spacing:.3px}
+  .hero h1 .accent{color:var(--primary)}
+  .hero .sub{color:var(--sub);font-size:14px}
+  .tagrow{margin-top:16px;display:flex;gap:8px;flex-wrap:wrap}
+  .tag{font-family:var(--mono);font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:999px;color:var(--sub)}
+  .tag.hot{color:var(--primary);border-color:rgba(34,211,238,.4)}
+  h2{margin:54px 0 14px;font-size:22px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+  h2 .num{color:var(--brand);font-family:var(--mono);margin-right:10px}
+  h3{margin:26px 0 8px;font-size:16px;color:var(--text)}
+  h3 .k{color:var(--primary);font-family:var(--mono);font-size:13px}
+  p{color:#cfc8dd;font-size:14.5px}
+  ul{color:#cfc8dd;font-size:14px;padding-left:20px}
+  li{margin:5px 0}
+  code{font-family:var(--mono);font-size:13px;background:#241d33;color:var(--primary);padding:1px 6px;border-radius:5px}
+  .ref{color:var(--sub);font-size:13px;font-style:italic}
+  .card{border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:20px 22px;margin:16px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+  .mock{border:1px solid var(--border);border-radius:12px;background:#110d1a;padding:14px;margin:14px 0;overflow:auto}
+  .mock svg{display:block;width:100%;height:auto}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-family:var(--mono);font-size:12px;color:var(--sub)}
+  .legend span b{color:var(--brand)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel-2);color:var(--text);font-weight:600}
+  td code{background:transparent;padding:0;color:var(--primary)}
+  .swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin:14px 0}
+  .sw{ border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--panel)}
+  .sw .c{height:54px}
+  .sw .m{padding:8px 10px;font-family:var(--mono);font-size:12px}
+  .sw .m .n{color:var(--text)}
+  .sw .m .h{color:var(--sub)}
+  .roadmap{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:16px 0}
+  @media(max-width:720px){.roadmap{grid-template-columns:1fr}}
+  .phase{border:1px solid var(--border);border-radius:12px;padding:16px;background:var(--panel)}
+  .phase .p{font-family:var(--mono);font-size:12px;color:var(--brand)}
+  .phase h4{margin:6px 0 8px;font-size:15px}
+  .phase ul{margin:0;padding-left:18px}
+  .note{font-size:12.5px;color:var(--sub);border-left:3px solid var(--warning);padding:6px 12px;background:rgba(245,166,35,.06);border-radius:0 8px 8px 0;margin:12px 0}
+  .foot{margin-top:60px;padding-top:18px;border-top:1px solid var(--border);color:var(--sub);font-size:12.5px}
+  .key{font-family:var(--mono);font-size:12px;border:1px solid var(--border);border-radius:5px;padding:1px 6px;color:var(--text);background:#241d33}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <h1>easyCLI <span class="accent">TUI 改进方案</span></h1>
+    <div class="sub">对标 OpenCode · QoderCLI · Claude Code 的交互模式与设计理念 ｜ 结构化的视觉与交互设计规格</div>
+    <div class="tagrow">
+      <span class="tag hot">基线：Ink 5.2.1 + @inkjs/ui 2.0.0</span>
+      <span class="tag">配色：TOKENS（青 #22D3EE / 洋红 #EC4FD0）</span>
+      <span class="tag">组件链：SplashTitle→Transcript→StatusLine→StatusBar→InputBox→Approval</span>
+      <span class="tag">2026-07-14</span>
+    </div>
+  </header>
+
+  <div class="card">
+    <h3 style="margin-top:0">0 · 现状基线与设计目标</h3>
+    <p>easyCLI 当前的 TUI 已经具备清晰的组件分层、应用内滚动（<span class="key">PageUp/Down</span>·<span class="key">Home/End</span>）、斜杠命令下拉、历史翻页、流式 Markdown 渲染与 <code>Approval</code> 确认弹窗。本方案在<strong>不破坏现有 470+ 测试与裁剪数学</strong>的前提下，补齐三类成熟 CLI 已经验证、而当前缺失的体验维度：<b>会话管理</b>、<b>代码差异可视化</b>、<b>文件/git 侧栏</b>，并把输入交互、进度反馈、主题与布局自适应统一到一套设计令牌上。</p>
+    <ul>
+      <li><span class="ref">现状能力</span>：状态栏（模型·分支·ctx%·token·时长·模式）、流式输出、工具调用 Badge、滚动回看、/命令下拉、Ctrl+C 中断。</li>
+      <li><span class="ref">主要缺口</span>：无历史会话切换 / 对话树；无 diff 视图；无文件树与 git 状态；多行输入弱、无 <code>@</code> 引用与历史搜索；长任务无进度条/取消；布局固定无侧栏自适应。</li>
+    </ul>
+  </div>
+
+  <!-- ============ 整体布局蓝图 ============ -->
+  <h2><span class="num">07</span>整体布局蓝图（贯穿 7 个维度的总览）</h2>
+  <p>下方是改进后单屏的视觉蓝图：顶部状态栏 + 可折叠侧栏（文件/git/会话）+ 主内容区（对话树 + diff + 工具卡）+ 底部状态行 + 多行输入。图中 <b>①②③④⑤⑥⑦</b> 标注对应下方各维度。</p>
+
+  <div class="mock">
+    <svg viewBox="0 0 680 470" xmlns="http://www.w3.org/2000/svg" font-family="Menlo,Consolas,monospace">
+      <rect x="6" y="6" width="668" height="458" rx="12" fill="#1d1829" stroke="#2A2438"/>
+      <!-- title bar -->
+      <circle cx="26" cy="26" r="4" fill="#F4586E"/><circle cx="40" cy="26" r="4" fill="#F5A623"/><circle cx="54" cy="26" r="4" fill="#22C55E"/>
+      <text x="72" y="30" fill="#938BA6" font-size="12">easyCLI · session: refactor-auth</text>
+      <line x1="6" y1="42" x2="674" y2="42" stroke="#2A2438"/>
+      <!-- top status bar (⑦ ⑥) -->
+      <rect x="6" y="42" width="668" height="26" fill="#161320"/>
+      <text x="18" y="59" font-size="11.5"><tspan fill="#22D3EE">claude-sonnet</tspan><tspan fill="#938BA6"> · main · 64% ctx · </tspan><tspan fill="#22C55E">12.4k tok</tspan><tspan fill="#938BA6"> · 03:21</tspan></text>
+      <text x="600" y="59" font-size="11.5" fill="#22C55E">● 正常</text>
+      <!-- sidebar (③) -->
+      <rect x="6" y="68" width="168" height="338" fill="#191426" stroke="#2A2438"/>
+      <text x="18" y="86" font-size="11" fill="#938BA6">FILES  ·  main</text>
+      <text x="18" y="104" font-size="11"><tspan fill="#22D3EE">▸ src/</tspan></text>
+      <text x="30" y="120" font-size="11"><tspan fill="#F5A623">M</tspan> <tspan fill="#ECE7F4">auth/login.ts</tspan></text>
+      <text x="30" y="136" font-size="11"><tspan fill="#22C55E">A</tspan> <tspan fill="#ECE7F4">auth/jwt.ts</tspan> <tspan fill="#22C55E">✓</tspan></text>
+      <text x="30" y="152" font-size="11"><tspan fill="#F4586E">D</tspan> <tspan fill="#938BA6">auth/session.ts</tspan></text>
+      <text x="30" y="168" font-size="11"><tspan fill="#938BA6">?</tspan> <tspan fill="#938BA6">utils/token.ts</tspan></text>
+      <line x1="18" y1="184" x2="156" y2="184" stroke="#2A2438"/>
+      <text x="18" y="202" font-size="11" fill="#938BA6">SESSIONS  ②</text>
+      <text x="18" y="218" font-size="11"><tspan fill="#22D3EE">▸ refactor-auth</tspan></text>
+      <text x="18" y="234" font-size="11" fill="#938BA6">  fix-login-bug</text>
+      <text x="18" y="250" font-size="11" fill="#938BA6">  add-rate-limit</text>
+      <!-- main area (① ②) -->
+      <rect x="174" y="68" width="500" height="338" fill="#161320"/>
+      <!-- user turn -->
+      <text x="186" y="88" font-size="11.5"><tspan fill="#22D3EE">❯</tspan> <tspan fill="#ECE7F4">帮我把 login.ts 改成 JWT 鉴权</tspan> <tspan fill="#19143a" stroke="#22D3EE">@src/auth/login.ts</tspan></text>
+      <!-- assistant -->
+      <text x="186" y="106" font-size="11" fill="#cfc8dd">好的，我先读取文件并替换会话中间件…</text>
+      <!-- tool card ⑤ -->
+      <rect x="186" y="116" width="476" height="20" rx="5" fill="#221c30" stroke="#2A2438"/>
+      <text x="194" y="130" font-size="11"><tspan fill="#22D3EE">⚡</tspan> <tspan fill="#ECE7F4">read_file</tspan> <tspan fill="#938BA6">src/auth/login.ts</tspan> <tspan fill="#22C55E">✓</tspan></text>
+      <!-- diff block ② -->
+      <rect x="186" y="142" width="476" height="118" rx="6" fill="#110d1a" stroke="#2A2438"/>
+      <text x="194" y="158" font-size="10.5" fill="#938BA6">@@ auth/login.ts  (unified)  —  行内 diff</text>
+      <text x="194" y="176" font-size="10.5"><tspan fill="#22C55E">+</tspan> <tspan fill="#22C55E">import</tspan> <tspan fill="#ECE7F4"> { verifyJwt } from './jwt'</tspan></text>
+      <rect x="186" y="182" width="3" height="14" fill="#F4586E"/>
+      <text x="194" y="194" font-size="10.5"><tspan fill="#F4586E">-</tspan> <tspan fill="#F4586E">const</tspan> <tspan fill="#ECE7F4"> sess = req.cookies.sid</tspan></text>
+      <rect x="186" y="198" width="3" height="14" fill="#22C55E"/>
+      <text x="194" y="210" font-size="10.5"><tspan fill="#22C55E">+</tspan> <tspan fill="#22C55E">const</tspan> <tspan fill="#ECE7F4"> tok = req.headers.authorization</tspan></text>
+      <text x="194" y="228" font-size="10.5"><tspan fill="#938BA6"> </tspan> <tspan fill="#938BA6">if (!validate(tok)) return 401</tspan></text>
+      <text x="194" y="246" font-size="10.5"><tspan fill="#F5A623">~</tspan> <tspan fill="#938BA6">return</tspan> <tspan fill="#F5A623">next()</tspan> <tspan fill="#938BA6">// 旧: next(sess)</tspan></text>
+      <!-- footer status ⑤ -->
+      <rect x="174" y="382" width="500" height="24" fill="#161320"/>
+      <text x="186" y="398" font-size="11"><tspan fill="#22D3EE">⠿</tspan> <tspan fill="#22D3EE">生成中</tspan> <tspan fill="#938BA6"> (3s · ↓ 1.2k tokens) · cache 84% · </tspan><tspan fill="#F5A623">Esc 取消</tspan></text>
+      <!-- input ④ -->
+      <rect x="6" y="406" width="668" height="58" fill="#191426" stroke="#2A2438"/>
+      <text x="18" y="424" font-size="11.5"><tspan fill="#22D3EE">❯</tspan> <tspan fill="#ECE7F4">已应用，需要我 </tspan><tspan fill="#22D3EE">/stage</tspan><tspan fill="#ECE7F4"> 这些改动吗？</tspan></text>
+      <rect x="18" y="432" width="180" height="20" rx="5" fill="#241d33" stroke="#2A2438"/>
+      <text x="26" y="446" font-size="10.5"><tspan fill="#22D3EE">❯</tspan> <tspan fill="#ECE7F4">/stage</tspan> <tspan fill="#938BA6">暂存改动</tspan></text>
+      <text x="206" y="446" font-size="10.5" fill="#938BA6">/session 切换会话   /diff split 并排</text>
+      <!-- legend -->
+      <text x="18" y="452" font-size="9.5" fill="#938BA6">①②③④⑤⑥⑦ → 见下方各维度</text>
+      <!-- badges -->
+      <g font-size="11" font-family="var(--mono)">
+        <circle cx="640" cy="100" r="11" fill="#EC4FD0"/><text x="635" y="104" fill="#161320" font-size="11">1</text>
+        <circle cx="640" cy="200" r="11" fill="#EC4FD0"/><text x="635" y="204" fill="#161320" font-size="11">2</text>
+        <circle cx="150" cy="120" r="11" fill="#EC4FD0"/><text x="145" y="124" fill="#161320" font-size="11">3</text>
+        <circle cx="120" cy="422" r="11" fill="#EC4FD0"/><text x="115" y="426" fill="#161320" font-size="11">4</text>
+        <circle cx="640" cy="394" r="11" fill="#EC4FD0"/><text x="635" y="398" fill="#161320" font-size="11">5</text>
+        <circle cx="640" cy="56" r="11" fill="#EC4FD0"/><text x="635" y="60" fill="#161320" font-size="11">6</text>
+        <circle cx="340" cy="56" r="11" fill="#EC4FD0"/><text x="335" y="60" fill="#161320" font-size="11">7</text>
+      </g>
+    </svg>
+  </div>
+
+  <!-- ============ 1 会话管理 ============ -->
+  <h2><span class="num">01</span>会话管理（Session Management）</h2>
+  <p class="ref">参考：Claude Code 的对话树（branch / checkpoint，可回退另开分支）· OpenCode 的左侧会话面板（列表切换 + 新建）。</p>
+  <div class="grid2">
+    <div class="card">
+      <h3 style="margin-top:0"><span class="k">设计要点</span></h3>
+      <ul>
+        <li><b>会话面板</b>：侧栏下半区列出历史会话（标题 / 最近时间 / token 占用），<span class="key">↑↓</span> 选择，<span class="key">Enter</span> 切换。</li>
+        <li><b>对话树</b>：主区按轮次展示；分叉点用 <code>⌥</code> 标记「可回退 / 另开分支」。</li>
+        <li><b>折叠 / 展开</b>：每个用户轮次可折叠其下助手回复；<span class="key">Alt+↑/↓</span> 或 <code>[</code> <code>]</code> 折叠，长上下文自动 compact。</li>
+        <li><b>持久化</b>：会话存 <code>.easycli/sessions/*.jsonl</code>，恢复时重载 transcript。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0"><span class="k">键位与标记</span></h3>
+      <table>
+        <tr><th>操作</th><th>快捷键</th></tr>
+        <tr><td>打开会话面板</td><td><code>Ctrl+O</code></td></tr>
+        <tr><td>新建会话</td><td><code>Ctrl+N</code></td></tr>
+        <tr><td>搜索会话</td><td><code>Ctrl+K</code></td></tr>
+        <tr><td>折叠 / 展开轮次</td><td><code>Alt+↑/↓</code></td></tr>
+      </table>
+      <p style="font-size:13px">当前会话：<code>primary</code> 反显；历史会话：<code>subtext</code>；分支点：<code>brand</code> 图标 <code>⌥</code>。</p>
+    </div>
+  </div>
+
+  <!-- ============ 2 diff ============ -->
+  <h2><span class="num">02</span>代码差异展示（Diff Visualization）</h2>
+  <p class="ref">参考：QoderCLI 行内 diff 高亮 · Claude Code 并排对比视图。</p>
+  <div class="card">
+    <h3 style="margin-top:0"><span class="k">可视化方案</span></h3>
+    <ul>
+      <li><b>默认行内（unified）diff</b>：左侧 gutter <code>[+]</code>/<code>[-]</code>/<code> </code>；新增行左侧绿条 + 浅绿底，删除行左侧红条 + 浅红底，修改行用 <code>~</code> + 行内变更字符高亮。</li>
+      <li><b>并排（split）视图</b>：左右两栏、中间分隔、行号对齐；<code>Ctrl+D</code> 或 <code>/diff split</code> 切换。</li>
+      <li><b>行号列</b>：旧 / 新行号（<code>subtext</code>）。</li>
+      <li><b>语法高亮</b>：diff 内代码沿用 Markdown 着色，保证可读性。</li>
+      <li><b>折叠与截断</b>：<code>@@ … @@</code> hunk header 可点击折叠大段上下文；超 N 行截断 + 「↓ 展开剩余 M 行」。</li>
+    </ul>
+  </div>
+
+  <div class="grid2">
+    <div class="mock">
+      <div style="font-family:var(--mono);font-size:12px;color:var(--sub);margin-bottom:6px">行内（unified）</div>
+      <svg viewBox="0 0 330 200" xmlns="http://www.w3.org/2000/svg" font-family="Menlo,monospace">
+        <rect x="2" y="2" width="326" height="196" rx="8" fill="#110d1a" stroke="#2A2438"/>
+        <text x="12" y="20" font-size="10.5" fill="#938BA6">@@ auth/login.ts</text>
+        <rect x="2" y="26" width="3" height="14" fill="#22C55E"/>
+        <text x="12" y="38" font-size="10.5"><tspan fill="#22C55E">+</tspan> <tspan fill="#ECE7F4">import { verifyJwt }</tspan></text>
+        <rect x="2" y="42" width="3" height="14" fill="#F4586E"/>
+        <text x="12" y="54" font-size="10.5"><tspan fill="#F4586E">-</tspan> <tspan fill="#ECE7F4">const sess = cookies.sid</tspan></text>
+        <rect x="2" y="58" width="3" height="14" fill="#22C55E"/>
+        <text x="12" y="70" font-size="10.5"><tspan fill="#22C55E">+</tspan> <tspan fill="#ECE7F4">const tok = headers.auth</tspan></text>
+        <text x="12" y="88" font-size="10.5"><tspan fill="#938BA6"> </tspan> <tspan fill="#938BA6">if (!validate(tok))</tspan></text>
+        <rect x="2" y="94" width="3" height="14" fill="#F5A623"/>
+        <text x="12" y="106" font-size="10.5"><tspan fill="#F5A623">~</tspan> <tspan fill="#938BA6">return </tspan><tspan fill="#F5A623">next()</tspan></text>
+        <text x="12" y="124" font-size="10.5"><tspan fill="#22C55E">+</tspan> <tspan fill="#22C55E">// 新增</tspan> <tspan fill="#ECE7F4">JWT 校验</tspan></text>
+        <text x="12" y="150" font-size="9.5" fill="#938BA6">+ 3  -1  ~1   (4 行变更)</text>
+        <text x="12" y="168" font-size="9.5" fill="#22D3EE">↓ 展开剩余 12 行</text>
+      </svg>
+    </div>
+    <div class="mock">
+      <div style="font-family:var(--mono);font-size:12px;color:var(--sub);margin-bottom:6px">并排（split）</div>
+      <svg viewBox="0 0 330 200" xmlns="http://www.w3.org/2000/svg" font-family="Menlo,monospace">
+        <rect x="2" y="2" width="326" height="196" rx="8" fill="#110d1a" stroke="#2A2438"/>
+        <line x1="164" y1="2" x2="164" y2="198" stroke="#2A2438"/>
+        <text x="12" y="20" font-size="10" fill="#F4586E">- old</text><text x="180" y="20" font-size="10" fill="#22C55E">+ new</text>
+        <text x="12" y="40" font-size="10"><tspan fill="#938BA6">12</tspan> <tspan fill="#ECE7F4">sess=cookies</tspan></text>
+        <text x="180" y="40" font-size="10"><tspan fill="#938BA6">12</tspan> <tspan fill="#ECE7F4">tok=headers</tspan></text>
+        <rect x="2" y="46" width="3" height="13" fill="#F4586E"/>
+        <rect x="164" y="46" width="3" height="13" fill="#22C55E"/>
+        <text x="12" y="58" font-size="10"><tspan fill="#938BA6">13</tspan> <tspan fill="#ECE7F4">next(sess)</tspan></text>
+        <text x="180" y="58" font-size="10"><tspan fill="#938BA6">13</tspan> <tspan fill="#ECE7F4">next()</tspan></text>
+        <text x="12" y="76" font-size="10" fill="#938BA6">14  if(!sess)</text>
+        <text x="180" y="76" font-size="10" fill="#938BA6">14  if(!tok)</text>
+        <text x="12" y="120" font-size="9.5" fill="#938BA6">左: 删除/旧  右: 新增/新</text>
+        <text x="12" y="140" font-size="9.5" fill="#22D3EE">行号对齐 · 同步滚动</text>
+      </svg>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0"><span class="k">配色令牌（Diff）</span></h3>
+    <table>
+      <tr><th>语义</th><th>表达</th><th>令牌</th></tr>
+      <tr><td>新增行</td><td>左侧绿条 + 浅绿底 + <code>+</code></td><td><code>success #22C55E</code> 底 ~12% 透明</td></tr>
+      <tr><td>删除行</td><td>左侧红条 + 浅红底 + <code>-</code></td><td><code>error #F4586E</code> 底 ~12% 透明</td></tr>
+      <tr><td>修改行</td><td><code>~</code> + 行内变更字符高亮</td><td><code>warning #F5A623</code>（字符级 inverse）</td></tr>
+      <tr><td>上下文</td><td>灰、行号灰</td><td><code>subtext #938BA6</code></td></tr>
+    </table>
+    <div class="note">终端无真·alpha 背景，用「最弱底色 + 左 gutter 色条 + 符号」组合表达；已验证 Ink 的 <code>&lt;Text&gt;</code> 支持 <code>backgroundColor</code> / <code>color</code> 直接传 hex。字符级变更用 <code>inverse</code> 或 <code>color</code> 高亮。</div>
+  </div>
+
+  <!-- ============ 3 文件面板 ============ -->
+  <h2><span class="num">03</span>文件操作面板（File Panel）</h2>
+  <p class="ref">参考：OpenCode 侧边文件树 · QoderCLI 把 git 状态直接集成进文件行。</p>
+  <div class="grid2">
+    <div class="card">
+      <h3 style="margin-top:0"><span class="k">设计要点</span></h3>
+      <ul>
+        <li><b>文件树</b>：目录折叠/展开，当前打开文件 <code>primary</code> 反显。</li>
+        <li><b>git 状态</b>：文件名左侧角标 <code>M</code>/<code>A</code>/<code>D</code>/<code>R</code>/<code>?</code>/<code>U</code>，用语义色。</li>
+        <li><b>暂存区指示</b>：已 stage 文件加 <code>✓</code>；<code>/stage</code> <code>/unstage</code> 或 <code>Space</code> 切换。</li>
+        <li><b>快速跳转</b>：<code>Ctrl+P</code> fuzzy find file，复用输入下拉机制。</li>
+        <li><b>统计条</b>：栏顶「12 modified · 3 staged」。</li>
+      </ul>
+    </div>
+    <div class="mock">
+      <div style="font-family:var(--mono);font-size:12px;color:var(--sub);margin-bottom:6px">侧栏文件树 + git 状态</div>
+      <svg viewBox="0 0 300 220" xmlns="http://www.w3.org/2000/svg" font-family="Menlo,monospace">
+        <rect x="2" y="2" width="296" height="216" rx="8" fill="#191426" stroke="#2A2438"/>
+        <text x="12" y="22" font-size="11" fill="#938BA6">FILES · main   12 modified · 3 staged</text>
+        <line x1="12" y1="30" x2="288" y2="30" stroke="#2A2438"/>
+        <text x="12" y="48" font-size="11"><tspan fill="#22D3EE">▸ src/</tspan></text>
+        <text x="24" y="64" font-size="11"><tspan fill="#F5A623">M</tspan> <tspan fill="#ECE7F4">auth/login.ts</tspan></text>
+        <text x="24" y="80" font-size="11"><tspan fill="#22C55E">A</tspan> <tspan fill="#ECE7F4">auth/jwt.ts</tspan> <tspan fill="#22C55E">✓</tspan></text>
+        <text x="24" y="96" font-size="11"><tspan fill="#F4586E">D</tspan> <tspan fill="#938BA6">auth/session.ts</tspan></text>
+        <text x="24" y="112" font-size="11"><tspan fill="#938BA6">?</tspan> <tspan fill="#938BA6">utils/token.ts</tspan></text>
+        <text x="24" y="128" font-size="11"><tspan fill="#22D3EE">U</tspan> <tspan fill="#ECE7F4">api/user.ts</tspan></text>
+        <text x="12" y="148" font-size="11"><tspan fill="#22D3EE">▸ tests/</tspan></text>
+        <text x="24" y="164" font-size="11"><tspan fill="#938BA6">M</tspan> <tspan fill="#ECE7F4">login.test.ts</tspan></text>
+        <line x1="12" y1="178" x2="288" y2="178" stroke="#2A2438"/>
+        <text x="12" y="196" font-size="10.5" fill="#938BA6">Ctrl+B 切换 · Space 暂存 · Ctrl+P 跳转</text>
+      </svg>
+    </div>
+  </div>
+  <div class="card">
+    <p style="margin:0;font-size:13.5px">git 状态配色：<code>M</code> 黄、<code>A</code> 绿、<code>D</code> 红、<code>R</code> 蓝、<code>?</code> 灰、<code>U</code> 橙；树连线 <code>subtext</code>；选中行 <code>primary</code> 反显。窄终端（&lt;100 列）默认隐藏侧栏，<code>Ctrl+B</code> 手动切换。</p>
+  </div>
+
+  <!-- ============ 4 输入 ============ -->
+  <h2><span class="num">04</span>输入交互体验（Input UX）</h2>
+  <p class="ref">参考：Claude Code 输入框（多行、<code>@</code>、<code>/</code>、历史搜索）。</p>
+  <div class="grid2">
+    <div class="card">
+      <h3 style="margin-top:0"><span class="k">机制设计</span></h3>
+      <ul>
+        <li><b>多行输入</b>：<span class="key">Enter</span> 提交；<span class="key">Shift+Enter</span> / <span class="key">Alt+Enter</span> 换行；续行用 <code>║</code> 标记（借鉴 Claude Code）。</li>
+        <li><b>命令补全</b>：<code>/</code> 触发下拉，按分组（会话/文件/模型/工具）。</li>
+        <li><b>历史搜索</b>：<span class="key">Ctrl+R</span> 进入 fuzzy 搜索，复用 InputBox 下拉，<span class="key">Enter</span> 填入。</li>
+        <li><b>@ 引用</b>：输入 <code>@</code> 触发路径补全，选中渲染为 chip（青底反显），提交时展开。</li>
+        <li><b>扩展命令</b>：<code>/file</code> <code>/stage</code> <code>/session</code> 等。</li>
+      </ul>
+    </div>
+    <div class="mock">
+      <div style="font-family:var(--mono);font-size:12px;color:var(--sub);margin-bottom:6px">多行 + @chip + /下拉</div>
+      <svg viewBox="0 0 320 200" xmlns="http://www.w3.org/2000/svg" font-family="Menlo,monospace">
+        <rect x="2" y="2" width="316" height="196" rx="8" fill="#191426" stroke="#2A2438"/>
+        <text x="12" y="26" font-size="11.5"><tspan fill="#22D3EE">❯</tspan> <tspan fill="#ECE7F4">帮我把登录改成 JWT，</tspan></text>
+        <text x="12" y="44" font-size="11.5"><tspan fill="#22D3EE">║</tspan> <tspan fill="#ECE7F4">参考 </tspan><tspan fill="#161320" stroke="#22D3EE">@src/auth/login.ts</tspan></text>
+        <rect x="12" y="60" width="296" height="1" fill="#2A2438"/>
+        <rect x="12" y="70" width="150" height="22" rx="5" fill="#241d33" stroke="#2A2438"/>
+        <text x="20" y="85" font-size="11"><tspan fill="#22D3EE">❯</tspan> <tspan fill="#ECE7F4">/stage</tspan> <tspan fill="#938BA6">暂存改动</tspan></text>
+        <text x="172" y="85" font-size="11"><tspan fill="#938BA6">/session 切换</tspan></text>
+        <text x="12" y="112" font-size="11"><tspan fill="#22D3EE">❯</tspan> <tspan fill="#ECE7F4">/diff</tspan> <tspan fill="#938BA6"> 查看改动</tspan></text>
+        <text x="12" y="134" font-size="10.5" fill="#938BA6">Ctrl+R 历史搜索 · Tab 补全 · ↑↓ 菜单</text>
+        <text x="12" y="156" font-size="10.5" fill="#938BA6">Shift+Enter 换行 · Enter 发送</text>
+        <text x="12" y="184" font-size="9.5" fill="#22D3EE">@ 文件路径补全已就绪 (3)</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ============ 5 进度 ============ -->
+  <h2><span class="num">05</span>进度与状态反馈（Progress & Status）</h2>
+  <p class="ref">参考：三者均用 spinner + 流式 + 进度条；Claude Code 的取消提示最明确。</p>
+  <div class="card">
+    <ul>
+      <li><b>工具调用状态</b>：<code>StatusLine</code> 已有 spinner + 模式 Badge；增强——并行工具用多 chip，工具名 <code>value</code> 白、参数折叠。</li>
+      <li><b>流式输出</b>：逐 token 渲染 + 行尾闪烁 caret（已具备 Markdown 实时渲染）。</li>
+      <li><b>长任务进度条</b>：多文件编辑 / 索引用 <code>[####----] 42%</code> 文本进度条，<span class="key">Ctrl+C</span> 可中断。</li>
+      <li><b>取消机制</b>：进行中显示「Esc 取消 / Ctrl+C 中断」；<code>Approval</code> 已有确认弹窗。</li>
+      <li><b>完成反馈</b>：工具完成打 <code>✓</code>(success)；失败 <code>✗</code>(error) + 折叠错误详情。</li>
+    </ul>
+    <div class="mock">
+      <svg viewBox="0 0 620 96" xmlns="http://www.w3.org/2000/svg" font-family="Menlo,monospace">
+        <text x="8" y="24" font-size="11.5"><tspan fill="#22D3EE">⠿</tspan> <tspan fill="#22D3EE">生成中</tspan> <tspan fill="#938BA6"> (3s · ↓ 1.2k tokens) · cache 84% · </tspan><tspan fill="#F5A623">Esc 取消</tspan></text>
+        <text x="8" y="48" font-size="11.5"><tspan fill="#22D3EE">⚡</tspan> <tspan fill="#ECE7F4">edit_file</tspan> <tspan fill="#938BA6">auth/login.ts</tspan> <tspan fill="#22C55E">✓</tspan></text>
+        <text x="8" y="72" font-size="11.5"><tspan fill="#22D3EE">⠿</tspan> <tspan fill="#ECE7F4">索引 8/19 文件</tspan> <tspan fill="#22D3EE">[########--------] 42%</tspan> <tspan fill="#F5A623">Ctrl+C 中断</tspan></text>
+        <text x="8" y="90" font-size="10.5" fill="#F4586E">✗ build 失败 — 展开 3 条错误</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ============ 6 主题 ============ -->
+  <h2><span class="num">06</span>主题与视觉风格（Theme & Visual）</h2>
+  <div class="card">
+    <h3 style="margin-top:0"><span class="k">设计令牌（唯一来源：TOKENS / theme.tsx palette）</span></h3>
+    <div class="swatches">
+      <div class="sw"><div class="c" style="background:#22D3EE"></div><div class="m"><div class="n">primary</div><div class="h">#22D3EE 主色/提示符</div></div></div>
+      <div class="sw"><div class="c" style="background:#EC4FD0"></div><div class="m"><div class="n">brand</div><div class="h">#EC4FD0 高亮/分支</div></div></div>
+      <div class="sw"><div class="c" style="background:#22C55E"></div><div class="m"><div class="n">success</div><div class="h">#22C55E 新增/完成</div></div></div>
+      <div class="sw"><div class="c" style="background:#F4586E"></div><div class="m"><div class="n">error</div><div class="h">#F4586E 删除/失败</div></div></div>
+      <div class="sw"><div class="c" style="background:#F5A623"></div><div class="m"><div class="n">warning</div><div class="h">#F5A623 修改/取消</div></div></div>
+      <div class="sw"><div class="c" style="background:#ECE7F4"></div><div class="m"><div class="n">text</div><div class="h">#ECE7F4 主文本</div></div></div>
+      <div class="sw"><div class="c" style="background:#938BA6"></div><div class="m"><div class="n">subtext</div><div class="h">#938BA6 次文本/分割</div></div></div>
+      <div class="sw"><div class="c" style="background:#161320"></div><div class="m"><div class="n">bg</div><div class="h">#161320 深底</div></div></div>
+    </div>
+    <ul>
+      <li><b>语义层级</b>：<code>primary &gt; brand &gt; status &gt; text &gt; subtext</code>，避免「处处高亮」无重点。</li>
+      <li><b>图标</b>：统一用 Nerd Font / 文本符号（<code>● ◆ ▸ ✔ ✗ ⌥ ║ ⠿</code>），避免 emoji 依赖以保证终端兼容。</li>
+      <li><b>边框与间距</b>：与 splash 一致方角 <code>┌─┐│└┘</code>；区域间 1px 灰分割线；padding 1。</li>
+      <li><b>焦点高亮</b>：选中项 = <code>inverse</code> 反显或 <code>primary</code> 左条；当前面板标题 <code>primary bold</code>。</li>
+      <li><b>明暗预留</b>：当前深底 <code>#161320</code>；<code>TOKENS</code> 抽象为语义，预留 light 映射。</li>
+      <li><b>一致性铁律</b>：所有组件引用 <code>TOKENS</code> / <code>theme.tsx</code> palette，禁止散落裸色名（如 <code>color="cyan"</code>）。</li>
+    </ul>
+  </div>
+
+  <!-- ============ 7 布局自适应 ============ -->
+  <h2><span class="num">07</span>布局结构与尺寸自适应（Layout）</h2>
+  <div class="card">
+    <h3 style="margin-top:0"><span class="k">区域划分</span></h3>
+    <ul>
+      <li><b>顶部状态栏（Top Bar）</b>：模型·分支·ctx%·token·时长·模式（StatusBar 增强）。</li>
+      <li><b>侧边栏（Sidebar，可选）</b>：文件树 + git 状态 + 会话切换（<code>Ctrl+B</code>）。</li>
+      <li><b>主内容区（Main）</b>：Transcript（对话树/折叠）+ Diff 视图 + 工具调用卡，<code>flexGrow</code>。</li>
+      <li><b>底部状态行（Footer）</b>：StatusLine（spinner + 状态 + 取消提示）。</li>
+      <li><b>输入区（Input）</b>：多行输入 + 下拉（slash / @ / history），固定底部。</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0"><span class="k">尺寸自适应策略</span></h3>
+    <table>
+      <tr><th>终端宽度</th><th>布局决策</th></tr>
+      <tr><td>≥ 120 列</td><td>侧栏 24 列 + 主区；状态栏单行全字段。</td></tr>
+      <tr><td>80 – 119 列</td><td>侧栏 20 列或默认隐藏；状态栏压缩（省略时长）。</td></tr>
+      <tr><td>&lt; 80 列</td><td>隐藏侧栏，状态栏仅模型 + 模式；输入单行优先。</td></tr>
+      <tr><td>高度 &lt; 24 行</td><td>状态栏合并进 footer，避免双层占用。</td></tr>
+    </table>
+    <p style="font-size:13px;margin-bottom:0">布局用 Ink flex：主区 <code>flexGrow</code>、侧栏固定宽、输入区固定底部；所有区域宽度由 <code>store.width</code> 推导，沿用现有 <code>buildVisibleLines</code> 裁剪数学。</p>
+  </div>
+
+  <!-- ============ 路线图 ============ -->
+  <h2>落地路线图（Roadmap）</h2>
+  <p>在现有 470+ 测试与组件链约束下分阶段推进，每阶段保持可回归。</p>
+  <div class="roadmap">
+    <div class="phase">
+      <div class="p">P0 · 低风险（复用现有）</div>
+      <h4>骨架与输入增强</h4>
+      <ul>
+        <li>布局加侧栏容器 + 状态栏增强</li>
+        <li>输入 <code>@</code> 引用 + <code>Ctrl+R</code> 历史搜索</li>
+        <li>新增 <code>DiffBlock</code> 行内视图</li>
+      </ul>
+    </div>
+    <div class="phase">
+      <div class="p">P1 · 中风险</div>
+      <h4>会话与对比</h4>
+      <ul>
+        <li>会话面板 + 对话树折叠</li>
+        <li>并排 diff 视图</li>
+        <li>文本进度条组件</li>
+      </ul>
+    </div>
+    <div class="phase">
+      <div class="p">P2 · 进阶</div>
+      <h4>git 与主题</h4>
+      <ul>
+        <li>git 暂存交互 + fuzzy 跳转</li>
+        <li>主题切换（深/浅）</li>
+        <li>大文件截断 / 折叠</li>
+      </ul>
+    </div>
+  </div>
+  <div class="note">测试策略：沿用 vitest + ink-testing-library；键盘映射走纯函数单测（已知 <code>useInput</code> 在测试库不触发，旋钮映射已对照 Ink 源码 <code>parse-keypress.js</code> 确认）。</div>
+
+  <!-- ============ 键位速查 ============ -->
+  <h2>附录 · 键位速查</h2>
+  <table>
+    <tr><th>维度</th><th>快捷键</th><th>作用</th></tr>
+    <tr><td>会话 ①</td><td><code>Ctrl+O / Ctrl+N / Ctrl+K</code></td><td>面板 / 新建 / 搜索</td></tr>
+    <tr><td>折叠 ①</td><td><code>Alt+↑ / Alt+↓</code></td><td>折叠 / 展开轮次</td></tr>
+    <tr><td>diff ②</td><td><code>Ctrl+D</code> · <code>/diff split</code></td><td>切换并排视图</td></tr>
+    <tr><td>文件 ③</td><td><code>Ctrl+B / Ctrl+P / Space</code></td><td>侧栏 / 跳转 / 暂存</td></tr>
+    <tr><td>输入 ④</td><td><code>Enter / Shift+Enter / Ctrl+R / Tab</code></td><td>发送 / 换行 / 历史 / 补全</td></tr>
+    <tr><td>进度 ⑤</td><td><code>Esc / Ctrl+C</code></td><td>取消 / 中断</td></tr>
+    <tr><td>滚动</td><td><code>PageUp/Down · Home/End</code></td><td>回看历史（已有）</td></tr>
+  </table>
+
+  <div class="foot">
+    本文档基于 easyCLI 现有 TUI 实现（Ink 5.2.1 + @inkjs/ui 2.0.0，组件链 SplashTitle→Transcript→StatusLine→StatusBar→InputBox→Approval，配色 TOKENS）撰写，所有方案均在不破坏现有测试与裁剪数学的前提下设计。Ardot 画布蓝图因当前环境适配器不可用未能生成，待恢复后可由本规格 1:1 重建。
+  </div>
+
+</div>
+</body>
+</html>

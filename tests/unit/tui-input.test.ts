@@ -90,24 +90,7 @@ describe('InputBox.tsx', () => {
     expect(frame).toContain('/export');
   });
 
-  it('Ctrl+C 触发 onInterrupt', async () => {
-    const store = createAppStore({ height: 24 });
-    const onInterrupt = vi.fn();
-    const { stdin } = render(
-      React.createElement(InputBox, {
-        store,
-        prompt: '❯ ',
-        commands: CMDS,
-        history: [],
-        onSubmit: () => {},
-        onInterrupt,
-      }),
-    );
-    await tick();
-    stdin.write('\x03');
-    await tick();
-    expect(onInterrupt).toHaveBeenCalled();
-  });
+  // Ctrl+C 已移至 App.tsx 全局捕获（busy 时也需中断），InputBox 不再处理。
 });
 
 describe('Approval.tsx', () => {

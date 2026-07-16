@@ -17,7 +17,16 @@ import type { CommandMeta } from '../../cli/commands';
 import { computeDropdownViewport } from '../../cli/line-editor';
 import type { AppStoreApi } from '../store';
 import { useAppStore } from '../hooks';
-import { filterCommands, decideEnter, wrapIndex } from '../input-editor';
+import { TOKENS } from '../tokens';
+import {
+  filterCommands,
+  decideEnter,
+  wrapIndex,
+  splitRefs,
+  currentRefToken,
+  filterFiles,
+  completeFileRef,
+} from '../input-editor';
 
 export interface InputBoxProps {
   store: AppStoreApi;
@@ -25,8 +34,9 @@ export interface InputBoxProps {
   commands: readonly CommandMeta[];
   /** 「新 → 旧」历史，用于非斜杠 ↑/↓ 翻历史。 */
   history: string[];
+  /** 已知文件路径（@ 引用下拉候选），可选。 */
+  fileRefs?: readonly string[];
   onSubmit: (line: string) => void;
-  onInterrupt: () => void;
   onExit?: () => void;
 }
 
@@ -35,8 +45,8 @@ export function InputBox({
   prompt,
   commands,
   history,
+  fileRefs = [],
   onSubmit,
-  onInterrupt,
   onExit,
 }: InputBoxProps): React.ReactElement | null {
   const input = useAppStore(store, (s) => s.input);
@@ -68,10 +78,7 @@ export function InputBox({
       if (st.scrollOffset !== 0 && !isScrollKey) st.scrollToBottom();
 
       // —— 控制键 ——
-      if (key.ctrl && ch === 'c') {
-        onInterrupt();
-        return;
-      }
+      // Ctrl+C 由 App.tsx 全局捕获（busy 时也需中断），此处不再重复处理。
       if (key.ctrl && ch === 'd') {
         onExit?.();
         return;
@@ -86,12 +93,21 @@ export function InputBox({
       const matches = filterCommands(st.input, commands);
       const isSlash = st.input.startsWith('/');
 
-      // —— Tab：填充高亮项 ——
+      // —— Tab：填充高亮项（斜杠命令 / @文件引用）——
       if (key.tab) {
+        const tok = currentRefToken(st.input, st.cursor);
         if (isSlash && matches.length) {
           const sel = matches[Math.min(st.selIndex, matches.length - 1)];
           if (sel) {
             const next = '/' + sel.name + ' ';
+            st.setInputCursor(next, next.length);
+            st.setSelIndex(0);
+            syncDropdown(next);
+          }
+        } else if (tok && fileRefs.length) {
+          const fm = filterFiles(tok, fileRefs);
+          if (fm.length) {
+            const next = completeFileRef(st.input, st.cursor, fm[0]);
             st.setInputCursor(next, next.length);
             st.setSelIndex(0);
             syncDropdown(next);
@@ -205,11 +221,19 @@ export function InputBox({
   const matches = filterCommands(input, commands);
   const dropdownRows = renderDropdown(matches, selIndex, width, height);
 
+  const token = currentRefToken(input, cursor);
+  const fileMatches = token ? filterFiles(token, fileRefs) : [];
+  const showFileDD = !!token && fileMatches.length > 0;
+  const fileRows = showFileDD ? renderFileDropdown(fileMatches, width) : [];
+
   return (
     <Box flexDirection="column">
-      {renderInputLine(prompt, input, cursor)}
+      {renderInputLineWithRefs(prompt, input, cursor)}
       {dropdownRows.map((row, i) => (
-        <Text key={i}>{row}</Text>
+        <Text key={'c' + i}>{row}</Text>
+      ))}
+      {fileRows.map((row, i) => (
+        <Text key={'f' + i}>{row}</Text>
       ))}
     </Box>
   );
@@ -221,22 +245,45 @@ function stripAnsi(s: string): string {
 }
 
 /**
- * 原生 Ink 渲染输入行（Phase 3 视觉层次重做）：
- *   青色 prompt 字形 + 已输入文本 + 光标处 inverse 块（可见光标，替代原整行底色条）。
- * 原生 Text 自动换行，长输入不再需要手工按宽度截断。
+ * 原生 Ink 渲染输入行（Phase 3 视觉层次重做 + 蓝图维度 ④ @引用）：
+ *   青色 prompt 字形 + 已输入文本（其中 `@path` 渲染为青色 chip）+ 光标处 inverse 块。
+ *   原生 Text 自动换行，长输入不再需要手工按宽度截断。
  */
-function renderInputLine(prompt: string, input: string, cursor: number): React.ReactElement {
-  const before = input.slice(0, cursor);
-  const at = input.slice(cursor, cursor + 1);
-  const after = input.slice(cursor + 1);
-  return (
-    <Box>
-      <Text color="cyan" bold>{stripAnsi(prompt)}</Text>
-      <Text>{before}</Text>
-      <Text inverse>{at || ' '}</Text>
-      <Text>{after}</Text>
-    </Box>
-  );
+function renderInputLineWithRefs(prompt: string, input: string, cursor: number): React.ReactElement {
+  const segs = splitRefs(input);
+  const nodes: React.ReactElement[] = [
+    <Text key="p" color="cyan" bold>
+      {stripAnsi(prompt)}
+    </Text>,
+  ];
+  let idx = 0;
+  segs.forEach((seg, si) => {
+    const start = idx;
+    const end = idx + seg.value.length;
+    const color = seg.ref ? TOKENS.primary : undefined;
+    if (cursor >= start && cursor <= end) {
+      const local = cursor - start;
+      const before = seg.value.slice(0, local);
+      const at = seg.value.slice(local, local + 1);
+      const after = seg.value.slice(local + 1);
+      if (before) nodes.push(<Text key={`s${si}a`} color={color}>{before}</Text>);
+      nodes.push(<Text key={`s${si}b`} inverse>{at || ' '}</Text>);
+      if (after) nodes.push(<Text key={`s${si}c`} color={color}>{after}</Text>);
+    } else {
+      nodes.push(<Text key={`s${si}`} color={color}>{seg.value}</Text>);
+    }
+    idx = end;
+  });
+  return <Box>{nodes}</Box>;
+}
+
+/** 渲染 @ 文件引用下拉（仅列出候选路径，Tab 补全高亮项由 handler 处理）。 */
+function renderFileDropdown(files: string[], width: number): string[] {
+  const maxDesc = Math.max(8, width - 4);
+  return files.slice(0, 8).map((f) => {
+    const name = f.length > maxDesc ? '…' + f.slice(f.length - maxDesc + 1) : f;
+    return chalk.cyan('❯ ') + chalk.cyan('@' + name);
+  });
 }
 
 /** 渲染斜杠下拉可见行（复用 computeDropdownViewport 的视口/滚动逻辑）。 */

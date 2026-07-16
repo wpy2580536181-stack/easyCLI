@@ -50,3 +50,43 @@ export function wrapIndex(cur: number, delta: number, len: number): number {
   if (len <= 0) return 0;
   return (((cur + delta) % len) + len) % len;
 }
+
+// —— @ 文件引用（蓝图维度 ④）——
+export interface InputSegment {
+  value: string;
+  /** true 表示这是一个 `@path` 引用 token（需渲染为 chip）。 */
+  ref: boolean;
+}
+
+/**
+ * 把输入串切成「普通文本 / @引用」片段，供 InputBox 把 `@path` 渲染成高亮 chip。
+ * 例：`帮 @src/a.ts 改` → [{value:'帮 ',ref:false},{value:'@src/a.ts',ref:true},{value:' 改',ref:false}]
+ */
+export function splitRefs(input: string): InputSegment[] {
+  const parts = input.split(/(@[^\s@]+)/g);
+  return parts.filter((p) => p !== '').map((p) => ({ value: p, ref: p.startsWith('@') }));
+}
+
+/**
+ * 取光标前正在输入的 @引用 token（尚未以空格结束）。无则返回 null。
+ * 例：input='@sr', cursor=3 → '@sr'；input='@sr ', cursor=4 → null。
+ */
+export function currentRefToken(input: string, cursor: number): string | null {
+  const upto = input.slice(0, cursor);
+  const m = upto.match(/@([^\s@]*)$/);
+  return m ? '@' + m[1] : null;
+}
+
+/** 按 @token 过滤已知文件路径列表（空 query 返回全部）。 */
+export function filterFiles(token: string, files: readonly string[]): string[] {
+  if (!token.startsWith('@')) return [];
+  const q = token.slice(1).toLowerCase();
+  if (!q) return [...files];
+  return files.filter((f) => f.toLowerCase().includes(q));
+}
+
+/** 把光标前的 @token 补全为 `@match `（保留其后文本）。 */
+export function completeFileRef(input: string, cursor: number, match: string): string {
+  const upto = input.slice(0, cursor).replace(/@([^\s@]*)$/, '@' + match + ' ');
+  return upto + input.slice(cursor);
+}
