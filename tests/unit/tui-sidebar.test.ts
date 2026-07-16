@@ -10,9 +10,10 @@ describe('Sidebar', () => {
     const store = createAppStore({
       width: 120,
       sidebarOpen: true,
-      files: [{ path: 'a.ts', status: 'M' }],
-      sessions: [{ id: '1', title: 's1', active: true }],
     });
+    // 文件/会话通过 store actions 注入（CreateStoreOptions 不含 files/sessions 初始字段）。
+    store.getState().setFiles([{ path: 'a.ts', status: 'M' }]);
+    store.getState().setSessions([{ id: '1', title: 's1', active: true }]);
     const f = render(React.createElement(Sidebar, { store }));
     const frame = f.lastFrame() ?? '';
     expect(frame).toContain('FILES');
@@ -48,6 +49,6 @@ describe('TopStatusBar', () => {
   it('plan 模式显示「规划」', () => {
     const store = createAppStore({ model: 'm', branch: 'b', mode: 'plan' });
     const { lastFrame } = render(React.createElement(TopStatusBar, { store }));
-    expect((lastFrame() ?? '').toContain('规划')).toBe(true);
+    expect(lastFrame() ?? '').toContain('规划');
   });
 });

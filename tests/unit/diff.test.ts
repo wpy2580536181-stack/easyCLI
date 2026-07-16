@@ -12,11 +12,25 @@ const SAMPLE = `diff --git a/src/auth/login.ts b/src/auth/login.ts
 
 describe('parseUnifiedDiff', () => {
   it('识别 file / hunk / add / del 标记', () => {
-    const lines = parseUnifiedDiff(SAMPLE);
+    // 用独立 del/add（不相邻，避免被合并成 mod）验证四种基本标记。
+    // 注：相邻 del→add 会被合并为 mod（见下方测试），故此处刻意隔开。
+    const patch = [
+      'diff --git a/demo.ts b/demo.ts',
+      '--- a/demo.ts',
+      '+++ b/demo.ts',
+      '@@ -1,3 +1,4 @@',
+      ' context line',
+      '-removed line',
+      ' context between',
+      '+added line',
+    ].join('\n');
+    const lines = parseUnifiedDiff(patch);
     expect(lines.some((l) => l.kind === 'file')).toBe(true);
     expect(lines.some((l) => l.kind === 'hunk')).toBe(true);
     const add = lines.find((l) => l.kind === 'add');
-    expect(add?.text).toBe('const tok = req.headers.authorization');
+    expect(add?.text).toBe('added line');
+    const del = lines.find((l) => l.kind === 'del');
+    expect(del?.text).toBe('removed line');
   });
 
   it('相邻 del→add 合并为一条 mod（文本取新版本，oldText 存旧版本）', () => {
