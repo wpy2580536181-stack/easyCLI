@@ -24,6 +24,8 @@ import {
 /** Agent 循环对外的钩子：用于渲染器把过程可视化 */
 export interface AgentHooks {
   onText?: (chunk: string) => void;
+  /** 推理/思考增量回调（reasoning_content / thinking block），默认不展示给用户 */
+  onReasoning?: (chunk: string) => void;
   onToolCall?: (call: ToolCall, tool: ToolDef | undefined) => void;
   onToolResult?: (call: ToolCall, result: ToolResult) => void;
   /** 上下文被压缩时回调（决策 9 的 onCompact 挂载点） */
@@ -221,6 +223,7 @@ export async function runAgent(
           tools,
           signal: opts.signal,
           onText: opts.onText,
+          onReasoning: opts.onReasoning,
           cache: { system: true, tools: true, history: true },
         });
       // 单次模型调用（最外层只有一个 try/catch）：

@@ -160,12 +160,13 @@ export class OpenAICompatibleAdapter implements ChatModel {
       throw new ModelRequestError('http', `模型服务返回错误 ${res.status}: ${text}`, res.status);
     }
 
-    return this.parseStream(res.body, opts.onText);
+    return this.parseStream(res.body, opts.onText, opts.onReasoning);
   }
 
   private async parseStream(
     stream: ReadableStream<Uint8Array>,
     onText?: (chunk: string) => void,
+    onReasoning?: (chunk: string) => void,
   ): Promise<CompleteResult> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
@@ -211,9 +212,9 @@ export class OpenAICompatibleAdapter implements ChatModel {
           content += delta.content;
           onText?.(delta.content);
         }
-        // DeepSeek 思考过程（reasoning_content）
+        // DeepSeek 思考过程（reasoning_content）——独立通道，不混入正式文本
         if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
-          onText?.(delta.reasoning_content);
+          onReasoning?.(delta.reasoning_content);
         }
         // 工具调用（分片下发，按 index 累积）
         if (Array.isArray(delta.tool_calls)) {

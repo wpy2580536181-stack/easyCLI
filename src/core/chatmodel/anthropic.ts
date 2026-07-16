@@ -96,7 +96,7 @@ export class AnthropicAdapter implements ChatModel {
       throw new ModelRequestError('http', `模型服务返回错误 ${res.status}: ${text}`, res.status);
     }
 
-    return this.parseStream(res.body, opts.onText);
+    return this.parseStream(res.body, opts.onText, opts.onReasoning);
   }
 
   /**
@@ -106,6 +106,7 @@ export class AnthropicAdapter implements ChatModel {
   private async parseStream(
     stream: ReadableStream<Uint8Array>,
     onText?: (chunk: string) => void,
+    onReasoning?: (chunk: string) => void,
   ): Promise<CompleteResult> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
@@ -160,6 +161,9 @@ export class AnthropicAdapter implements ChatModel {
           if (d?.type === 'text_delta' && d.text) {
             content += d.text;
             onText?.(d.text);
+          } else if (d?.type === 'thinking_delta' && d.thinking) {
+            // Anthropic extended thinking：推理内容走独立通道，不混入正式文本
+            onReasoning?.(d.thinking);
           } else if (d?.type === 'input_json_delta' && d.partial_json) {
             // 工具参数分片：按块 index 累积
             const entry =

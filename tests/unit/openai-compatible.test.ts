@@ -73,8 +73,9 @@ describe('OpenAICompatibleAdapter 流式解析', () => {
     });
   });
 
-  it('兼容 DeepSeek 的 reasoning_content', async () => {
-    const chunks: string[] = [];
+  it('兼容 DeepSeek 的 reasoning_content（走 onReasoning 独立通道）', async () => {
+    const textChunks: string[] = [];
+    const reasoningChunks: string[] = [];
     (globalThis.fetch as any).mockResolvedValue({
       ok: true,
       body: sseStream([
@@ -87,11 +88,13 @@ describe('OpenAICompatibleAdapter 流式解析', () => {
     const adapter = new OpenAICompatibleAdapter(baseConfig);
     const result = await adapter.complete({
       messages: [{ role: 'user', content: '?' }],
-      onText: (c) => chunks.push(c),
+      onText: (c) => textChunks.push(c),
+      onReasoning: (c) => reasoningChunks.push(c),
     });
 
     expect(result.content).toBe('答案');
-    expect(chunks).toEqual(['让我想想', '答案']);
+    expect(textChunks).toEqual(['答案']);
+    expect(reasoningChunks).toEqual(['让我想想']);
   });
 
   it('请求失败时抛出可读错误', async () => {

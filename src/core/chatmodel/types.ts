@@ -76,8 +76,10 @@ export interface CompleteOptions {
   messages: ChatMessage[];
   tools?: ToolDef[];
   signal?: AbortSignal;
-  /** 流式文本增量回调（含 reasoning/thinking 内容） */
+  /** 流式文本增量回调（仅正式输出，不含推理过程） */
   onText?: (chunk: string) => void;
+  /** 流式推理/思考增量回调（reasoning_content / thinking block），默认不展示给用户 */
+  onReasoning?: (chunk: string) => void;
   temperature?: number;
   maxTokens?: number;
   /**
