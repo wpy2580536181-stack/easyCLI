@@ -83,7 +83,9 @@ export async function spawnSubagent(
         content:
           buildWorkerSystemPrompt(desc, { id: 'sub', title: desc, description: '' }, cwd) +
           '\n\n重要：你是一个被派发的子 Agent，拥有独立的对话上下文（看不到父 Agent 的历史）。' +
-          '请直接完成任务，不要再次委派、也不要尝试调用 task 工具（你并没有该工具）。',
+          '请直接完成任务，不要再次委派、也不要尝试调用 task 工具（你并没有该工具）。' +
+          '\n\n并行派发约定：多个子 Agent 共享主工作目录（非隔离）。若你与「其它可能被并行派发的子 Agent」之间' +
+          '无依赖且会改写不同文件，可并行；若会改写同一文件或彼此依赖，应串行派发（或改用 /agent 的隔离 worktree）。',
       },
       { role: 'user', content: `请执行以下子任务：\n${desc}` },
     ],

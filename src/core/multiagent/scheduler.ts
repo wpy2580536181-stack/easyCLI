@@ -139,6 +139,8 @@ export async function runScheduled(
               subtask: byId.get(id)!,
               cwd: '(调度异常)',
               output: '',
+              artifact: { changedFiles: [], summary: '', findings: undefined },
+              round: 0,
               ok: false,
               error: e instanceof Error ? e.message : String(e),
               history: [],

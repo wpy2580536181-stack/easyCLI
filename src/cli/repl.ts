@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import type { ChatMessage, ChatModel } from '../core/chatmodel';
+import type { ChatMessage, ChatModel, ToolCall, ToolResult } from '../core/chatmodel';
 import { ModelRequestError } from '../core/chatmodel/errors';
 import { type AppConfig, saveUserConfig, appConfigToUserConfig, maskSecret, CONFIG_PATH } from '../config';
 import type { ToolRegistry } from '../core/tools/registry';
@@ -16,13 +16,79 @@ import { runAgent, runPlanAndExecute } from '../core/agent';
 import { renderTodos, TodoStore } from '../core/tools/planning';
 import { buildAgentSystemPrompt, buildPlanSystemPrompt, type AgentMode } from '../core/prompts';
 import { formatSnapshot, formatTokens, formatUSD, type CostTracker } from '../core/observability';
+import type { WorktreeLifecycle } from '../core/multiagent';
 import { renderMarkdown } from './markdown';
 import { gatherContext } from '../core/prompts/context';
 import { HistoryStore } from './history';
 import { COMMANDS } from './commands';
-import { printSplash, renderSplash } from './splash';
+import { printSplash } from './splash';
 import { ui } from './theme';
 import { createInkView, createPlainView, type ReplView, type StatusPatch } from './repl-view';
+
+/**
+ * 工具调用输入摘要：按工具类型提取关键信息，用于状态行展示。
+ */
+function summarizeToolInput(call: ToolCall): string | undefined {
+  const args = call.arguments;
+  switch (call.name) {
+    case 'bash':
+    case 'run_command': {
+      const cmd = typeof args.command === 'string' ? args.command : '';
+      if (!cmd) return undefined;
+      // 截断到 80 字符
+      return cmd.length > 80 ? cmd.slice(0, 77) + '…' : cmd;
+    }
+    case 'read_file':
+    case 'write_file':
+    case 'edit_file': {
+      const path = typeof args.path === 'string' ? args.path : typeof args.file_path === 'string' ? args.file_path : '';
+      return path || undefined;
+    }
+    case 'grep':
+    case 'grep_search': {
+      const pattern = typeof args.pattern === 'string' ? args.pattern : '';
+      return pattern ? (pattern.length > 40 ? pattern.slice(0, 37) + '…' : pattern) : undefined;
+    }
+    case 'glob':
+    case 'glob_files': {
+      const pattern = typeof args.pattern === 'string' ? args.pattern : '';
+      return pattern || undefined;
+    }
+    case 'web_search': {
+      const query = typeof args.query === 'string' ? args.query : '';
+      return query ? (query.length > 50 ? query.slice(0, 47) + '…' : query) : undefined;
+    }
+    case 'web_fetch':
+    case 'fetch_url': {
+      const url = typeof args.url === 'string' ? args.url : '';
+      return url ? (url.length > 60 ? url.slice(0, 57) + '…' : url) : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * 工具结果摘要：提取关键信息用于状态行展示。
+ * 超长输出（>2000 字符或 >50 行）显示截断提示。
+ */
+function summarizeToolResult(res: ToolResult): string | undefined {
+  if (!res.output) return undefined;
+  const lines = res.output.split('\n');
+  const lineCount = lines.length;
+  const charCount = res.output.length;
+  // 超长输出截断提示
+  if (charCount > 2000 || lineCount > 50) {
+    return `(输出已截断，${lineCount} 行 / ${charCount} 字符)`;
+  }
+  if (lineCount > 1) {
+    return `(${lineCount} 行)`;
+  }
+  if (charCount > 60) {
+    return `(${charCount} 字符)`;
+  }
+  return undefined;
+}
 
 /**
  * 构造 HITL 审批器：交互式询问用户是否放行（y/n/a），a 表示持久预批准。
@@ -137,8 +203,15 @@ export async function runOnce(
       planMode,
       autoContext,
       onText: (c) => view.pushToken(c),
-      onToolCall: (call) => view.toolStart(call.name),
-      onToolResult: (call, res) => view.toolDone(call.name, res.ok),
+      onReasoning: (c) => view.pushReasoning(c),
+      onToolCall: (call) => {
+        const detail = summarizeToolInput(call);
+        view.toolStart(call.name, detail);
+      },
+      onToolResult: (call, res) => {
+        const summary = summarizeToolResult(res);
+        view.toolDone(call.name, res.ok, summary);
+      },
     });
   } finally {
     view.finishTurn();
@@ -216,6 +289,8 @@ export async function startRepl(
   // Phase 20：自动记忆增强开关（默认开；可从 config/CLI 关闭）
   const autoMemoryEnabled = autoMemory ?? true;
   const semanticRecallEnabled = semanticRecall ?? true;
+  // 推理显示开关（/thinking 命令切换，默认关闭）
+  let thinkingVisible = false;
 
   /** 切换运行模式：替换 system 消息内容（normal <-> plan），其余 history 不动 */
   function setMode(m: AgentMode): void {
@@ -273,13 +348,10 @@ export async function startRepl(
         onSubmit,
         onInterrupt,
         initialHistory: [],
-        // TTY：仅把 splash 行交给 Ink 渲染一次（renderSplash 不 console.log，避免双重框）。
-        initialTranscript: renderSplash({
-          modelId: model.id,
-          toolCount: tools.list().length,
-          skillCount: skillLoader?.list().length ?? 0,
-          mcpCount: mcpCount ?? 0,
-        }),
+        // TTY：不再渲染 splash ASCII 框（宽度与侧栏冲突导致截断），仅给一行操作提示。
+        initialTranscript: [
+          chalk.gray('  type a question to begin · /help for commands · Ctrl+C to abort'),
+        ],
       })
     : createPlainView({ prompt: promptStr, history: histLines, onSubmit, onInterrupt, onExit });
 
@@ -383,11 +455,19 @@ export async function startRepl(
         cwd: process.cwd(),
         autoContext: ac?.text,
         onText: (c) => view.pushToken(c),
+        onReasoning: (c) => {
+          view.pushReasoning(c);
+          view.setAnimLabel('⟡ 深度思考中…');
+        },
         onToolCall: (call) => {
           if (call.name === 'remember') turnUsedRemember = true;
-          view.toolStart(call.name);
+          const detail = summarizeToolInput(call);
+          view.toolStart(call.name, detail);
         },
-        onToolResult: (call, res) => view.toolDone(call.name, res.ok),
+        onToolResult: (call, res) => {
+          const summary = summarizeToolResult(res);
+          view.toolDone(call.name, res.ok, summary);
+        },
         onCompact: (info) => view.setAnimLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
       });
     } catch (e) {
@@ -446,11 +526,19 @@ export async function startRepl(
         planMode: true,
         autoContext: ac?.text,
         onText: (c) => view.pushToken(c),
+        onReasoning: (c) => {
+          view.pushReasoning(c);
+          view.setAnimLabel('⟡ 规划思考中…');
+        },
         onToolCall: (call) => {
           if (call.name === 'remember') turnUsedRemember = true;
-          view.setAnimLabel(`🔍 规划探测 ${call.name}`);
+          const detail = summarizeToolInput(call);
+          view.setAnimLabel(`🔍 规划探测 ${call.name}${detail ? ' ' + detail : ''}`);
         },
-        onToolResult: (call, res) => view.setAnimLabel(`${res.ok ? '✓' : '✗'} ${call.name}`),
+        onToolResult: (call, res) => {
+          const summary = summarizeToolResult(res);
+          view.setAnimLabel(`${res.ok ? '✓' : '✗'} ${call.name}${summary ? ' ' + summary : ''}`);
+        },
         onBatch: (info) =>
           view.setAnimLabel(`⚡ 并行探测 ${info.readCount} 个只读工具（峰值并发 ${info.maxConcurrency}）`),
         onCompact: (info) => view.setAnimLabel(`⟳ 上下文已压缩 ${info.before}→${info.after} token`),
@@ -489,7 +577,10 @@ export async function startRepl(
   }
 
   /** Phase 17：Multi-Agent —— 把任务拆给 Planner → 并发 Worker（各自隔离 worktree）→ Reviewer */
-  async function runMultiAgentCommand(task: string): Promise<void> {
+  async function runMultiAgentCommand(
+    task: string,
+    opts?: { maxReplan?: number; worktreeMode?: WorktreeLifecycle },
+  ): Promise<void> {
     const { runMultiAgent } = await import('../core/multiagent');
     // worker 流式输出按行喂给 transcript（TTY 永久行 / 非 TTY 直印），避免半行污染。
     let streamBuf = '';
@@ -503,6 +594,12 @@ export async function startRepl(
       }
     };
     view.printLine(chalk.bold.cyan('\n⚙️ Multi-Agent 启动'));
+    if (opts?.maxReplan && opts.maxReplan > 0) {
+      view.printLine(chalk.gray(`  多轮纠偏回路：maxReplan=${opts.maxReplan}`));
+    }
+    if (opts?.worktreeMode && opts.worktreeMode !== 'keep') {
+      view.printLine(chalk.gray(`  worktree 生命周期：${opts.worktreeMode}`));
+    }
     let spawns = 0;
     const res = await runMultiAgent({
       task,
@@ -512,6 +609,8 @@ export async function startRepl(
       bus,
       compress,
       cwd: process.cwd(),
+      maxReplan: opts?.maxReplan,
+      worktreeLifecycle: opts?.worktreeMode,
       onWarn: (m) => view.printLine(chalk.yellow(`  ⚠ ${m}`)),
       hooks: {
         onAgentSpawn: (info) => {
@@ -814,12 +913,43 @@ export async function startRepl(
       }
       case 'agent': {
         // Phase 17：Multi-Agent —— 把任务拆给 Planner → 并发/依赖调度 Worker（隔离 worktree）→ Reviewer
-        const task = rest.join(' ').trim();
+        // 解析可选 flags：--max-replan N / --worktree-mode keep|auto-cleanup-success|auto-merge
+        let maxReplan: number | undefined;
+        let worktreeMode: WorktreeLifecycle | undefined;
+        const taskTokens: string[] = [];
+        for (let i = 0; i < rest.length; i++) {
+          const tok = rest[i]!;
+          if (tok === '--max-replan') {
+            const v = Number(rest[i + 1]);
+            if (!Number.isNaN(v)) {
+              maxReplan = v;
+              i++;
+            }
+          } else if (tok.startsWith('--max-replan=')) {
+            const v = Number(tok.split('=')[1]);
+            if (!Number.isNaN(v)) maxReplan = v;
+          } else if (tok === '--worktree-mode') {
+            const v = rest[i + 1] as WorktreeLifecycle | undefined;
+            if (v) {
+              worktreeMode = v;
+              i++;
+            }
+          } else if (tok.startsWith('--worktree-mode=')) {
+            worktreeMode = tok.split('=')[1] as WorktreeLifecycle;
+          } else {
+            taskTokens.push(tok);
+          }
+        }
+        const task = taskTokens.join(' ').trim();
         if (!task) {
-          view.printLine(chalk.yellow('用法: /agent <任务描述>  启动多 Agent 协作（规划+依赖调度执行+评审）'));
+          view.printLine(
+            chalk.yellow(
+              '用法: /agent [--max-replan N] [--worktree-mode keep|auto-cleanup-success|auto-merge] <任务描述>  启动多 Agent 协作（规划+依赖调度执行+评审+可选多轮纠偏）',
+            ),
+          );
           return 'continue';
         }
-        await runMultiAgentCommand(task);
+        await runMultiAgentCommand(task, { maxReplan, worktreeMode });
         return 'continue';
       }
       case 'plan': {
@@ -858,6 +988,16 @@ export async function startRepl(
         setMode('normal');
         awaitingApproval = false;
         view.printLine(chalk.gray('已放弃计划，回到正常模式。'));
+        return 'continue';
+      }
+      case 'thinking': {
+        thinkingVisible = !thinkingVisible;
+        view.setThinkingVisible(thinkingVisible);
+        view.printLine(
+          thinkingVisible
+            ? chalk.gray('已开启推理过程显示（思考过程将在正文前展示）')
+            : chalk.gray('已关闭推理过程显示'),
+        );
         return 'continue';
       }
       default:

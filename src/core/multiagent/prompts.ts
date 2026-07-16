@@ -73,7 +73,8 @@ export function buildWorkerSystemPrompt(task: string, subtask: Subtask, cwd: str
     '要求：\n' +
     '1. 直接用工具（read_file / write_file / edit_file / list_dir / glob / grep / bash 等）落地这个子任务；\n' +
     '2. 只关注分配给你的子任务，不要去处理其他子任务；\n' +
-    '3. 完成后用简洁中文说明「你做了什么、产出了什么、改动落在哪些文件」。'
+    '3. 完成后用简洁中文说明「你做了什么、产出了什么、改动落在哪些文件」。\n' +
+    '4. 完成后用一行明确列出你改动或新建的文件路径（相对当前隔离目录，逗号分隔），便于下游 Worker 衔接。'
   );
 }
 
@@ -109,15 +110,48 @@ export function buildArchitectSystemPrompt(task: string, subtask: Subtask, cwd: 
   );
 }
 
-/** Reviewer 系统提示：汇总各 Worker 结果并给结论 */
+/** Reviewer 系统提示：汇总各 Worker 结果并给结论（结构化 JSON 以支持自动纠偏回路） */
 export function buildReviewerSystemPrompt(task: string): string {
   return (
     '你是一个评审专家（Reviewer）。下面是一组 Worker 在各自隔离工作目录中执行子任务的结果。\n' +
     `总任务：${task}\n\n` +
-    '请综合给出：\n' +
-    '1. 总体结论：子任务是否都达成、是否存在冲突或遗漏；\n' +
-    '2. 各子任务的简要评价（成功/风险点）；\n' +
-    '3. 给用户的「最终汇总」：下一步该如何把这些隔离改动合并/验收（因为各 Worker 在独立副本中，需提醒用户逐一 review 与合并）。\n' +
-    '用中文、要点清晰。'
+    '请综合给出评审结论。为支持「自动纠偏回路」，请**优先输出一个 JSON 代码块**（JSON 前后可写简要说明，但 JSON 必须存在）：\n' +
+    '```json\n' +
+    '{\n' +
+    '  "verdict": "pass" | "needs-fix" | "fail",\n' +
+    '  "fixes": [ { "targetId": "s1", "instruction": "修复 X 处的空指针，并补充单测" } ],\n' +
+    '  "summary": "总体结论..."\n' +
+    '}\n' +
+    '```\n' +
+    '说明：\n' +
+    '- verdict="pass"：子任务都达成，无需修正；\n' +
+    '- verdict="needs-fix"：存在可自动修正项（请在 fixes 中逐条列出 targetId 与自包含 instruction，targetId 必须是上面出现过的子任务 id）；\n' +
+    '- verdict="fail"：存在不可自动修复的硬失败。\n' +
+    '- 仅当 needs-fix 时才填 fixes。\n' +
+    'JSON 之外如有补充，请另起段落用中文说明「总体结论、各子任务简要评价、以及把这些隔离改动合并/验收的下一步建议」。'
+  );
+}
+
+/**
+ * Planner 重规划模式提示：针对上一轮未通过评审的待修正项，产出补充子任务。
+ * 含唯一标记词「重规划模式」，便于测试 mock 路由（与首轮 Planner 的「任务拆解专家」区分）。
+ */
+export function buildPlannerReplanPrompt(): string {
+  return (
+    '你是一个任务拆解专家（Planner），正在**重规划模式**下工作。\n' +
+    '上一轮部分子任务未通过评审，你需要针对评审给出的「待修正项」产出**补充子任务**。\n' +
+    '请只输出一个 JSON 代码块，结构如下：\n' +
+    '```json\n' +
+    '{\n' +
+    '  "goal": "修正上一轮未通过项",\n' +
+    '  "subtasks": [\n' +
+    '    { "id": "re0-s1", "title": "修正 s1", "description": "自包含的修正指令", "role": "worker", "dependsOn": ["s1"] }\n' +
+    '  ]\n' +
+    '}\n' +
+    '```\n' +
+    '要求：\n' +
+    '- 每个补充子任务的 dependsOn 必须指向它要修正的原子任务 id；\n' +
+    '- description 必须是「自包含、可直接执行」的修正指令（含具体文件/改法）；\n' +
+    '- 不要重复原已成功的子任务。不要输出 JSON 以外的解释文字。'
   );
 }

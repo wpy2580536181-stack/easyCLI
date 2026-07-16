@@ -12,6 +12,46 @@ export type AgentRole = 'planner' | 'worker' | 'reviewer' | 'researcher' | 'arch
 /** Worker 子任务的角色（researcher/architect 走只读 gate，worker 默认可写） */
 export type WorkerRole = 'researcher' | 'architect' | 'worker';
 
+/** 结构化产物：Worker 跑完后程序化提取 + 模型补充（重构：摆脱纯文本依赖） */
+export interface WorkerArtifact {
+  /** 程序化 diff 计算（git worktree 走 git diff；copy 兜底走目录比对），100% 可靠 */
+  changedFiles: string[];
+  /** 模型产出的最终结论文本（= 现有 output，向后兼容字段保留） */
+  summary: string;
+  /** researcher/architect 的关键发现/接口定义（可选，结构化传递） */
+  findings?: string[];
+}
+
+/** Reviewer 结构化评审结论的种类 */
+export type ReviewVerdictKind = 'pass' | 'needs-fix' | 'fail';
+
+/** 单条修正指令：指向某个 WorkerResult，附自包含指令 */
+export interface ReviewFix {
+  /** 需要修正的子任务 id（指回某轮产出的 WorkerResult） */
+  targetId: string;
+  /** 给该 Worker 的修正指令（自包含、可独立执行） */
+  instruction: string;
+}
+
+/** Reviewer 结构化评审结论（解析失败退化为纯文本结论） */
+export interface ReviewVerdict {
+  verdict: ReviewVerdictKind;
+  fixes: ReviewFix[];
+  summary: string;
+}
+
+/** 单轮执行快照（用于结果回执与可观测） */
+export interface RoundSummary {
+  round: number;
+  plan: MultiAgentPlan;
+  workers: WorkerResult[];
+  verdict: ReviewVerdict | null;
+  executionOrder: string[];
+}
+
+/** worktree 生命周期策略（默认 keep，向后兼容） */
+export type WorktreeLifecycle = 'keep' | 'auto-cleanup-success' | 'auto-merge';
+
 /** 一个被拆解出来的子任务 */
 export interface Subtask {
   id: string;
@@ -36,6 +76,10 @@ export interface WorkerResult {
   cwd: string;
   /** 子 Agent 最终产出的文本 */
   output: string;
+  /** 结构化产物（changedFiles 程序化计算 + 结论摘要），重构后必填 */
+  artifact: WorkerArtifact;
+  /** 来自第几轮（重规划时区分补充子任务） */
+  round: number;
   /** 是否成功完成 */
   ok: boolean;
   /** 失败时的错误说明 */
@@ -54,4 +98,10 @@ export interface MultiAgentResult {
   allOk: boolean;
   /** 实际拓扑执行顺序（差异5：依赖图调度后的子任务 id 序列；满足「依赖必先于下游」） */
   executionOrder: string[];
+  /** 多轮回路快照（每轮计划/Worker/verdict）；单轮时长度为 1 */
+  rounds: RoundSummary[];
+  /** 最终裁定（解析失败退化为 'pass'）；多轮收敛后取末轮 */
+  verdict: ReviewVerdictKind | null;
+  /** 是否发生过 auto-merge */
+  merged: boolean;
 }

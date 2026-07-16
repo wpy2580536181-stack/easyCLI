@@ -3,9 +3,16 @@ export { runMultiAgent, type MultiAgentOptions, type MultiAgentHooks } from './o
 export { runScheduled, type SchedulerDeps, type SchedulerResult } from './scheduler';
 export { createWorktree, type Worktree } from './worktree';
 export {
+  computeChangedFiles,
+  parseReviewVerdict,
+  buildSupplementSubtasks,
+  mergeWorktree,
+} from './artifact';
+export {
   buildPlannerSystemPrompt,
   buildWorkerSystemPrompt,
   buildReviewerSystemPrompt,
+  buildPlannerReplanPrompt,
   buildResearcherSystemPrompt,
   buildArchitectSystemPrompt,
   resolveWorkerRole,
@@ -17,5 +24,11 @@ export type {
   Subtask,
   MultiAgentPlan,
   WorkerResult,
+  WorkerArtifact,
+  ReviewVerdict,
+  ReviewVerdictKind,
+  ReviewFix,
+  RoundSummary,
+  WorktreeLifecycle,
   MultiAgentResult,
 } from './types';
