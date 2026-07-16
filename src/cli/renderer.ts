@@ -18,11 +18,32 @@ export interface OutputSink {
 export class StreamRenderer {
   /** 当前是否正处于「状态行」模式（最后打印的是一行状态，尚未被正文/换行提交） */
   private inStatus = false;
+  /** 是否展示推理过程（/thinking 切换）。 */
+  private showReasoning = false;
 
   constructor(
     private readonly color: (s: string) => string = (s) => s,
     private readonly out: OutputSink = process.stdout,
   ) {}
+
+  /** 切换推理显示。 */
+  setReasoningVisible(visible: boolean): void {
+    this.showReasoning = visible;
+  }
+
+  /** 流式写入推理内容（灰色前缀，仅当 showReasoning=true 时输出）。 */
+  pushReasoning(chunk: string): void {
+    if (!this.showReasoning || !chunk) return;
+    if (this.inStatus) {
+      this.out.write('\r\x1b[K');
+      this.inStatus = false;
+    }
+    // 推理内容以灰色前缀输出，与正文区分
+    const lines = chunk.split('\n');
+    for (const line of lines) {
+      if (line) this.out.write(chalk.gray(`  ⟡ ${line}`) + '\n');
+    }
+  }
 
   /** 流式写入一段正文（带着色） */
   push(chunk: string): void {

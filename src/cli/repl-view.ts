@@ -40,10 +40,14 @@ export interface ReplView {
   begin(label: string): void;
   /** 流式 token（累积后由后端决定节流/立即刷新）。 */
   pushToken(c: string): void;
+  /** 流式推理 token（累积到独立缓冲，不进正文）。 */
+  pushReasoning(c: string): void;
+  /** 切换推理显示（/thinking 命令）。 */
+  setThinkingVisible(visible: boolean): void;
   /** 工具调用开始。 */
-  toolStart(name: string): void;
+  toolStart(name: string, detail?: string): void;
   /** 工具调用结束。 */
-  toolDone(name: string, ok: boolean): void;
+  toolDone(name: string, ok: boolean, summary?: string): void;
   /** 任意 footer 动画文案（如规划探测、压缩提示）。 */
   setAnimLabel(label: string): void;
   /** 前缀缓存命中率（token 事件回填）。 */
@@ -131,11 +135,29 @@ export function createInkView(opts: InkViewOpts): ReplView {
     pushToken(c) {
       bridge.pushToken(c);
     },
-    toolStart(name) {
-      bridge.onToolCall(name);
+    pushReasoning(c) {
+      bridge.pushReasoning(c);
     },
-    toolDone(name, ok) {
+    setThinkingVisible(visible) {
+      store.getState().setThinkingVisible(visible);
+    },
+    toolStart(name, detail) {
+      bridge.onToolCall(name);
+      if (detail) {
+        // Bash 工具特殊处理：显示 $ 命令
+        const label = (name === 'bash' || name === 'run_command')
+          ? `$ ${detail}`
+          : `🔧 ${name} ${detail}`;
+        store.getState().setAnimLabel(label);
+      }
+    },
+    toolDone(name, ok, summary) {
       bridge.onToolResult(name, ok);
+      if (summary) {
+        // 超长输出时追加 ctrl+o 展开提示
+        const hint = summary.includes('输出已截断') ? chalk.gray(' (按 ctrl+o 展开全部)') : '';
+        store.getState().setAnimLabel(`${ok ? '✓' : '✗'} ${name} ${summary}${hint}`);
+      }
     },
     setAnimLabel(label) {
       store.getState().setAnimLabel(label);
@@ -145,8 +167,19 @@ export function createInkView(opts: InkViewOpts): ReplView {
     },
     flushAndRenderBody() {
       bridge.flush();
-      const raw = store.getState().assistantBuffer;
-      return opts.markdown ? opts.markdown(raw, w()) : raw.split('\n');
+      const { assistantBuffer, reasoningBuffer, thinkingVisible } = store.getState();
+      const lines: string[] = [];
+      // 推理过程可见时，在正文前渲染灰色区块
+      if (thinkingVisible && reasoningBuffer) {
+        lines.push(chalk.gray('⟡ 推理过程'));
+        for (const l of reasoningBuffer.split('\n')) {
+          lines.push(chalk.gray(`  ${l}`));
+        }
+        lines.push(''); // 空行分隔
+      }
+      const bodyLines = opts.markdown ? opts.markdown(assistantBuffer, w()) : assistantBuffer.split('\n');
+      lines.push(...bodyLines);
+      return lines;
     },
     commitDisplay(bodyLines, extra) {
       store.getState().commitTurnDisplay(bodyLines, extra);
@@ -215,11 +248,23 @@ export function createPlainView(opts: PlainViewOpts): ReplView {
     pushToken(c) {
       renderer.push(c);
     },
-    toolStart(name) {
-      renderer.status(`🔧 ${name}`);
+    pushReasoning(c) {
+      renderer.pushReasoning(c);
     },
-    toolDone(name, ok) {
-      renderer.status(`${ok ? '✓' : '✗'} ${name}`);
+    setThinkingVisible(visible) {
+      renderer.setReasoningVisible(visible);
+    },
+    toolStart(name, detail) {
+      // Bash 工具特殊处理：显示 $ 命令
+      const label = (name === 'bash' || name === 'run_command') && detail
+        ? `$ ${detail}`
+        : detail
+          ? `${name} ${detail}`
+          : name;
+      renderer.status(label);
+    },
+    toolDone(name, ok, summary) {
+      renderer.status(summary ? `${ok ? '✓' : '✗'} ${name} ${summary}` : `${ok ? '✓' : '✗'} ${name}`);
     },
     setAnimLabel(label) {
       renderer.status(label);
