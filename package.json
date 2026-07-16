@@ -21,6 +21,7 @@
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "cfonts": "^3.3.1",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "fast-glob": "^3.3.3",
